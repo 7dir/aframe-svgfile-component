@@ -1,0 +1,4 @@
+.sw[ponm]
+node_modules/
+npm-debug.log
+.component
