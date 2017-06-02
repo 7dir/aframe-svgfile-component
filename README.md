@@ -1,6 +1,6 @@
 # aframe-svgfile-component
 
-![demo](http://7dir.ru/aframe-svgfile-component/)
+[demo aframe-svgfile-component](http://7dir.ru/aframe-svgfile-component/)
 
 U should understand how to create and use new AFRAME Component
 
