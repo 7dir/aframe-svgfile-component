@@ -1,88 +1,4 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
-// js import vs require
-var parse = require('parse-svg-path');
-var extract = require('extract-svg-path').parse;
-var load = require('load-svg');
-
-var createGeometry = require('three-simplicial-complex')(THREE);
-var svgMesh3d = require('svg-mesh-3d');
-
-/* global AFRAME */
-
-if (typeof AFRAME === 'undefined') {
-  throw new Error('Component attempted to register before AFRAME was available.');
-}
-
-/**
- * Svgpath component for A-Frame.
- */
-AFRAME.registerComponent('svgfile', {
-  schema: {
-    color: {type: 'color', default: '#c23d3e'},
-    svgFile: {type: 'string', default: ''}
-  },
-
-  /**
-   * Set if component needs multiple instancing.
-   */
-  multiple: true,
-
-  /**
-   * Called once when component is attached. Generally for initial setup.
-   */
-  init: function () {
-    var data = this.data;
-    var el = this.el;
-    var meshData;
-
-      load(data.svgFile, function(err, svg) {
-        meshData = svgMesh3d(extract(svg), {
-          delaunay: true,
-          clean: true,
-          exterior: false,
-          randomization: 0,
-          simplify: 0,
-          scale: 1
-        });
-        this.geometry = createGeometry(meshData);
-        this.material = new THREE.MeshStandardMaterial({ color: data.color, side: THREE.DoubleSide });// Create material.
-        this.mesh = new THREE.Mesh(this.geometry, this.material);// Create mesh.
-        el.setObject3D('mesh', this.mesh);// Set mesh on entity.
-      });
-    
-  },
-
-  /**
-   * Called when component is attached and when component data changes.
-   * Generally modifies the entity based on the data.
-   */
-  update: function (oldData) { },
-
-  /**
-   * Called when a component is removed (e.g., via removeAttribute).
-   * Generally undoes all modifications to the entity.
-   */
-  remove: function () { },
-
-  /**
-   * Called on each scene tick.
-   */
-  // tick: function (t) { },
-
-  /**
-   * Called when entity pauses.
-   * Use to stop or remove any dynamic or background behavior such as events.
-   */
-  pause: function () { },
-
-  /**
-   * Called when entity resumes.
-   * Use to continue or add any dynamic or background behavior such as events.
-   */
-  play: function () { }
-});
-
-},{"extract-svg-path":44,"load-svg":50,"parse-svg-path":58,"svg-mesh-3d":73,"three-simplicial-complex":75}],2:[function(require,module,exports){
 
 module.exports = absolutize
 
@@ -151,7 +67,7 @@ function absolutize(path){
 	})
 }
 
-},{}],3:[function(require,module,exports){
+},{}],2:[function(require,module,exports){
 function clone(point) { //TODO: use gl-vec2 for this
     return [point[0], point[1]]
 }
@@ -350,9 +266,9 @@ module.exports = function createBezierBuilder(opt) {
     }
 }
 
-},{}],4:[function(require,module,exports){
+},{}],3:[function(require,module,exports){
 module.exports = require('./function')()
-},{"./function":3}],5:[function(require,module,exports){
+},{"./function":2}],4:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -468,7 +384,7 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],6:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -481,7 +397,7 @@ function add(a, b) {
     a[1].mul(b[1]))
 }
 
-},{"./lib/rationalize":16}],7:[function(require,module,exports){
+},{"./lib/rationalize":15}],6:[function(require,module,exports){
 'use strict'
 
 module.exports = cmp
@@ -490,7 +406,7 @@ function cmp(a, b) {
     return a[0].mul(b[1]).cmp(b[0].mul(a[1]))
 }
 
-},{}],8:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -501,7 +417,7 @@ function div(a, b) {
   return rationalize(a[0].mul(b[1]), a[1].mul(b[0]))
 }
 
-},{"./lib/rationalize":16}],9:[function(require,module,exports){
+},{"./lib/rationalize":15}],8:[function(require,module,exports){
 'use strict'
 
 var isRat = require('./is-rat')
@@ -563,7 +479,7 @@ function makeRational(numer, denom) {
   return rationalize(a, b)
 }
 
-},{"./div":8,"./is-rat":10,"./lib/is-bn":14,"./lib/num-to-bn":15,"./lib/rationalize":16,"./lib/str-to-bn":17}],10:[function(require,module,exports){
+},{"./div":7,"./is-rat":9,"./lib/is-bn":13,"./lib/num-to-bn":14,"./lib/rationalize":15,"./lib/str-to-bn":16}],9:[function(require,module,exports){
 'use strict'
 
 var isBN = require('./lib/is-bn')
@@ -574,7 +490,7 @@ function isRat(x) {
   return Array.isArray(x) && x.length === 2 && isBN(x[0]) && isBN(x[1])
 }
 
-},{"./lib/is-bn":14}],11:[function(require,module,exports){
+},{"./lib/is-bn":13}],10:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -585,7 +501,7 @@ function sign (x) {
   return x.cmp(new BN(0))
 }
 
-},{"bn.js":24}],12:[function(require,module,exports){
+},{"bn.js":23}],11:[function(require,module,exports){
 'use strict'
 
 var sign = require('./bn-sign')
@@ -610,7 +526,7 @@ function bn2num(b) {
   return sign(b) * out
 }
 
-},{"./bn-sign":11}],13:[function(require,module,exports){
+},{"./bn-sign":10}],12:[function(require,module,exports){
 'use strict'
 
 var db = require('double-bits')
@@ -631,7 +547,7 @@ function ctzNumber(x) {
   return h + 32
 }
 
-},{"bit-twiddle":23,"double-bits":42}],14:[function(require,module,exports){
+},{"bit-twiddle":22,"double-bits":40}],13:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -644,7 +560,7 @@ function isBN(x) {
   return x && typeof x === 'object' && Boolean(x.words)
 }
 
-},{"bn.js":24}],15:[function(require,module,exports){
+},{"bn.js":23}],14:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -661,7 +577,7 @@ function num2bn(x) {
   }
 }
 
-},{"bn.js":24,"double-bits":42}],16:[function(require,module,exports){
+},{"bn.js":23,"double-bits":40}],15:[function(require,module,exports){
 'use strict'
 
 var num2bn = require('./num-to-bn')
@@ -689,7 +605,7 @@ function rationalize(numer, denom) {
   return [ numer, denom ]
 }
 
-},{"./bn-sign":11,"./num-to-bn":15}],17:[function(require,module,exports){
+},{"./bn-sign":10,"./num-to-bn":14}],16:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -700,7 +616,7 @@ function str2BN(x) {
   return new BN(x)
 }
 
-},{"bn.js":24}],18:[function(require,module,exports){
+},{"bn.js":23}],17:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -711,7 +627,7 @@ function mul(a, b) {
   return rationalize(a[0].mul(b[0]), a[1].mul(b[1]))
 }
 
-},{"./lib/rationalize":16}],19:[function(require,module,exports){
+},{"./lib/rationalize":15}],18:[function(require,module,exports){
 'use strict'
 
 var bnsign = require('./lib/bn-sign')
@@ -722,7 +638,7 @@ function sign(x) {
   return bnsign(x[0]) * bnsign(x[1])
 }
 
-},{"./lib/bn-sign":11}],20:[function(require,module,exports){
+},{"./lib/bn-sign":10}],19:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -733,7 +649,7 @@ function sub(a, b) {
   return rationalize(a[0].mul(b[1]).sub(a[1].mul(b[0])), a[1].mul(b[1]))
 }
 
-},{"./lib/rationalize":16}],21:[function(require,module,exports){
+},{"./lib/rationalize":15}],20:[function(require,module,exports){
 'use strict'
 
 var bn2num = require('./lib/bn-to-num')
@@ -771,7 +687,7 @@ function roundRat (f) {
   }
 }
 
-},{"./lib/bn-to-num":12,"./lib/ctz":13}],22:[function(require,module,exports){
+},{"./lib/bn-to-num":11,"./lib/ctz":12}],21:[function(require,module,exports){
 "use strict"
 
 function compileSearch(funcName, predicate, reversed, extraArgs, earlyOut) {
@@ -825,7 +741,7 @@ module.exports = {
   eq: compileBoundsSearch("-", true, "EQ", true)
 }
 
-},{}],23:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 /**
  * Bit twiddling hacks for JavaScript.
  *
@@ -1031,7 +947,7 @@ exports.nextCombination = function(v) {
 }
 
 
-},{}],24:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 (function (module, exports) {
   'use strict';
 
@@ -4460,7 +4376,7 @@ exports.nextCombination = function(v) {
   };
 })(typeof module === 'undefined' || module, this);
 
-},{}],25:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 'use strict'
 
 module.exports = findBounds
@@ -4483,7 +4399,7 @@ function findBounds(points) {
   }
   return [lo, hi]
 }
-},{}],26:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 'use strict'
 
 module.exports = boxIntersectWrapper
@@ -4622,7 +4538,7 @@ function boxIntersectWrapper(arg0, arg1, arg2) {
       throw new Error('box-intersect: Invalid arguments')
   }
 }
-},{"./lib/intersect":28,"./lib/sweep":32,"typedarray-pool":79}],27:[function(require,module,exports){
+},{"./lib/intersect":27,"./lib/sweep":31,"typedarray-pool":75}],26:[function(require,module,exports){
 'use strict'
 
 var DIMENSION   = 'd'
@@ -4767,7 +4683,7 @@ function bruteForcePlanner(full) {
 
 exports.partial = bruteForcePlanner(false)
 exports.full    = bruteForcePlanner(true)
-},{}],28:[function(require,module,exports){
+},{}],27:[function(require,module,exports){
 'use strict'
 
 module.exports = boxIntersectIter
@@ -5262,7 +5178,7 @@ function boxIntersectIter(
     }
   }
 }
-},{"./brute":27,"./median":29,"./partition":30,"./sweep":32,"bit-twiddle":23,"typedarray-pool":79}],29:[function(require,module,exports){
+},{"./brute":26,"./median":28,"./partition":29,"./sweep":31,"bit-twiddle":22,"typedarray-pool":75}],28:[function(require,module,exports){
 'use strict'
 
 module.exports = findMedian
@@ -5405,7 +5321,7 @@ function findMedian(d, axis, start, end, boxes, ids) {
     start, mid, boxes, ids,
     boxes[elemSize*mid+axis])
 }
-},{"./partition":30}],30:[function(require,module,exports){
+},{"./partition":29}],29:[function(require,module,exports){
 'use strict'
 
 module.exports = genPartition
@@ -5426,7 +5342,7 @@ function genPartition(predicate, args) {
         .replace('$', predicate))
   return Function.apply(void 0, fargs)
 }
-},{}],31:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 'use strict';
 
 //This code is extracted from ndarray-sort
@@ -5663,7 +5579,7 @@ function quickSort(left, right, data) {
     quickSort(less, great, data);
   }
 }
-},{}],32:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 'use strict'
 
 module.exports = {
@@ -6098,8 +6014,7 @@ red_loop:
     }
   }
 }
-},{"./sort":31,"bit-twiddle":23,"typedarray-pool":79}],33:[function(require,module,exports){
-(function (global){
+},{"./sort":30,"bit-twiddle":22,"typedarray-pool":75}],32:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -6112,80 +6027,57 @@ red_loop:
 
 var base64 = require('base64-js')
 var ieee754 = require('ieee754')
-var isArray = require('isarray')
 
 exports.Buffer = Buffer
 exports.SlowBuffer = SlowBuffer
 exports.INSPECT_MAX_BYTES = 50
 
+var K_MAX_LENGTH = 0x7fffffff
+exports.kMaxLength = K_MAX_LENGTH
+
 /**
  * If `Buffer.TYPED_ARRAY_SUPPORT`:
  *   === true    Use Uint8Array implementation (fastest)
- *   === false   Use Object implementation (most compatible, even IE6)
+ *   === false   Print warning and recommend using `buffer` v4.x which has an Object
+ *               implementation (most compatible, even IE6)
  *
  * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,
  * Opera 11.6+, iOS 4.2+.
  *
- * Due to various browser bugs, sometimes the Object implementation will be used even
- * when the browser supports typed arrays.
- *
- * Note:
- *
- *   - Firefox 4-29 lacks support for adding new properties to `Uint8Array` instances,
- *     See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438.
- *
- *   - Chrome 9-10 is missing the `TypedArray.prototype.subarray` function.
- *
- *   - IE10 has a broken `TypedArray.prototype.subarray` function which returns arrays of
- *     incorrect length in some situations.
-
- * We detect these buggy browsers and set `Buffer.TYPED_ARRAY_SUPPORT` to `false` so they
- * get the Object implementation, which is slower but behaves correctly.
+ * We report that the browser does not support typed arrays if the are not subclassable
+ * using __proto__. Firefox 4-29 lacks support for adding new properties to `Uint8Array`
+ * (See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438). IE 10 lacks support
+ * for __proto__ and has a buggy typed array implementation.
  */
-Buffer.TYPED_ARRAY_SUPPORT = global.TYPED_ARRAY_SUPPORT !== undefined
-  ? global.TYPED_ARRAY_SUPPORT
-  : typedArraySupport()
+Buffer.TYPED_ARRAY_SUPPORT = typedArraySupport()
 
-/*
- * Export kMaxLength after typed array support is determined.
- */
-exports.kMaxLength = kMaxLength()
+if (!Buffer.TYPED_ARRAY_SUPPORT && typeof console !== 'undefined' &&
+    typeof console.error === 'function') {
+  console.error(
+    'This browser lacks typed array (Uint8Array) support which is required by ' +
+    '`buffer` v5.x. Use `buffer` v4.x if you require old browser support.'
+  )
+}
 
 function typedArraySupport () {
+  // Can typed array instances can be augmented?
   try {
     var arr = new Uint8Array(1)
     arr.__proto__ = {__proto__: Uint8Array.prototype, foo: function () { return 42 }}
-    return arr.foo() === 42 && // typed array instances can be augmented
-        typeof arr.subarray === 'function' && // chrome 9-10 lack `subarray`
-        arr.subarray(1, 1).byteLength === 0 // ie10 has broken `subarray`
+    return arr.foo() === 42
   } catch (e) {
     return false
   }
 }
 
-function kMaxLength () {
-  return Buffer.TYPED_ARRAY_SUPPORT
-    ? 0x7fffffff
-    : 0x3fffffff
-}
-
-function createBuffer (that, length) {
-  if (kMaxLength() < length) {
+function createBuffer (length) {
+  if (length > K_MAX_LENGTH) {
     throw new RangeError('Invalid typed array length')
   }
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    // Return an augmented `Uint8Array` instance, for best performance
-    that = new Uint8Array(length)
-    that.__proto__ = Buffer.prototype
-  } else {
-    // Fallback: Return an object instance of the Buffer class
-    if (that === null) {
-      that = new Buffer(length)
-    }
-    that.length = length
-  }
-
-  return that
+  // Return an augmented `Uint8Array` instance
+  var buf = new Uint8Array(length)
+  buf.__proto__ = Buffer.prototype
+  return buf
 }
 
 /**
@@ -6199,10 +6091,6 @@ function createBuffer (that, length) {
  */
 
 function Buffer (arg, encodingOrOffset, length) {
-  if (!Buffer.TYPED_ARRAY_SUPPORT && !(this instanceof Buffer)) {
-    return new Buffer(arg, encodingOrOffset, length)
-  }
-
   // Common case.
   if (typeof arg === 'number') {
     if (typeof encodingOrOffset === 'string') {
@@ -6210,33 +6098,38 @@ function Buffer (arg, encodingOrOffset, length) {
         'If encoding is specified then the first argument must be a string'
       )
     }
-    return allocUnsafe(this, arg)
+    return allocUnsafe(arg)
   }
-  return from(this, arg, encodingOrOffset, length)
+  return from(arg, encodingOrOffset, length)
+}
+
+// Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
+if (typeof Symbol !== 'undefined' && Symbol.species &&
+    Buffer[Symbol.species] === Buffer) {
+  Object.defineProperty(Buffer, Symbol.species, {
+    value: null,
+    configurable: true,
+    enumerable: false,
+    writable: false
+  })
 }
 
 Buffer.poolSize = 8192 // not used by this implementation
 
-// TODO: Legacy, not needed anymore. Remove in next major version.
-Buffer._augment = function (arr) {
-  arr.__proto__ = Buffer.prototype
-  return arr
-}
-
-function from (that, value, encodingOrOffset, length) {
+function from (value, encodingOrOffset, length) {
   if (typeof value === 'number') {
     throw new TypeError('"value" argument must not be a number')
   }
 
-  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
-    return fromArrayBuffer(that, value, encodingOrOffset, length)
+  if (value instanceof ArrayBuffer) {
+    return fromArrayBuffer(value, encodingOrOffset, length)
   }
 
   if (typeof value === 'string') {
-    return fromString(that, value, encodingOrOffset)
+    return fromString(value, encodingOrOffset)
   }
 
-  return fromObject(that, value)
+  return fromObject(value)
 }
 
 /**
@@ -6248,21 +6141,13 @@ function from (that, value, encodingOrOffset, length) {
  * Buffer.from(arrayBuffer[, byteOffset[, length]])
  **/
 Buffer.from = function (value, encodingOrOffset, length) {
-  return from(null, value, encodingOrOffset, length)
+  return from(value, encodingOrOffset, length)
 }
 
-if (Buffer.TYPED_ARRAY_SUPPORT) {
-  Buffer.prototype.__proto__ = Uint8Array.prototype
-  Buffer.__proto__ = Uint8Array
-  if (typeof Symbol !== 'undefined' && Symbol.species &&
-      Buffer[Symbol.species] === Buffer) {
-    // Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
-    Object.defineProperty(Buffer, Symbol.species, {
-      value: null,
-      configurable: true
-    })
-  }
-}
+// Note: Change prototype *after* Buffer.from is defined to workaround Chrome bug:
+// https://github.com/feross/buffer/pull/148
+Buffer.prototype.__proto__ = Uint8Array.prototype
+Buffer.__proto__ = Uint8Array
 
 function assertSize (size) {
   if (typeof size !== 'number') {
@@ -6272,20 +6157,20 @@ function assertSize (size) {
   }
 }
 
-function alloc (that, size, fill, encoding) {
+function alloc (size, fill, encoding) {
   assertSize(size)
   if (size <= 0) {
-    return createBuffer(that, size)
+    return createBuffer(size)
   }
   if (fill !== undefined) {
     // Only pay attention to encoding if it's a string. This
     // prevents accidentally sending in a number that would
     // be interpretted as a start offset.
     return typeof encoding === 'string'
-      ? createBuffer(that, size).fill(fill, encoding)
-      : createBuffer(that, size).fill(fill)
+      ? createBuffer(size).fill(fill, encoding)
+      : createBuffer(size).fill(fill)
   }
-  return createBuffer(that, size)
+  return createBuffer(size)
 }
 
 /**
@@ -6293,34 +6178,28 @@ function alloc (that, size, fill, encoding) {
  * alloc(size[, fill[, encoding]])
  **/
 Buffer.alloc = function (size, fill, encoding) {
-  return alloc(null, size, fill, encoding)
+  return alloc(size, fill, encoding)
 }
 
-function allocUnsafe (that, size) {
+function allocUnsafe (size) {
   assertSize(size)
-  that = createBuffer(that, size < 0 ? 0 : checked(size) | 0)
-  if (!Buffer.TYPED_ARRAY_SUPPORT) {
-    for (var i = 0; i < size; ++i) {
-      that[i] = 0
-    }
-  }
-  return that
+  return createBuffer(size < 0 ? 0 : checked(size) | 0)
 }
 
 /**
  * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.
  * */
 Buffer.allocUnsafe = function (size) {
-  return allocUnsafe(null, size)
+  return allocUnsafe(size)
 }
 /**
  * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.
  */
 Buffer.allocUnsafeSlow = function (size) {
-  return allocUnsafe(null, size)
+  return allocUnsafe(size)
 }
 
-function fromString (that, string, encoding) {
+function fromString (string, encoding) {
   if (typeof encoding !== 'string' || encoding === '') {
     encoding = 'utf8'
   }
@@ -6330,32 +6209,30 @@ function fromString (that, string, encoding) {
   }
 
   var length = byteLength(string, encoding) | 0
-  that = createBuffer(that, length)
+  var buf = createBuffer(length)
 
-  var actual = that.write(string, encoding)
+  var actual = buf.write(string, encoding)
 
   if (actual !== length) {
     // Writing a hex string, for example, that contains invalid characters will
     // cause everything after the first invalid character to be ignored. (e.g.
     // 'abxxcd' will be treated as 'ab')
-    that = that.slice(0, actual)
+    buf = buf.slice(0, actual)
   }
 
-  return that
+  return buf
 }
 
-function fromArrayLike (that, array) {
+function fromArrayLike (array) {
   var length = array.length < 0 ? 0 : checked(array.length) | 0
-  that = createBuffer(that, length)
+  var buf = createBuffer(length)
   for (var i = 0; i < length; i += 1) {
-    that[i] = array[i] & 255
+    buf[i] = array[i] & 255
   }
-  return that
+  return buf
 }
 
-function fromArrayBuffer (that, array, byteOffset, length) {
-  array.byteLength // this throws if `array` is not a valid ArrayBuffer
-
+function fromArrayBuffer (array, byteOffset, length) {
   if (byteOffset < 0 || array.byteLength < byteOffset) {
     throw new RangeError('\'offset\' is out of bounds')
   }
@@ -6364,49 +6241,43 @@ function fromArrayBuffer (that, array, byteOffset, length) {
     throw new RangeError('\'length\' is out of bounds')
   }
 
+  var buf
   if (byteOffset === undefined && length === undefined) {
-    array = new Uint8Array(array)
+    buf = new Uint8Array(array)
   } else if (length === undefined) {
-    array = new Uint8Array(array, byteOffset)
+    buf = new Uint8Array(array, byteOffset)
   } else {
-    array = new Uint8Array(array, byteOffset, length)
+    buf = new Uint8Array(array, byteOffset, length)
   }
 
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    // Return an augmented `Uint8Array` instance, for best performance
-    that = array
-    that.__proto__ = Buffer.prototype
-  } else {
-    // Fallback: Return an object instance of the Buffer class
-    that = fromArrayLike(that, array)
-  }
-  return that
+  // Return an augmented `Uint8Array` instance
+  buf.__proto__ = Buffer.prototype
+  return buf
 }
 
-function fromObject (that, obj) {
+function fromObject (obj) {
   if (Buffer.isBuffer(obj)) {
     var len = checked(obj.length) | 0
-    that = createBuffer(that, len)
+    var buf = createBuffer(len)
 
-    if (that.length === 0) {
-      return that
+    if (buf.length === 0) {
+      return buf
     }
 
-    obj.copy(that, 0, 0, len)
-    return that
+    obj.copy(buf, 0, 0, len)
+    return buf
   }
 
   if (obj) {
-    if ((typeof ArrayBuffer !== 'undefined' &&
-        obj.buffer instanceof ArrayBuffer) || 'length' in obj) {
-      if (typeof obj.length !== 'number' || isnan(obj.length)) {
-        return createBuffer(that, 0)
+    if (isArrayBufferView(obj) || 'length' in obj) {
+      if (typeof obj.length !== 'number' || numberIsNaN(obj.length)) {
+        return createBuffer(0)
       }
-      return fromArrayLike(that, obj)
+      return fromArrayLike(obj)
     }
 
-    if (obj.type === 'Buffer' && isArray(obj.data)) {
-      return fromArrayLike(that, obj.data)
+    if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+      return fromArrayLike(obj.data)
     }
   }
 
@@ -6414,11 +6285,11 @@ function fromObject (that, obj) {
 }
 
 function checked (length) {
-  // Note: cannot use `length < kMaxLength()` here because that fails when
+  // Note: cannot use `length < K_MAX_LENGTH` here because that fails when
   // length is NaN (which is otherwise coerced to zero.)
-  if (length >= kMaxLength()) {
+  if (length >= K_MAX_LENGTH) {
     throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
-                         'size: 0x' + kMaxLength().toString(16) + ' bytes')
+                         'size: 0x' + K_MAX_LENGTH.toString(16) + ' bytes')
   }
   return length | 0
 }
@@ -6431,7 +6302,7 @@ function SlowBuffer (length) {
 }
 
 Buffer.isBuffer = function isBuffer (b) {
-  return !!(b != null && b._isBuffer)
+  return b != null && b._isBuffer === true
 }
 
 Buffer.compare = function compare (a, b) {
@@ -6477,7 +6348,7 @@ Buffer.isEncoding = function isEncoding (encoding) {
 }
 
 Buffer.concat = function concat (list, length) {
-  if (!isArray(list)) {
+  if (!Array.isArray(list)) {
     throw new TypeError('"list" argument must be an Array of Buffers')
   }
 
@@ -6510,8 +6381,7 @@ function byteLength (string, encoding) {
   if (Buffer.isBuffer(string)) {
     return string.length
   }
-  if (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' &&
-      (ArrayBuffer.isView(string) || string instanceof ArrayBuffer)) {
+  if (isArrayBufferView(string) || string instanceof ArrayBuffer) {
     return string.byteLength
   }
   if (typeof string !== 'string') {
@@ -6621,8 +6491,12 @@ function slowToString (encoding, start, end) {
   }
 }
 
-// The property is used by `Buffer.isBuffer` and `is-buffer` (in Safari 5-7) to detect
-// Buffer instances.
+// This property is used by `Buffer.isBuffer` (and the `is-buffer` npm package)
+// to detect a Buffer instance. It's not possible to use `instanceof Buffer`
+// reliably in a browserify context because there could be multiple different
+// copies of the 'buffer' package in use. This method works even for Buffer
+// instances that were created from another copy of the `buffer` package.
+// See: https://github.com/feross/buffer/issues/154
 Buffer.prototype._isBuffer = true
 
 function swap (b, n, m) {
@@ -6669,7 +6543,7 @@ Buffer.prototype.swap64 = function swap64 () {
 }
 
 Buffer.prototype.toString = function toString () {
-  var length = this.length | 0
+  var length = this.length
   if (length === 0) return ''
   if (arguments.length === 0) return utf8Slice(this, 0, length)
   return slowToString.apply(this, arguments)
@@ -6773,7 +6647,7 @@ function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
     byteOffset = -0x80000000
   }
   byteOffset = +byteOffset  // Coerce to Number.
-  if (isNaN(byteOffset)) {
+  if (numberIsNaN(byteOffset)) {
     // byteOffset: it it's undefined, null, NaN, "foo", etc, search whole buffer
     byteOffset = dir ? 0 : (buffer.length - 1)
   }
@@ -6802,8 +6676,7 @@ function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
     return arrayIndexOf(buffer, val, byteOffset, encoding, dir)
   } else if (typeof val === 'number') {
     val = val & 0xFF // Search for a byte value [0-255]
-    if (Buffer.TYPED_ARRAY_SUPPORT &&
-        typeof Uint8Array.prototype.indexOf === 'function') {
+    if (typeof Uint8Array.prototype.indexOf === 'function') {
       if (dir) {
         return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)
       } else {
@@ -6905,7 +6778,7 @@ function hexWrite (buf, string, offset, length) {
   }
   for (var i = 0; i < length; ++i) {
     var parsed = parseInt(string.substr(i * 2, 2), 16)
-    if (isNaN(parsed)) return i
+    if (numberIsNaN(parsed)) return i
     buf[offset + i] = parsed
   }
   return i
@@ -6944,15 +6817,14 @@ Buffer.prototype.write = function write (string, offset, length, encoding) {
     offset = 0
   // Buffer#write(string, offset[, length][, encoding])
   } else if (isFinite(offset)) {
-    offset = offset | 0
+    offset = offset >>> 0
     if (isFinite(length)) {
-      length = length | 0
+      length = length >>> 0
       if (encoding === undefined) encoding = 'utf8'
     } else {
       encoding = length
       length = undefined
     }
-  // legacy write(string, encoding, offset, length) - remove in v0.13
   } else {
     throw new Error(
       'Buffer.write(string, encoding, offset[, length]) is no longer supported'
@@ -7151,7 +7023,7 @@ function utf16leSlice (buf, start, end) {
   var bytes = buf.slice(start, end)
   var res = ''
   for (var i = 0; i < bytes.length; i += 2) {
-    res += String.fromCharCode(bytes[i] + bytes[i + 1] * 256)
+    res += String.fromCharCode(bytes[i] + (bytes[i + 1] * 256))
   }
   return res
 }
@@ -7177,18 +7049,9 @@ Buffer.prototype.slice = function slice (start, end) {
 
   if (end < start) end = start
 
-  var newBuf
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    newBuf = this.subarray(start, end)
-    newBuf.__proto__ = Buffer.prototype
-  } else {
-    var sliceLen = end - start
-    newBuf = new Buffer(sliceLen, undefined)
-    for (var i = 0; i < sliceLen; ++i) {
-      newBuf[i] = this[i + start]
-    }
-  }
-
+  var newBuf = this.subarray(start, end)
+  // Return an augmented `Uint8Array` instance
+  newBuf.__proto__ = Buffer.prototype
   return newBuf
 }
 
@@ -7201,8 +7064,8 @@ function checkOffset (offset, ext, length) {
 }
 
 Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {
-  offset = offset | 0
-  byteLength = byteLength | 0
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
   if (!noAssert) checkOffset(offset, byteLength, this.length)
 
   var val = this[offset]
@@ -7216,8 +7079,8 @@ Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert)
 }
 
 Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {
-  offset = offset | 0
-  byteLength = byteLength | 0
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
   if (!noAssert) {
     checkOffset(offset, byteLength, this.length)
   }
@@ -7232,21 +7095,25 @@ Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert)
 }
 
 Buffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 1, this.length)
   return this[offset]
 }
 
 Buffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   return this[offset] | (this[offset + 1] << 8)
 }
 
 Buffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   return (this[offset] << 8) | this[offset + 1]
 }
 
 Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return ((this[offset]) |
@@ -7256,6 +7123,7 @@ Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
 }
 
 Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset] * 0x1000000) +
@@ -7265,8 +7133,8 @@ Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
 }
 
 Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
-  offset = offset | 0
-  byteLength = byteLength | 0
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
   if (!noAssert) checkOffset(offset, byteLength, this.length)
 
   var val = this[offset]
@@ -7283,8 +7151,8 @@ Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
 }
 
 Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
-  offset = offset | 0
-  byteLength = byteLength | 0
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
   if (!noAssert) checkOffset(offset, byteLength, this.length)
 
   var i = byteLength
@@ -7301,24 +7169,28 @@ Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
 }
 
 Buffer.prototype.readInt8 = function readInt8 (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 1, this.length)
   if (!(this[offset] & 0x80)) return (this[offset])
   return ((0xff - this[offset] + 1) * -1)
 }
 
 Buffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   var val = this[offset] | (this[offset + 1] << 8)
   return (val & 0x8000) ? val | 0xFFFF0000 : val
 }
 
 Buffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   var val = this[offset + 1] | (this[offset] << 8)
   return (val & 0x8000) ? val | 0xFFFF0000 : val
 }
 
 Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset]) |
@@ -7328,6 +7200,7 @@ Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
 }
 
 Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset] << 24) |
@@ -7337,21 +7210,25 @@ Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
 }
 
 Buffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
   return ieee754.read(this, offset, true, 23, 4)
 }
 
 Buffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
   return ieee754.read(this, offset, false, 23, 4)
 }
 
 Buffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 8, this.length)
   return ieee754.read(this, offset, true, 52, 8)
 }
 
 Buffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {
+  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 8, this.length)
   return ieee754.read(this, offset, false, 52, 8)
 }
@@ -7364,8 +7241,8 @@ function checkInt (buf, value, offset, ext, max, min) {
 
 Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset | 0
-  byteLength = byteLength | 0
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
   if (!noAssert) {
     var maxBytes = Math.pow(2, 8 * byteLength) - 1
     checkInt(this, value, offset, byteLength, maxBytes, 0)
@@ -7383,8 +7260,8 @@ Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, 
 
 Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset | 0
-  byteLength = byteLength | 0
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
   if (!noAssert) {
     var maxBytes = Math.pow(2, 8 * byteLength) - 1
     checkInt(this, value, offset, byteLength, maxBytes, 0)
@@ -7402,89 +7279,57 @@ Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, 
 
 Buffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)
-  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
   this[offset] = (value & 0xff)
   return offset + 1
 }
 
-function objectWriteUInt16 (buf, value, offset, littleEndian) {
-  if (value < 0) value = 0xffff + value + 1
-  for (var i = 0, j = Math.min(buf.length - offset, 2); i < j; ++i) {
-    buf[offset + i] = (value & (0xff << (8 * (littleEndian ? i : 1 - i)))) >>>
-      (littleEndian ? i : 1 - i) * 8
-  }
-}
-
 Buffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value & 0xff)
-    this[offset + 1] = (value >>> 8)
-  } else {
-    objectWriteUInt16(this, value, offset, true)
-  }
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
   return offset + 2
 }
 
 Buffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 8)
-    this[offset + 1] = (value & 0xff)
-  } else {
-    objectWriteUInt16(this, value, offset, false)
-  }
+  this[offset] = (value >>> 8)
+  this[offset + 1] = (value & 0xff)
   return offset + 2
-}
-
-function objectWriteUInt32 (buf, value, offset, littleEndian) {
-  if (value < 0) value = 0xffffffff + value + 1
-  for (var i = 0, j = Math.min(buf.length - offset, 4); i < j; ++i) {
-    buf[offset + i] = (value >>> (littleEndian ? i : 3 - i) * 8) & 0xff
-  }
 }
 
 Buffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset + 3] = (value >>> 24)
-    this[offset + 2] = (value >>> 16)
-    this[offset + 1] = (value >>> 8)
-    this[offset] = (value & 0xff)
-  } else {
-    objectWriteUInt32(this, value, offset, true)
-  }
+  this[offset + 3] = (value >>> 24)
+  this[offset + 2] = (value >>> 16)
+  this[offset + 1] = (value >>> 8)
+  this[offset] = (value & 0xff)
   return offset + 4
 }
 
 Buffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 24)
-    this[offset + 1] = (value >>> 16)
-    this[offset + 2] = (value >>> 8)
-    this[offset + 3] = (value & 0xff)
-  } else {
-    objectWriteUInt32(this, value, offset, false)
-  }
+  this[offset] = (value >>> 24)
+  this[offset + 1] = (value >>> 16)
+  this[offset + 2] = (value >>> 8)
+  this[offset + 3] = (value & 0xff)
   return offset + 4
 }
 
 Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) {
-    var limit = Math.pow(2, 8 * byteLength - 1)
+    var limit = Math.pow(2, (8 * byteLength) - 1)
 
     checkInt(this, value, offset, byteLength, limit - 1, -limit)
   }
@@ -7505,9 +7350,9 @@ Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, no
 
 Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) {
-    var limit = Math.pow(2, 8 * byteLength - 1)
+    var limit = Math.pow(2, (8 * byteLength) - 1)
 
     checkInt(this, value, offset, byteLength, limit - 1, -limit)
   }
@@ -7528,9 +7373,8 @@ Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, no
 
 Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)
-  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
   if (value < 0) value = 0xff + value + 1
   this[offset] = (value & 0xff)
   return offset + 1
@@ -7538,58 +7382,42 @@ Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
 
 Buffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value & 0xff)
-    this[offset + 1] = (value >>> 8)
-  } else {
-    objectWriteUInt16(this, value, offset, true)
-  }
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
   return offset + 2
 }
 
 Buffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 8)
-    this[offset + 1] = (value & 0xff)
-  } else {
-    objectWriteUInt16(this, value, offset, false)
-  }
+  this[offset] = (value >>> 8)
+  this[offset + 1] = (value & 0xff)
   return offset + 2
 }
 
 Buffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value & 0xff)
-    this[offset + 1] = (value >>> 8)
-    this[offset + 2] = (value >>> 16)
-    this[offset + 3] = (value >>> 24)
-  } else {
-    objectWriteUInt32(this, value, offset, true)
-  }
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
+  this[offset + 2] = (value >>> 16)
+  this[offset + 3] = (value >>> 24)
   return offset + 4
 }
 
 Buffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {
   value = +value
-  offset = offset | 0
+  offset = offset >>> 0
   if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
   if (value < 0) value = 0xffffffff + value + 1
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 24)
-    this[offset + 1] = (value >>> 16)
-    this[offset + 2] = (value >>> 8)
-    this[offset + 3] = (value & 0xff)
-  } else {
-    objectWriteUInt32(this, value, offset, false)
-  }
+  this[offset] = (value >>> 24)
+  this[offset + 1] = (value >>> 16)
+  this[offset + 2] = (value >>> 8)
+  this[offset + 3] = (value & 0xff)
   return offset + 4
 }
 
@@ -7599,6 +7427,8 @@ function checkIEEE754 (buf, value, offset, ext, max, min) {
 }
 
 function writeFloat (buf, value, offset, littleEndian, noAssert) {
+  value = +value
+  offset = offset >>> 0
   if (!noAssert) {
     checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)
   }
@@ -7615,6 +7445,8 @@ Buffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) 
 }
 
 function writeDouble (buf, value, offset, littleEndian, noAssert) {
+  value = +value
+  offset = offset >>> 0
   if (!noAssert) {
     checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)
   }
@@ -7663,7 +7495,7 @@ Buffer.prototype.copy = function copy (target, targetStart, start, end) {
     for (i = len - 1; i >= 0; --i) {
       target[i + targetStart] = this[i + start]
     }
-  } else if (len < 1000 || !Buffer.TYPED_ARRAY_SUPPORT) {
+  } else if (len < 1000) {
     // ascending copy from start
     for (i = 0; i < len; ++i) {
       target[i + targetStart] = this[i + start]
@@ -7732,7 +7564,7 @@ Buffer.prototype.fill = function fill (val, start, end, encoding) {
   } else {
     var bytes = Buffer.isBuffer(val)
       ? val
-      : utf8ToBytes(new Buffer(val, encoding).toString())
+      : new Buffer(val, encoding)
     var len = bytes.length
     for (i = 0; i < end - start; ++i) {
       this[i + start] = bytes[i % len]
@@ -7745,11 +7577,11 @@ Buffer.prototype.fill = function fill (val, start, end, encoding) {
 // HELPER FUNCTIONS
 // ================
 
-var INVALID_BASE64_RE = /[^+\/0-9A-Za-z-_]/g
+var INVALID_BASE64_RE = /[^+/0-9A-Za-z-_]/g
 
 function base64clean (str) {
   // Node strips out invalid characters like \n and \t from the string, base64-js does not
-  str = stringtrim(str).replace(INVALID_BASE64_RE, '')
+  str = str.trim().replace(INVALID_BASE64_RE, '')
   // Node converts strings with length < 2 to ''
   if (str.length < 2) return ''
   // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not
@@ -7757,11 +7589,6 @@ function base64clean (str) {
     str = str + '='
   }
   return str
-}
-
-function stringtrim (str) {
-  if (str.trim) return str.trim()
-  return str.replace(/^\s+|\s+$/g, '')
 }
 
 function toHex (n) {
@@ -7886,19 +7713,16 @@ function blitBuffer (src, dst, offset, length) {
   return i
 }
 
-function isnan (val) {
-  return val !== val // eslint-disable-line no-self-compare
+// Node 0.10 supports `ArrayBuffer` but lacks `ArrayBuffer.isView`
+function isArrayBufferView (obj) {
+  return (typeof ArrayBuffer.isView === 'function') && ArrayBuffer.isView(obj)
 }
 
-}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"base64-js":5,"ieee754":47,"isarray":34}],34:[function(require,module,exports){
-var toString = {}.toString;
+function numberIsNaN (obj) {
+  return obj !== obj // eslint-disable-line no-self-compare
+}
 
-module.exports = Array.isArray || function (arr) {
-  return toString.call(arr) == '[object Array]';
-};
-
-},{}],35:[function(require,module,exports){
+},{"base64-js":4,"ieee754":45}],33:[function(require,module,exports){
 'use strict'
 
 var monotoneTriangulate = require('./lib/monotone')
@@ -7982,7 +7806,7 @@ function cdt2d(points, edges, options) {
   }
 }
 
-},{"./lib/delaunay":36,"./lib/filter":37,"./lib/monotone":38,"./lib/triangulation":39}],36:[function(require,module,exports){
+},{"./lib/delaunay":34,"./lib/filter":35,"./lib/monotone":36,"./lib/triangulation":37}],34:[function(require,module,exports){
 'use strict'
 
 var inCircle = require('robust-in-sphere')[4]
@@ -8099,7 +7923,7 @@ function delaunayRefine(points, triangulation) {
   }
 }
 
-},{"binary-search-bounds":22,"robust-in-sphere":64}],37:[function(require,module,exports){
+},{"binary-search-bounds":21,"robust-in-sphere":61}],35:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8281,7 +8105,7 @@ function classifyFaces(triangulation, target, infinity) {
   return result
 }
 
-},{"binary-search-bounds":22}],38:[function(require,module,exports){
+},{"binary-search-bounds":21}],36:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8470,7 +8294,7 @@ function monotoneTriangulate(points, edges) {
   return cells
 }
 
-},{"binary-search-bounds":22,"robust-orientation":65}],39:[function(require,module,exports){
+},{"binary-search-bounds":21,"robust-orientation":62}],37:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8576,7 +8400,7 @@ function createTriangulation(numVerts, edges) {
   return new Triangulation(stars, edges)
 }
 
-},{"binary-search-bounds":22}],40:[function(require,module,exports){
+},{"binary-search-bounds":21}],38:[function(require,module,exports){
 'use strict'
 
 module.exports = cleanPSLG
@@ -8959,7 +8783,7 @@ function cleanPSLG (points, edges, colors) {
   return modified
 }
 
-},{"./lib/rat-seg-intersect":41,"big-rat":9,"big-rat/cmp":7,"big-rat/to-float":21,"box-intersect":26,"nextafter":53,"rat-vec":61,"robust-segment-intersect":67,"union-find":80}],41:[function(require,module,exports){
+},{"./lib/rat-seg-intersect":39,"big-rat":8,"big-rat/cmp":6,"big-rat/to-float":20,"box-intersect":25,"nextafter":50,"rat-vec":58,"robust-segment-intersect":64,"union-find":76}],39:[function(require,module,exports){
 'use strict'
 
 module.exports = solveIntersection
@@ -9003,7 +8827,7 @@ function solveIntersection (a, b, c, d) {
   return r
 }
 
-},{"big-rat/div":8,"big-rat/mul":18,"big-rat/sign":19,"big-rat/sub":20,"rat-vec/add":60,"rat-vec/muls":62,"rat-vec/sub":63}],42:[function(require,module,exports){
+},{"big-rat/div":7,"big-rat/mul":17,"big-rat/sign":18,"big-rat/sub":19,"rat-vec/add":57,"rat-vec/muls":59,"rat-vec/sub":60}],40:[function(require,module,exports){
 (function (Buffer){
 var hasTypedArrays = false
 if(typeof Float64Array !== "undefined") {
@@ -9107,7 +8931,7 @@ module.exports.denormalized = function(n) {
   return !(hi & 0x7ff00000)
 }
 }).call(this,require("buffer").Buffer)
-},{"buffer":33}],43:[function(require,module,exports){
+},{"buffer":32}],41:[function(require,module,exports){
 "use strict"
 
 function dupe_array(count, value, i) {
@@ -9157,7 +8981,7 @@ function dupe(count, value) {
 }
 
 module.exports = dupe
-},{}],44:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 var parseXml = require('xml-parse-from-string')
 
 function extractSvgPath (svgDoc) {
@@ -9185,7 +9009,7 @@ module.exports.parse = extractSvgPath
 //deprecated
 module.exports.fromString = extractSvgPath
 
-},{"xml-parse-from-string":83}],45:[function(require,module,exports){
+},{"xml-parse-from-string":79}],43:[function(require,module,exports){
 var isFunction = require('is-function')
 
 module.exports = forEach
@@ -9233,7 +9057,7 @@ function forEachObject(object, iterator, context) {
     }
 }
 
-},{"is-function":49}],46:[function(require,module,exports){
+},{"is-function":46}],44:[function(require,module,exports){
 (function (global){
 var win;
 
@@ -9250,7 +9074,7 @@ if (typeof window !== "undefined") {
 module.exports = win;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],47:[function(require,module,exports){
+},{}],45:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = nBytes * 8 - mLen - 1
@@ -9336,32 +9160,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],48:[function(require,module,exports){
-if (typeof Object.create === 'function') {
-  // implementation from standard node.js 'util' module
-  module.exports = function inherits(ctor, superCtor) {
-    ctor.super_ = superCtor
-    ctor.prototype = Object.create(superCtor.prototype, {
-      constructor: {
-        value: ctor,
-        enumerable: false,
-        writable: true,
-        configurable: true
-      }
-    });
-  };
-} else {
-  // old school shim for old browsers
-  module.exports = function inherits(ctor, superCtor) {
-    ctor.super_ = superCtor
-    var TempCtor = function () {}
-    TempCtor.prototype = superCtor.prototype
-    ctor.prototype = new TempCtor()
-    ctor.prototype.constructor = ctor
-  }
-}
-
-},{}],49:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 module.exports = isFunction
 
 var toString = Object.prototype.toString
@@ -9378,7 +9177,7 @@ function isFunction (fn) {
       fn === window.prompt))
 };
 
-},{}],50:[function(require,module,exports){
+},{}],47:[function(require,module,exports){
 var xhr = require('xhr');
 
 module.exports = function (opts, cb) {
@@ -9397,7 +9196,7 @@ module.exports = function (opts, cb) {
     });
 };
 
-},{"xhr":52}],51:[function(require,module,exports){
+},{"xhr":49}],48:[function(require,module,exports){
 module.exports = once
 
 once.proto = once(function () {
@@ -9418,7 +9217,7 @@ function once (fn) {
   }
 }
 
-},{}],52:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 var window = require("global/window")
 var once = require("once")
 var parseHeaders = require('parse-headers')
@@ -9597,7 +9396,7 @@ function createXHR(options, callback) {
 
 function noop() {}
 
-},{"global/window":46,"once":51,"parse-headers":57}],53:[function(require,module,exports){
+},{"global/window":44,"once":48,"parse-headers":54}],50:[function(require,module,exports){
 "use strict"
 
 var doubleBits = require("double-bits")
@@ -9640,7 +9439,7 @@ function nextafter(x, y) {
   }
   return doubleBits.pack(lo, hi)
 }
-},{"double-bits":42}],54:[function(require,module,exports){
+},{"double-bits":40}],51:[function(require,module,exports){
 var getBounds = require('bound-points')
 var unlerp = require('unlerp')
 
@@ -9673,7 +9472,7 @@ function normalizePathScale (positions, bounds) {
   }
   return positions
 }
-},{"bound-points":25,"unlerp":81}],55:[function(require,module,exports){
+},{"bound-points":24,"unlerp":77}],52:[function(require,module,exports){
 
 var π = Math.PI
 var _120 = radians(120)
@@ -9875,7 +9674,7 @@ function radians(degress){
 	return degress * (π / 180)
 }
 
-},{}],56:[function(require,module,exports){
+},{}],53:[function(require,module,exports){
 /*
 object-assign
 (c) Sindre Sorhus
@@ -9967,7 +9766,7 @@ module.exports = shouldUseNative() ? Object.assign : function (target, source) {
 	return to;
 };
 
-},{}],57:[function(require,module,exports){
+},{}],54:[function(require,module,exports){
 var trim = require('trim')
   , forEach = require('for-each')
   , isArray = function(arg) {
@@ -9999,7 +9798,7 @@ module.exports = function (headers) {
 
   return result
 }
-},{"for-each":45,"trim":76}],58:[function(require,module,exports){
+},{"for-each":43,"trim":72}],55:[function(require,module,exports){
 
 module.exports = parse
 
@@ -10058,7 +9857,7 @@ function parseValues(args) {
 	return numbers ? numbers.map(Number) : []
 }
 
-},{}],59:[function(require,module,exports){
+},{}],56:[function(require,module,exports){
 'use strict';
 module.exports = function (min, max) {
 	if (max === undefined) {
@@ -10073,7 +9872,7 @@ module.exports = function (min, max) {
 	return Math.random() * (max - min) + min;
 };
 
-},{}],60:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 'use strict'
 
 var bnadd = require('big-rat/add')
@@ -10089,7 +9888,7 @@ function add (a, b) {
   return r
 }
 
-},{"big-rat/add":6}],61:[function(require,module,exports){
+},{"big-rat/add":5}],58:[function(require,module,exports){
 'use strict'
 
 module.exports = float2rat
@@ -10104,7 +9903,7 @@ function float2rat(v) {
   return result
 }
 
-},{"big-rat":9}],62:[function(require,module,exports){
+},{"big-rat":8}],59:[function(require,module,exports){
 'use strict'
 
 var rat = require('big-rat')
@@ -10122,7 +9921,7 @@ function muls(a, x) {
   return r
 }
 
-},{"big-rat":9,"big-rat/mul":18}],63:[function(require,module,exports){
+},{"big-rat":8,"big-rat/mul":17}],60:[function(require,module,exports){
 'use strict'
 
 var bnsub = require('big-rat/sub')
@@ -10138,7 +9937,7 @@ function sub(a, b) {
   return r
 }
 
-},{"big-rat/sub":20}],64:[function(require,module,exports){
+},{"big-rat/sub":19}],61:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -10306,7 +10105,7 @@ function generateInSphereTest() {
 }
 
 generateInSphereTest()
-},{"robust-scale":66,"robust-subtract":68,"robust-sum":69,"two-product":77}],65:[function(require,module,exports){
+},{"robust-scale":63,"robust-subtract":65,"robust-sum":66,"two-product":73}],62:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -10497,7 +10296,7 @@ function generateOrientationProc() {
 }
 
 generateOrientationProc()
-},{"robust-scale":66,"robust-subtract":68,"robust-sum":69,"two-product":77}],66:[function(require,module,exports){
+},{"robust-scale":63,"robust-subtract":65,"robust-sum":66,"two-product":73}],63:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -10548,7 +10347,7 @@ function scaleLinearExpansion(e, scale) {
   g.length = count
   return g
 }
-},{"two-product":77,"two-sum":78}],67:[function(require,module,exports){
+},{"two-product":73,"two-sum":74}],64:[function(require,module,exports){
 "use strict"
 
 module.exports = segmentsIntersect
@@ -10596,7 +10395,7 @@ function segmentsIntersect(a0, a1, b0, b1) {
 
   return true
 }
-},{"robust-orientation":65}],68:[function(require,module,exports){
+},{"robust-orientation":62}],65:[function(require,module,exports){
 "use strict"
 
 module.exports = robustSubtract
@@ -10753,7 +10552,7 @@ function robustSubtract(e, f) {
   g.length = count
   return g
 }
-},{}],69:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
 "use strict"
 
 module.exports = linearExpansionSum
@@ -10910,7 +10709,7 @@ function linearExpansionSum(e, f) {
   g.length = count
   return g
 }
-},{}],70:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 // square distance from a point to a segment
 function getSqSegDist(p, p1, p2) {
     var x = p1[0],
@@ -10974,7 +10773,7 @@ module.exports = function simplifyDouglasPeucker(points, tolerance) {
     return simplified;
 }
 
-},{}],71:[function(require,module,exports){
+},{}],68:[function(require,module,exports){
 var simplifyRadialDist = require('./radial-distance')
 var simplifyDouglasPeucker = require('./douglas-peucker')
 
@@ -10987,7 +10786,7 @@ module.exports = function simplify(points, tolerance) {
 
 module.exports.radialDistance = simplifyRadialDist;
 module.exports.douglasPeucker = simplifyDouglasPeucker;
-},{"./douglas-peucker":70,"./radial-distance":72}],72:[function(require,module,exports){
+},{"./douglas-peucker":67,"./radial-distance":69}],69:[function(require,module,exports){
 function getSqDist(p1, p2) {
     var dx = p1[0] - p2[0],
         dy = p1[1] - p2[1];
@@ -11019,7 +10818,7 @@ module.exports = function simplifyRadialDist(points, tolerance) {
 
     return newPoints;
 }
-},{}],73:[function(require,module,exports){
+},{}],70:[function(require,module,exports){
 var parseSVG = require('parse-svg-path')
 var getContours = require('svg-path-contours')
 var cdt2d = require('cdt2d')
@@ -11145,7 +10944,7 @@ function denestPolyline (nested) {
   }
 }
 
-},{"bound-points":25,"cdt2d":35,"clean-pslg":40,"normalize-path-scale":54,"object-assign":56,"parse-svg-path":58,"random-float":59,"simplify-path":71,"svg-path-contours":74}],74:[function(require,module,exports){
+},{"bound-points":24,"cdt2d":33,"clean-pslg":38,"normalize-path-scale":51,"object-assign":53,"parse-svg-path":55,"random-float":56,"simplify-path":68,"svg-path-contours":71}],71:[function(require,module,exports){
 var bezier = require('adaptive-bezier-curve')
 var abs = require('abs-svg-path')
 var norm = require('normalize-svg-path')
@@ -11191,61 +10990,7 @@ module.exports = function contours(svg, scale) {
         paths.push(points)
     return paths
 }
-},{"abs-svg-path":2,"adaptive-bezier-curve":4,"normalize-svg-path":55,"vec2-copy":82}],75:[function(require,module,exports){
-var inherits = require('inherits')
-
-module.exports = function(THREE) {
-
-    function Complex(mesh) {
-        if (!(this instanceof Complex))
-            return new Complex(mesh)
-        THREE.Geometry.call(this)
-        this.dynamic = true
-
-        if (mesh)
-            this.update(mesh)
-    }
-
-    inherits(Complex, THREE.Geometry)
-
-    //may expose these in next version
-    Complex.prototype._updatePositions = function(positions) {
-        for (var i=0; i<positions.length; i++) {
-            var pos = positions[i]
-            if (i > this.vertices.length-1)
-                this.vertices.push(new THREE.Vector3().fromArray(pos))
-            else 
-                this.vertices[i].fromArray(pos)
-        }
-        this.vertices.length = positions.length
-        this.verticesNeedUpdate = true
-    }
-
-    Complex.prototype._updateCells = function(cells) {
-        for (var i=0; i<cells.length; i++) {
-            var face = cells[i]
-            if (i > this.faces.length-1)
-                this.faces.push(new THREE.Face3(face[0], face[1], face[2]))
-            else {
-                var tf = this.faces[i]
-                tf.a = face[0]
-                tf.b = face[1]
-                tf.c = face[2]
-            }
-        }
-
-        this.faces.length = cells.length
-        this.elementsNeedUpdate = true
-    }
-
-    Complex.prototype.update = function(mesh) {
-        this._updatePositions(mesh.positions)
-        this._updateCells(mesh.cells)
-    }
-
-    return Complex
-}
-},{"inherits":48}],76:[function(require,module,exports){
+},{"abs-svg-path":1,"adaptive-bezier-curve":3,"normalize-svg-path":52,"vec2-copy":78}],72:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -11261,7 +11006,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],77:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
 "use strict"
 
 module.exports = twoProduct
@@ -11295,7 +11040,7 @@ function twoProduct(a, b, result) {
 
   return [ y, x ]
 }
-},{}],78:[function(require,module,exports){
+},{}],74:[function(require,module,exports){
 "use strict"
 
 module.exports = fastTwoSum
@@ -11313,7 +11058,7 @@ function fastTwoSum(a, b, result) {
 	}
 	return [ar+br, x]
 }
-},{}],79:[function(require,module,exports){
+},{}],75:[function(require,module,exports){
 (function (global,Buffer){
 'use strict'
 
@@ -11530,7 +11275,7 @@ exports.clearCache = function clearCache() {
   }
 }
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"bit-twiddle":23,"buffer":33,"dup":43}],80:[function(require,module,exports){
+},{"bit-twiddle":22,"buffer":32,"dup":41}],76:[function(require,module,exports){
 "use strict"; "use restrict";
 
 module.exports = UnionFind;
@@ -11593,31 +11338,31 @@ proto.link = function(x, y) {
     ++ranks[xr];
   }
 }
-},{}],81:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
 module.exports = function range(min, max, value) {
   return (value - min) / (max - min)
 }
-},{}],82:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 module.exports = function vec2Copy(out, a) {
     out[0] = a[0]
     out[1] = a[1]
     return out
 }
-},{}],83:[function(require,module,exports){
+},{}],79:[function(require,module,exports){
 module.exports = (function xmlparser() {
   //common browsers
-  if (typeof self.DOMParser !== 'undefined') {
+  if (typeof window.DOMParser !== 'undefined') {
     return function(str) {
-      var parser = new self.DOMParser()
+      var parser = new window.DOMParser()
       return parser.parseFromString(str, 'application/xml')
     }
   } 
 
   //IE8 fallback
-  if (typeof self.ActiveXObject !== 'undefined'
-      && new self.ActiveXObject('Microsoft.XMLDOM')) {
+  if (typeof window.ActiveXObject !== 'undefined'
+      && new window.ActiveXObject('Microsoft.XMLDOM')) {
     return function(str) {
-      var xmlDoc = new self.ActiveXObject("Microsoft.XMLDOM")
+      var xmlDoc = new window.ActiveXObject("Microsoft.XMLDOM")
       xmlDoc.async = "false"
       xmlDoc.loadXML(str)
       return xmlDoc
@@ -11631,5 +11376,182 @@ module.exports = (function xmlparser() {
     return div
   }
 })()
+},{}],80:[function(require,module,exports){
+// js import vs require
+var parse = require('parse-svg-path');
+var extract = require('extract-svg-path').parse;
+var load = require('load-svg');
 
-},{}]},{},[1]);
+var createGeometry = require('three-simplicial-complex')(THREE);
+var svgMesh3d = require('svg-mesh-3d');
+
+/* global AFRAME */
+
+if (typeof AFRAME === 'undefined') {
+  throw new Error('Component attempted to register before AFRAME was available.');
+}
+
+/**
+ * Svgpath component for A-Frame.
+ */
+AFRAME.registerComponent('svgfile', {
+  schema: {
+    color: {type: 'color', default: '#c23d3e'},
+    svgFile: {type: 'string', default: ''}
+  },
+
+  /**
+   * Set if component needs multiple instancing.
+   */
+  multiple: true,
+
+  /**
+   * Called once when component is attached. Generally for initial setup.
+   */
+  init: function () {
+    var data = this.data;
+    var el = this.el;
+    var meshData;
+
+      load(data.svgFile, function(err, svg) {
+        meshData = svgMesh3d(extractSVGPaths(svg), {
+          delaunay: true,
+          clean: true,
+          exterior: false,
+          randomization: 0,
+          simplify: 0,
+          scale: 1
+        });
+        this.geometry = createGeometry(meshData);
+        this.material = new THREE.MeshStandardMaterial({ color: data.color, side: THREE.DoubleSide });// Create material.
+        this.mesh = new THREE.Mesh(this.geometry, this.material);// Create mesh.
+        el.setObject3D('mesh', this.mesh);// Set mesh on entity.
+      });
+    
+  },
+
+  extractSVGPaths: function(svgDoc) {
+    // concat all the <path> elements to form an SVG path string
+    if (typeof svgDoc === 'string') {
+      svgDoc = new DOMParser.parseFromString(svgDoc,"text/xml");
+    }
+    if (!svgDoc || typeof svgDoc.getElementsByTagName !== 'function') {
+      throw new Error('could not get an XML document from the specified SVG contents');
+    }
+
+    var paths = Array.prototype.slice.call(svgDoc.getElementsByTagName('path'));
+    return paths.map(function (path) {
+      return path.getAttribute('d').replace(/\s+/g, ' ').trim();
+    });
+  },
+
+  /**
+   * Called when component is attached and when component data changes.
+   * Generally modifies the entity based on the data.
+   */
+  update: function (oldData) { },
+
+  /**
+   * Called when a component is removed (e.g., via removeAttribute).
+   * Generally undoes all modifications to the entity.
+   */
+  remove: function () { },
+
+  /**
+   * Called on each scene tick.
+   */
+  // tick: function (t) { },
+
+  /**
+   * Called when entity pauses.
+   * Use to stop or remove any dynamic or background behavior such as events.
+   */
+  pause: function () { },
+
+  /**
+   * Called when entity resumes.
+   * Use to continue or add any dynamic or background behavior such as events.
+   */
+  play: function () { }
+});
+
+},{"extract-svg-path":42,"load-svg":47,"parse-svg-path":55,"svg-mesh-3d":70,"three-simplicial-complex":82}],81:[function(require,module,exports){
+if (typeof Object.create === 'function') {
+  // implementation from standard node.js 'util' module
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    ctor.prototype = Object.create(superCtor.prototype, {
+      constructor: {
+        value: ctor,
+        enumerable: false,
+        writable: true,
+        configurable: true
+      }
+    });
+  };
+} else {
+  // old school shim for old browsers
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    var TempCtor = function () {}
+    TempCtor.prototype = superCtor.prototype
+    ctor.prototype = new TempCtor()
+    ctor.prototype.constructor = ctor
+  }
+}
+
+},{}],82:[function(require,module,exports){
+var inherits = require('inherits')
+
+module.exports = function(THREE) {
+
+    function Complex(mesh) {
+        if (!(this instanceof Complex))
+            return new Complex(mesh)
+        THREE.Geometry.call(this)
+        this.dynamic = true
+
+        if (mesh)
+            this.update(mesh)
+    }
+
+    inherits(Complex, THREE.Geometry)
+
+    //may expose these in next version
+    Complex.prototype._updatePositions = function(positions) {
+        for (var i=0; i<positions.length; i++) {
+            var pos = positions[i]
+            if (i > this.vertices.length-1)
+                this.vertices.push(new THREE.Vector3().fromArray(pos))
+            else 
+                this.vertices[i].fromArray(pos)
+        }
+        this.vertices.length = positions.length
+        this.verticesNeedUpdate = true
+    }
+
+    Complex.prototype._updateCells = function(cells) {
+        for (var i=0; i<cells.length; i++) {
+            var face = cells[i]
+            if (i > this.faces.length-1)
+                this.faces.push(new THREE.Face3(face[0], face[1], face[2]))
+            else {
+                var tf = this.faces[i]
+                tf.a = face[0]
+                tf.b = face[1]
+                tf.c = face[2]
+            }
+        }
+
+        this.faces.length = cells.length
+        this.elementsNeedUpdate = true
+    }
+
+    Complex.prototype.update = function(mesh) {
+        this._updatePositions(mesh.positions)
+        this._updateCells(mesh.cells)
+    }
+
+    return Complex
+}
+},{"inherits":81}]},{},[80]);

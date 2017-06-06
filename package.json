@@ -21,7 +21,7 @@
     "webvr",
     "svgpath",
     "svgfile",
-	"aframe-svgfile-component"
+    "aframe-svgfile-component"
   ],
   "author": "info@7dir.ru",
   "license": "MIT",
