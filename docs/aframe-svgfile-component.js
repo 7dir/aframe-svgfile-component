@@ -4538,7 +4538,7 @@ function boxIntersectWrapper(arg0, arg1, arg2) {
       throw new Error('box-intersect: Invalid arguments')
   }
 }
-},{"./lib/intersect":27,"./lib/sweep":31,"typedarray-pool":75}],26:[function(require,module,exports){
+},{"./lib/intersect":27,"./lib/sweep":31,"typedarray-pool":74}],26:[function(require,module,exports){
 'use strict'
 
 var DIMENSION   = 'd'
@@ -5178,7 +5178,7 @@ function boxIntersectIter(
     }
   }
 }
-},{"./brute":26,"./median":28,"./partition":29,"./sweep":31,"bit-twiddle":22,"typedarray-pool":75}],28:[function(require,module,exports){
+},{"./brute":26,"./median":28,"./partition":29,"./sweep":31,"bit-twiddle":22,"typedarray-pool":74}],28:[function(require,module,exports){
 'use strict'
 
 module.exports = findMedian
@@ -6014,7 +6014,7 @@ red_loop:
     }
   }
 }
-},{"./sort":30,"bit-twiddle":22,"typedarray-pool":75}],32:[function(require,module,exports){
+},{"./sort":30,"bit-twiddle":22,"typedarray-pool":74}],32:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -7722,7 +7722,7 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-},{"base64-js":4,"ieee754":45}],33:[function(require,module,exports){
+},{"base64-js":4,"ieee754":44}],33:[function(require,module,exports){
 'use strict'
 
 var monotoneTriangulate = require('./lib/monotone')
@@ -7923,7 +7923,7 @@ function delaunayRefine(points, triangulation) {
   }
 }
 
-},{"binary-search-bounds":21,"robust-in-sphere":61}],35:[function(require,module,exports){
+},{"binary-search-bounds":21,"robust-in-sphere":60}],35:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8294,7 +8294,7 @@ function monotoneTriangulate(points, edges) {
   return cells
 }
 
-},{"binary-search-bounds":21,"robust-orientation":62}],37:[function(require,module,exports){
+},{"binary-search-bounds":21,"robust-orientation":61}],37:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8783,7 +8783,7 @@ function cleanPSLG (points, edges, colors) {
   return modified
 }
 
-},{"./lib/rat-seg-intersect":39,"big-rat":8,"big-rat/cmp":6,"big-rat/to-float":20,"box-intersect":25,"nextafter":50,"rat-vec":58,"robust-segment-intersect":64,"union-find":76}],39:[function(require,module,exports){
+},{"./lib/rat-seg-intersect":39,"big-rat":8,"big-rat/cmp":6,"big-rat/to-float":20,"box-intersect":25,"nextafter":49,"rat-vec":57,"robust-segment-intersect":63,"union-find":75}],39:[function(require,module,exports){
 'use strict'
 
 module.exports = solveIntersection
@@ -8827,7 +8827,7 @@ function solveIntersection (a, b, c, d) {
   return r
 }
 
-},{"big-rat/div":7,"big-rat/mul":17,"big-rat/sign":18,"big-rat/sub":19,"rat-vec/add":57,"rat-vec/muls":59,"rat-vec/sub":60}],40:[function(require,module,exports){
+},{"big-rat/div":7,"big-rat/mul":17,"big-rat/sign":18,"big-rat/sub":19,"rat-vec/add":56,"rat-vec/muls":58,"rat-vec/sub":59}],40:[function(require,module,exports){
 (function (Buffer){
 var hasTypedArrays = false
 if(typeof Float64Array !== "undefined") {
@@ -8982,34 +8982,6 @@ function dupe(count, value) {
 
 module.exports = dupe
 },{}],42:[function(require,module,exports){
-var parseXml = require('xml-parse-from-string')
-
-function extractSvgPath (svgDoc) {
-  // concat all the <path> elements to form an SVG path string
-  if (typeof svgDoc === 'string') {
-    svgDoc = parseXml(svgDoc)
-  }
-  if (!svgDoc || typeof svgDoc.getElementsByTagName !== 'function') {
-    throw new Error('could not get an XML document from the specified SVG contents')
-  }
-
-  var paths = Array.prototype.slice.call(svgDoc.getElementsByTagName('path'))
-  return paths.reduce(function (prev, path) {
-    var d = path.getAttribute('d') || ''
-    return prev + ' ' + d.replace(/\s+/g, ' ').trim()
-  }, '').trim()
-}
-
-module.exports = function () {
-  throw new Error('use extract-svg-path/transform to inline SVG contents into your bundle')
-}
-
-module.exports.parse = extractSvgPath
-
-//deprecated
-module.exports.fromString = extractSvgPath
-
-},{"xml-parse-from-string":79}],43:[function(require,module,exports){
 var isFunction = require('is-function')
 
 module.exports = forEach
@@ -9057,7 +9029,7 @@ function forEachObject(object, iterator, context) {
     }
 }
 
-},{"is-function":46}],44:[function(require,module,exports){
+},{"is-function":45}],43:[function(require,module,exports){
 (function (global){
 var win;
 
@@ -9074,7 +9046,7 @@ if (typeof window !== "undefined") {
 module.exports = win;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],45:[function(require,module,exports){
+},{}],44:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = nBytes * 8 - mLen - 1
@@ -9160,7 +9132,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],46:[function(require,module,exports){
+},{}],45:[function(require,module,exports){
 module.exports = isFunction
 
 var toString = Object.prototype.toString
@@ -9177,7 +9149,7 @@ function isFunction (fn) {
       fn === window.prompt))
 };
 
-},{}],47:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 var xhr = require('xhr');
 
 module.exports = function (opts, cb) {
@@ -9196,7 +9168,7 @@ module.exports = function (opts, cb) {
     });
 };
 
-},{"xhr":49}],48:[function(require,module,exports){
+},{"xhr":48}],47:[function(require,module,exports){
 module.exports = once
 
 once.proto = once(function () {
@@ -9217,7 +9189,7 @@ function once (fn) {
   }
 }
 
-},{}],49:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 var window = require("global/window")
 var once = require("once")
 var parseHeaders = require('parse-headers')
@@ -9396,7 +9368,7 @@ function createXHR(options, callback) {
 
 function noop() {}
 
-},{"global/window":44,"once":48,"parse-headers":54}],50:[function(require,module,exports){
+},{"global/window":43,"once":47,"parse-headers":53}],49:[function(require,module,exports){
 "use strict"
 
 var doubleBits = require("double-bits")
@@ -9439,7 +9411,7 @@ function nextafter(x, y) {
   }
   return doubleBits.pack(lo, hi)
 }
-},{"double-bits":40}],51:[function(require,module,exports){
+},{"double-bits":40}],50:[function(require,module,exports){
 var getBounds = require('bound-points')
 var unlerp = require('unlerp')
 
@@ -9472,7 +9444,7 @@ function normalizePathScale (positions, bounds) {
   }
   return positions
 }
-},{"bound-points":24,"unlerp":77}],52:[function(require,module,exports){
+},{"bound-points":24,"unlerp":76}],51:[function(require,module,exports){
 
 var π = Math.PI
 var _120 = radians(120)
@@ -9674,7 +9646,7 @@ function radians(degress){
 	return degress * (π / 180)
 }
 
-},{}],53:[function(require,module,exports){
+},{}],52:[function(require,module,exports){
 /*
 object-assign
 (c) Sindre Sorhus
@@ -9766,7 +9738,7 @@ module.exports = shouldUseNative() ? Object.assign : function (target, source) {
 	return to;
 };
 
-},{}],54:[function(require,module,exports){
+},{}],53:[function(require,module,exports){
 var trim = require('trim')
   , forEach = require('for-each')
   , isArray = function(arg) {
@@ -9798,7 +9770,7 @@ module.exports = function (headers) {
 
   return result
 }
-},{"for-each":43,"trim":72}],55:[function(require,module,exports){
+},{"for-each":42,"trim":71}],54:[function(require,module,exports){
 
 module.exports = parse
 
@@ -9857,7 +9829,7 @@ function parseValues(args) {
 	return numbers ? numbers.map(Number) : []
 }
 
-},{}],56:[function(require,module,exports){
+},{}],55:[function(require,module,exports){
 'use strict';
 module.exports = function (min, max) {
 	if (max === undefined) {
@@ -9872,7 +9844,7 @@ module.exports = function (min, max) {
 	return Math.random() * (max - min) + min;
 };
 
-},{}],57:[function(require,module,exports){
+},{}],56:[function(require,module,exports){
 'use strict'
 
 var bnadd = require('big-rat/add')
@@ -9888,7 +9860,7 @@ function add (a, b) {
   return r
 }
 
-},{"big-rat/add":5}],58:[function(require,module,exports){
+},{"big-rat/add":5}],57:[function(require,module,exports){
 'use strict'
 
 module.exports = float2rat
@@ -9903,7 +9875,7 @@ function float2rat(v) {
   return result
 }
 
-},{"big-rat":8}],59:[function(require,module,exports){
+},{"big-rat":8}],58:[function(require,module,exports){
 'use strict'
 
 var rat = require('big-rat')
@@ -9921,7 +9893,7 @@ function muls(a, x) {
   return r
 }
 
-},{"big-rat":8,"big-rat/mul":17}],60:[function(require,module,exports){
+},{"big-rat":8,"big-rat/mul":17}],59:[function(require,module,exports){
 'use strict'
 
 var bnsub = require('big-rat/sub')
@@ -9937,7 +9909,7 @@ function sub(a, b) {
   return r
 }
 
-},{"big-rat/sub":19}],61:[function(require,module,exports){
+},{"big-rat/sub":19}],60:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -10105,7 +10077,7 @@ function generateInSphereTest() {
 }
 
 generateInSphereTest()
-},{"robust-scale":63,"robust-subtract":65,"robust-sum":66,"two-product":73}],62:[function(require,module,exports){
+},{"robust-scale":62,"robust-subtract":64,"robust-sum":65,"two-product":72}],61:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -10296,7 +10268,7 @@ function generateOrientationProc() {
 }
 
 generateOrientationProc()
-},{"robust-scale":63,"robust-subtract":65,"robust-sum":66,"two-product":73}],63:[function(require,module,exports){
+},{"robust-scale":62,"robust-subtract":64,"robust-sum":65,"two-product":72}],62:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -10347,7 +10319,7 @@ function scaleLinearExpansion(e, scale) {
   g.length = count
   return g
 }
-},{"two-product":73,"two-sum":74}],64:[function(require,module,exports){
+},{"two-product":72,"two-sum":73}],63:[function(require,module,exports){
 "use strict"
 
 module.exports = segmentsIntersect
@@ -10395,7 +10367,7 @@ function segmentsIntersect(a0, a1, b0, b1) {
 
   return true
 }
-},{"robust-orientation":62}],65:[function(require,module,exports){
+},{"robust-orientation":61}],64:[function(require,module,exports){
 "use strict"
 
 module.exports = robustSubtract
@@ -10552,7 +10524,7 @@ function robustSubtract(e, f) {
   g.length = count
   return g
 }
-},{}],66:[function(require,module,exports){
+},{}],65:[function(require,module,exports){
 "use strict"
 
 module.exports = linearExpansionSum
@@ -10709,7 +10681,7 @@ function linearExpansionSum(e, f) {
   g.length = count
   return g
 }
-},{}],67:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
 // square distance from a point to a segment
 function getSqSegDist(p, p1, p2) {
     var x = p1[0],
@@ -10773,7 +10745,7 @@ module.exports = function simplifyDouglasPeucker(points, tolerance) {
     return simplified;
 }
 
-},{}],68:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 var simplifyRadialDist = require('./radial-distance')
 var simplifyDouglasPeucker = require('./douglas-peucker')
 
@@ -10786,7 +10758,7 @@ module.exports = function simplify(points, tolerance) {
 
 module.exports.radialDistance = simplifyRadialDist;
 module.exports.douglasPeucker = simplifyDouglasPeucker;
-},{"./douglas-peucker":67,"./radial-distance":69}],69:[function(require,module,exports){
+},{"./douglas-peucker":66,"./radial-distance":68}],68:[function(require,module,exports){
 function getSqDist(p1, p2) {
     var dx = p1[0] - p2[0],
         dy = p1[1] - p2[1];
@@ -10818,7 +10790,7 @@ module.exports = function simplifyRadialDist(points, tolerance) {
 
     return newPoints;
 }
-},{}],70:[function(require,module,exports){
+},{}],69:[function(require,module,exports){
 var parseSVG = require('parse-svg-path')
 var getContours = require('svg-path-contours')
 var cdt2d = require('cdt2d')
@@ -10944,7 +10916,7 @@ function denestPolyline (nested) {
   }
 }
 
-},{"bound-points":24,"cdt2d":33,"clean-pslg":38,"normalize-path-scale":51,"object-assign":53,"parse-svg-path":55,"random-float":56,"simplify-path":68,"svg-path-contours":71}],71:[function(require,module,exports){
+},{"bound-points":24,"cdt2d":33,"clean-pslg":38,"normalize-path-scale":50,"object-assign":52,"parse-svg-path":54,"random-float":55,"simplify-path":67,"svg-path-contours":70}],70:[function(require,module,exports){
 var bezier = require('adaptive-bezier-curve')
 var abs = require('abs-svg-path')
 var norm = require('normalize-svg-path')
@@ -10990,7 +10962,7 @@ module.exports = function contours(svg, scale) {
         paths.push(points)
     return paths
 }
-},{"abs-svg-path":1,"adaptive-bezier-curve":3,"normalize-svg-path":52,"vec2-copy":78}],72:[function(require,module,exports){
+},{"abs-svg-path":1,"adaptive-bezier-curve":3,"normalize-svg-path":51,"vec2-copy":77}],71:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -11006,7 +10978,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],73:[function(require,module,exports){
+},{}],72:[function(require,module,exports){
 "use strict"
 
 module.exports = twoProduct
@@ -11040,7 +11012,7 @@ function twoProduct(a, b, result) {
 
   return [ y, x ]
 }
-},{}],74:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
 "use strict"
 
 module.exports = fastTwoSum
@@ -11058,7 +11030,7 @@ function fastTwoSum(a, b, result) {
 	}
 	return [ar+br, x]
 }
-},{}],75:[function(require,module,exports){
+},{}],74:[function(require,module,exports){
 (function (global,Buffer){
 'use strict'
 
@@ -11275,7 +11247,7 @@ exports.clearCache = function clearCache() {
   }
 }
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"bit-twiddle":22,"buffer":32,"dup":41}],76:[function(require,module,exports){
+},{"bit-twiddle":22,"buffer":32,"dup":41}],75:[function(require,module,exports){
 "use strict"; "use restrict";
 
 module.exports = UnionFind;
@@ -11338,48 +11310,18 @@ proto.link = function(x, y) {
     ++ranks[xr];
   }
 }
-},{}],77:[function(require,module,exports){
+},{}],76:[function(require,module,exports){
 module.exports = function range(min, max, value) {
   return (value - min) / (max - min)
 }
-},{}],78:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
 module.exports = function vec2Copy(out, a) {
     out[0] = a[0]
     out[1] = a[1]
     return out
 }
-},{}],79:[function(require,module,exports){
-module.exports = (function xmlparser() {
-  //common browsers
-  if (typeof window.DOMParser !== 'undefined') {
-    return function(str) {
-      var parser = new window.DOMParser()
-      return parser.parseFromString(str, 'application/xml')
-    }
-  } 
-
-  //IE8 fallback
-  if (typeof window.ActiveXObject !== 'undefined'
-      && new window.ActiveXObject('Microsoft.XMLDOM')) {
-    return function(str) {
-      var xmlDoc = new window.ActiveXObject("Microsoft.XMLDOM")
-      xmlDoc.async = "false"
-      xmlDoc.loadXML(str)
-      return xmlDoc
-    }
-  }
-
-  //last resort fallback
-  return function(str) {
-    var div = document.createElement('div')
-    div.innerHTML = str
-    return div
-  }
-})()
-},{}],80:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 // js import vs require
-var parse = require('parse-svg-path');
-var extract = require('extract-svg-path').parse;
 var load = require('load-svg');
 
 var createGeometry = require('three-simplicial-complex')(THREE);
@@ -11397,7 +11339,10 @@ if (typeof AFRAME === 'undefined') {
 AFRAME.registerComponent('svgfile', {
   schema: {
     color: {type: 'color', default: '#c23d3e'},
-    svgFile: {type: 'string', default: ''}
+    svgFile: {type: 'string', default: ''},
+    width: { type: 'number', default: NaN},
+    height: { type: 'number', default: NaN},
+    debug: {type: 'boolean', default: false} // Set to True to see wireframe
   },
 
   /**
@@ -11410,40 +11355,91 @@ AFRAME.registerComponent('svgfile', {
    */
   init: function () {
     var data = this.data;
+    var svgfileComponent = this;
     var el = this.el;
     var meshData;
 
       load(data.svgFile, function(err, svg) {
-        meshData = svgMesh3d(extractSVGPaths(svg), {
-          delaunay: true,
-          clean: true,
-          exterior: false,
-          randomization: 0,
-          simplify: 0,
-          scale: 1
-        });
-        this.geometry = createGeometry(meshData);
-        this.material = new THREE.MeshStandardMaterial({ color: data.color, side: THREE.DoubleSide });// Create material.
-        this.mesh = new THREE.Mesh(this.geometry, this.material);// Create mesh.
-        el.setObject3D('mesh', this.mesh);// Set mesh on entity.
+
+        function extractSVGPaths(svgDoc) {
+            // concat all the <path> elements to form an SVG path string
+            if (typeof svgDoc === 'string') {
+            svgDoc = new DOMParser.parseFromString(svgDoc,"text/xml");
+            }
+            if (!svgDoc || typeof svgDoc.getElementsByTagName !== 'function') {
+            throw new Error('could not get an XML document from the specified SVG contents');
+            }
+
+            if (svgDoc.getElementsByTagName('circle').length>0) console.warn("Only SVG <path>'s are supported; ignoring <circle> items");
+            if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
+            if (svgDoc.getElementsByTagName('ellipse').length>0) console.warn("Only SVG <path>'s are supported; ignoring <ellipse> items");
+            if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
+            if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
+            if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
+            if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
+
+            var paths = Array.prototype.slice.call(svgDoc.getElementsByTagName('path'));
+            return paths.map(function (path) {
+              return path.getAttribute('d').replace(/\s+/g, ' ').trim();
+            });
+        }
+        var material = new THREE.MeshStandardMaterial({ wireframe: data.debug, color: data.color, side: THREE.DoubleSide });// Create material.
+        var allPaths = extractSVGPaths(svg);
+
+        // Find the image bounds, in SVG coordinate space
+        var mins = [Infinity,Infinity,Infinity]; 
+        var maxs = [-Infinity, -Infinity, -Infinity];
+
+        for (var ii=0; ii<allPaths.length; ii++){
+            meshData = svgMesh3d(allPaths[ii], {
+              delaunay: true,
+              clean: true,
+              exterior: false,
+              randomization: 0,
+              normalize:false,
+              simplify: 1,
+              scale: 0
+            });
+            var geometry = createGeometry(meshData);
+            for (var p in meshData.positions) {
+              for (var k=0;k<=2; k++) {
+                mins[k] = Math.min(mins[k], meshData.positions[p][k]);
+                maxs[k] = Math.max(maxs[k], meshData.positions[p][k]);
+              }
+            }
+            //this.material = new THREE.MeshStandardMaterial({ color: data.color, side: THREE.DoubleSide });// Create material.
+            var mesh = new THREE.Mesh(geometry, material);// Create mesh.
+            el.setObject3D('mesh'+ii, mesh);// Set mesh on entity.
+        } // foreach path
+
+        // Rescale geometry into AFrame units:
+        // get image size in SVG units
+        var width = maxs[0]-mins[0]; 
+        var height = maxs[1]-mins[1]; 
+        var aspectRatio = width/height;
+
+        // Set Width or Height of AFrame entity if either width: or height: is specified by the user
+        if (!isNaN(data.width) &&  isNaN(data.height)) data.height = data.width*aspectRatio;
+        if (!isNaN(data.height) &&  isNaN(data.width)) data.width = data.height/aspectRatio;
+
+        var scaleX = width / data.width;
+        var scaleY = height / data.height;
+        if (isNaN(data.width)) scaleX = 1;
+        if (isNaN(data.height)) scaleY = 1;
+        for (var meshname in el.object3DMap) {
+            var verts = el.object3DMap[meshname].geometry.vertices;
+            for (var vi=0; vi<verts.length; vi++) {
+                verts[vi].x /= scaleX;
+                verts[vi].y /= scaleY;
+            }
+        }
+
+
       });
     
   },
 
-  extractSVGPaths: function(svgDoc) {
-    // concat all the <path> elements to form an SVG path string
-    if (typeof svgDoc === 'string') {
-      svgDoc = new DOMParser.parseFromString(svgDoc,"text/xml");
-    }
-    if (!svgDoc || typeof svgDoc.getElementsByTagName !== 'function') {
-      throw new Error('could not get an XML document from the specified SVG contents');
-    }
 
-    var paths = Array.prototype.slice.call(svgDoc.getElementsByTagName('path'));
-    return paths.map(function (path) {
-      return path.getAttribute('d').replace(/\s+/g, ' ').trim();
-    });
-  },
 
   /**
    * Called when component is attached and when component data changes.
@@ -11475,7 +11471,7 @@ AFRAME.registerComponent('svgfile', {
   play: function () { }
 });
 
-},{"extract-svg-path":42,"load-svg":47,"parse-svg-path":55,"svg-mesh-3d":70,"three-simplicial-complex":82}],81:[function(require,module,exports){
+},{"load-svg":46,"svg-mesh-3d":69,"three-simplicial-complex":80}],79:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -11500,7 +11496,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],82:[function(require,module,exports){
+},{}],80:[function(require,module,exports){
 var inherits = require('inherits')
 
 module.exports = function(THREE) {
@@ -11554,4 +11550,4 @@ module.exports = function(THREE) {
 
     return Complex
 }
-},{"inherits":81}]},{},[80]);
+},{"inherits":79}]},{},[78]);
