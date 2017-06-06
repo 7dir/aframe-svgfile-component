@@ -29,7 +29,7 @@ Tip: Turn on full-scene antialiasing to get smoother vector graphics: `<a-scene 
 
 
 ### TODO
-- three.js mesh extrude
+- [three.js mesh extrude](https://github.com/7dir/aframe-svgfile-component/issues/4)
 - Add support for SVG elements aside from `<path>` (e.g. `<rect>`, `<polygon>`, `<circle>`, `<text>`)
 - add support for SVG styles
 
