@@ -3,7 +3,6 @@
 
 var load = require('load-svg');
 
-var createGeometry = require('three-simplicial-complex')(THREE);
 var svgMesh3d = require('svg-mesh-3d');
 var MeshLine = require('three.meshline');
 var SVGO = require('svgo');
@@ -58,6 +57,7 @@ AFRAME.registerComponent('svgfile', {
 
     oldData = oldData || {};
 
+
     var data = this.data;
     var svgfileComponent = this;
     var el = this.el;
@@ -102,10 +102,13 @@ AFRAME.registerComponent('svgfile', {
         var parser = new DOMParser();
         console.log(result.data);
         svgfileComponent.svgDOMcleaned = parser.parseFromString(result.data, "image/svg+xml");
-        svgfileComponent.update();
+        svgfileComponent.update({ready: true});
       });
       return;
     }
+
+    /// We should have a {ready:true} object at this point if we should continue further
+    if (Object.keys(oldData).length === 0 && oldData.constructor === Object) return;
 
 
     function hasNoFill(el){
@@ -124,18 +127,26 @@ AFRAME.registerComponent('svgfile', {
       return el.getAttribute("stroke") || data.color;
     }
 
+    function pathDataToString(dat){
+      return dat.reduce(function (acc, val){
+        return acc + ' ' + val.type + ' ' + val.values.join(' ');
+      },'');
+    }
 
     function extractSVGPaths(svgDoc) {
 
         var ret = [];
+        // rect, polygon should've been converted to <path> by SVGO at this point
         if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
+        if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
+
+        // These elements are not supported:
         if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
         if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
         if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
-        if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
 
         Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).map(function (path) {
-          var d = path.getAttribute('d').replace(/\s+/g, ' ').trim();
+          var d = pathDataToString(path.getPathData());
           var n = {strokeWidth: 1, closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path};
           n.closed =  d.search(/Z/i)>0;
           if (hasNoFill(path)) n.closed=false;
@@ -146,8 +157,8 @@ AFRAME.registerComponent('svgfile', {
           //https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path
           //var cx=path.cx.baseVal.value; var cy=path.cy.baseVal.value; var r=path.r.baseVal.value; var nr=-r; var dr=r*2; var ndr=-dr;
           //var d = `M ${cx}, ${cy}    m ${nr}, 0     a ${r},${r} 0 1,0 ${dr},0    a ${r},${r} 0 1,0 ${ndr},0`;
-          const cirlceAttrsToPath = (r,cx,cy) => `M${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;
-          var d = cirlceAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value);
+          var cirlceAttrsToPath = function(r,cx,cy) { return `M ${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;};
+          var d = cirlceAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value); 
           var n = {strokeWidth: 1, closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path};
           n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
           if (hasNoFill(path)) n.closed =false;
@@ -155,19 +166,24 @@ AFRAME.registerComponent('svgfile', {
         });
         Array.prototype.slice.call(svgDoc.getElementsByTagName('ellipse')).map(function (path) {
           // https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path/10477334#10477334
-          const ellipseAttrsToPath = (rx,cx,ry,cy) => `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
+          function ellipseAttrsToPath (rx,cx,ry,cy) {
+            return `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
+          }
           var d = ellipseAttrsToPath( path.rx.baseVal.value, path.cx.baseVal.value, path.ry.baseVal.value, path.cy.baseVal.value);
           var n = {strokeWidth: 1, closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path};
           n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
           if (hasNoFill(path)) n.closed =false;
           ret.push(n);
         });
+        /*
         Array.prototype.slice.call(svgDoc.getElementsByTagName('polygon')).map(function (path) {
+          console.error('These should have been converted to path by svgo at this point')
           var n = {strokeWidth: 1, closed: false, d:myself.SVGPointListToPathstring(path.points), strokeColor: calcSColor(path), fillColor: calcColor(path), path:path};
           n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
           if (hasNoFill(path)) n.closed =false;
           ret.push(n);
         });
+        */
 
         return ret;
     } // function extractSVGPaths()
@@ -199,76 +215,87 @@ AFRAME.registerComponent('svgfile', {
 
     for (var ii=0; ii<allPaths.length; ii++){
         var n = allPaths[ii];
-        var material;
-        var geometry;
+        var __private_material;
+        var __private_geometry;
         var mesh;
+
         n.fillColor = n.fillColor || data.color;
-        n.closed=false;
+        // n.closed=false;
+
         if (n.closed) {
-          console.log('MeshPolygon for ');
-          console.log(n);
-          meshData = svgMesh3d(n.d, {
-            delaunay: true,
-            clean: true,
-            exterior: false,
-            randomization: 1,
-            normalize:false,
-            simplify: 1,
-            scale: data.curveQuality*10 //a positive number, the scale at which to approximate the curves from the SVG paths
-          });
+              if (data.debug){
+                console.log('MeshPolygon for ');
+                console.log(n);
+              }
+              var __private_meshData = svgMesh3d(n.d, { // TODO: change from n.d to using n.path.getPathData() SVG2 interface
+                delaunay: true,
+                clean: true,
+                exterior: false,
+                randomization: 1,
+                normalize:false,
+                simplify: 1,
+                scale: data.curveQuality*10 //a positive number, the scale at which to approximate the curves from the SVG paths
+              });
 
-          material = new THREE.MeshStandardMaterial({
-            wireframe: data.debug,
-            color: n.fillColor,
-            side: THREE.DoubleSide,
-            opacity: isNaN(data.opacity) ? 1 : data.opacity,
-            transparent: isNaN(data.opacity) || data.opacity==1 ? false : true
-          });
+              __private_material = new THREE.MeshStandardMaterial({
+                wireframe: data.debug,
+                color: n.fillColor,
+                side: THREE.DoubleSide,
+                opacity: isNaN(data.opacity) ? 1 : data.opacity,
+                transparent: isNaN(data.opacity) || data.opacity==1 ? false : true
+              });
 
-          geometry = createGeometry(meshData);
-          geometry.scale(data.width/width, data.height/height, 1);
+            var createGeometry = require('three-simplicial-complex')(THREE);
+              __private_geometry = createGeometry(__private_meshData);
+              __private_geometry.scale(data.width/width, data.height/height, 1);
 
-          mesh = new THREE.Mesh(geometry, material);// Create mesh.
-          el.setObject3D('mesh'+ii, mesh);// Set mesh on entity.
+              mesh = new THREE.Mesh(__private_geometry, __private_material.clone());// Create mesh.
+              el.setObject3D('svgmesh_'+ii, mesh);// Set mesh on entity.
 
         } else { // !n.closed -- draw as MeshLine
-          console.log('MeshLine for ');
-          console.log(n);
 
-          material = new MeshLine.MeshLineMaterial({
-            color: new THREE.Color(n.strokeColor),
-            resolution: this.resolution,
-            sizeAttenuation: false,
-            lineWidth: n.strokeWidth,
-            side: THREE.DoubleSide,
-            opacity: isNaN(data.opacity) ? 1 : data.opacity,
-            transparent:  isNaN(data.opacity) ? false : true, // Default opaccity=null so this will be false
-            depthTest: isNaN(data.opacity) ? true : false 
 
-            //near: 0.1,
-            //far: 1000
-          });
-          var debug_material = new THREE.MeshBasicMaterial({ wireframe:true, color:'#ff0000'});
+              if (data.debug){
+                console.log('MeshLine for ');
+                console.log(n);
+              }
 
-          //var tok = tokenizeSVGPathString(n.d);
-          //geometry = svgPathToGeometry(tok, {curveQuality: data.curveQuality});
-          var svgPathData = n.path.getPathData(); // Uses the SVG2 polyfill. Gives us an array of PathSeg objects; must easier to parse 
-          if (n.path) 1;
-          geometry = svgPathDataToGeometry(svgPathData, {curveQuality: data.curveQuality});
-          geometry.scale(data.width/width, data.height/height, 1);
-          var geometryAsArray = [];  // For some inexplicable reason, my THREE.Geometry here is *not* an instanceof THREE.Geometry inside MeshLine. Whatevs.
-          for (var v=0; v<geometry.vertices.length; v++) {
-            geometryAsArray.push(geometry.vertices[v].x);
-            geometryAsArray.push(geometry.vertices[v].y);
-            geometryAsArray.push(geometry.vertices[v].z);
-          }
-          var line = new MeshLine.MeshLine();
-          line.setGeometry( geometryAsArray);
-          mesh = new THREE.Mesh(line.geometry, material);
-          //console.log(n.d)
-          //console.log(mesh.geometry.attributes.position.array);
-          this.el.setObject3D('mesh' + ii, mesh);
-        }
+              __private_material = new MeshLine.MeshLineMaterial({
+                color: new THREE.Color(n.strokeColor),
+                resolution: this.resolution,
+                sizeAttenuation: false,
+                lineWidth: n.strokeWidth,
+                side: THREE.DoubleSide,
+                opacity: isNaN(data.opacity) ? 1 : data.opacity,
+                transparent:  isNaN(data.opacity) ? false : true, // Default opaccity=null so this will be false
+                depthTest: isNaN(data.opacity) ? true : false 
+
+                //near: 0.1,
+                //far: 1000
+              });
+              var debug_material = new THREE.MeshBasicMaterial({ wireframe:true, color:'#ff0000'});
+
+              //var tok = tokenizeSVGPathString(n.d);
+              //geometry = svgPathToGeometry(tok, {curveQuality: data.curveQuality});
+              var svgPathData = n.path.getPathData(); // Uses the SVG2 polyfill. Gives us an array of PathSeg objects; must easier to parse 
+              if (n.path) 1;
+              __private_geometry = svgPathDataToGeometry(svgPathData, {curveQuality: data.curveQuality});
+              __private_geometry.scale(data.width/width, data.height/height, 1);
+              var geometryAsArray = [];  // For some inexplicable reason, my THREE.Geometry here is *not* an instanceof THREE.Geometry inside MeshLine. Whatevs.
+              for (var v=0; v<__private_geometry.vertices.length; v++) {
+                geometryAsArray.push(__private_geometry.vertices[v].x);
+                geometryAsArray.push(__private_geometry.vertices[v].y);
+                geometryAsArray.push(__private_geometry.vertices[v].z);
+              }
+              var line = new MeshLine.MeshLine();
+              line.setGeometry( geometryAsArray);
+              mesh = new THREE.Mesh(line.geometry, __private_material);
+              //console.log(n.d)
+              //console.log(mesh.geometry.attributes.position.array);
+              this.el.setObject3D("svgmesh_" + ii, mesh);
+
+        } // Draw as polygon or as line?
+
     } // foreach path
 
   },
@@ -333,32 +360,6 @@ AFRAME.registerComponent('svgfile', {
 
 
 
-// Removes commas, adds spaces between commands and coordinates in an SVG string, and split()s it
-/*
-function tokenizeSVGPathString(str) {
-  str = str.replace(/\,/g,' ');
-  str = str.replace(/\-/g,' -');
-  str = str.replace(/[A-z]/g,' $& ');
-  str = str.replace(/\s+/g,' ').trim();
-  // Convert numeric strings to numbers here
-  var ret = [];
-  var spl = str.split(' ');
-  for (var i=0; i<spl.length; i++){
-    el = spl[i];
-    if (isFinite(el)) {
-      ret.push(el*1);
-    } else if (/[mlhvcsqtaz]/ig.exec(el)) {
-      ret.push(el);
-    } else if (el.split('.').length>2) { // Illustrator will output coordinate pairs like 10.19.08. Who at Adobe thought this was OK?!?!?! Srsly people.
-      var three = el.split('.');
-      var midPos = three[0].length + 1 + (three[1].length / 2);
-      ret.push(el.substring(0, midPos)*1);
-      ret.push(el.substring(midPos)*1);
-    }
-  }
-  return ret;
-}
-*/
 
 function svgPathDataToGeometry(svgPathData, opts){
     var geometry = new THREE.Geometry();
@@ -397,6 +398,13 @@ function svgPathDataToGeometry(svgPathData, opts){
           tmp = xyListToVertices(values);
           v = tmp.endpoint;
           geometry.vertices = geometry.vertices.concat(tmp.vertices.slice());
+          break;
+        case "l":
+          tmp = xyListToVertices(values);
+          tmp.vertices.map(function(t){
+            v = new THREE.Vector3(t.x + v.x, t.y+v.y, 0);
+            geometry.vertices.push(v.clone());
+          });
           break;
         case "Z":
           geometry.vertices.push(lastPenDown.clone());
@@ -457,346 +465,7 @@ function xyListToVertices(values){
 }
 
 
-/*
-{
-      var idxOfNextCommand = i; 
-      for (var j=i+1; j<tok.length; j++) { if (!isFinite(tok[j]))  {idxOfNextCommand=j; break; } }
-      if (idxOfNextCommand==i) idxOfNextCommand = tok.length;
 
-      if (tok[i]=="M"){
-        v = new THREE.Vector3(tok[i+1], tok[i+2], 0);
-        geometry.vertices.push(v.clone());
-        if (i>0) console.warn('SVG path contains M commands after the first command. This is not yet supported and these M commands will be drawn as lines.');
-      }
-      if (tok[i]=="m"){
-        v = new THREE.Vector3(tok[i+1], tok[i+2], 0).add(v);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="L"){ // L commands can be followed by a number of x,y coordinate pairs
-        howManyCurves = (idxOfNextCommand - i-1)/ 2;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0,j=i+1; x<howManyCurves; x++) {
-          v = new THREE.Vector3(tok[j++], tok[j++], 0);
-          geometry.vertices.push(v.clone());
-        }
-      }
-      if (tok[i]=="l"){ // L commands can be followed by a number of x,y coordinate pairs
-        howManyCurves = (idxOfNextCommand - i-1)/ 2;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0, j=i+1; x<howManyCurves; x++) {
-          v = new THREE.Vector3(tok[j++], tok[j++], 0).add(v);
-          geometry.vertices.push(v.clone());
-        }
-        //v = geometry.vertices[geometry.vertices.length-1];
-      }
-      if (tok[i]=="H") {
-        v = new THREE.Vector3(tok[i+1], v.y, 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="h") {
-        v = new THREE.Vector3(tok[i+1] + v.x, v.y, 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="V") {
-        v = new THREE.Vector3(v.x, tok[i+1], 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="v") {
-        v = new THREE.Vector3(v.x, tok[i+1]+v.y, 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="A"){
-        console.assert(idxOfNextCommand == i+8,"SVG Parser cannot handle multiple A in a sequence");
-        //f ction arcToSVG(x1, y1,    rx,       ry,       angle,   large_arc_flag, sweep_flag,   x2,       y2,     recursive) {
-        var tmp = arcToSVG(v.x, v.y, tok[i+1], tok[i+2], tok[i+3], tok[i+4],        tok[i+5],   tok[i+6], tok[i+7]);
-        i+=7;
-        howManyCurves = tmp.length/ 6;
-        for (var ii=0, jj=0; ii<howManyCurves; ii++){
-          p1 = v.clone();
-          c1 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          p2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-        }
-      }
-      if (tok[i]=="a"){
-        console.assert(idxOfNextCommand == i+8,"SVG Parser cannot handle multiple A in a sequence");
-        //f ction arcToSVG(x1, y1,    rx,       ry,       angle,   large_arc_flag, sweep_flag,   x2,       y2,               recursive) {
-        var tmp = arcToSVG(v.x, v.y,  tok[i+1], tok[i+2], tok[i+3], tok[i+4],         tok[i+5],   tok[i+6]+v.x, tok[i+7]+v.y);
-        howManyCurves = tmp.length/ 6;
-        for (var ii=0, jj=0; ii<howManyCurves; ii++){
-          p1 = v.clone();
-          c1 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          p2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-        }
-      }
-      if (tok[i]=="C") {
-        howManyCurves = (idxOfNextCommand - i-1)/ 6;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0; x<howManyCurves; x++) {
-          p1 = v.clone();
-          c1 = new THREE.Vector3(tok[i+1], tok[i+2], 0);
-          c2 = new THREE.Vector3(tok[i+3], tok[i+4], 0);
-          p2 = new THREE.Vector3(tok[i+5], tok[i+6], 0);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added C " + x + "/" + howManyCurves);
-          //console.log(c)
-          i+=6;
-        }
-      }
-      if (tok[i]=="c") {
-        // The "c" command can take multiple curves in sequences, hence the while loop
-        howManyCurves = (idxOfNextCommand - i-1)/ 6;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0; x<howManyCurves; x++) {
-          p1 = v.clone(); // Relative coordinate
-          c1 = new THREE.Vector3(tok[i+1], tok[i+2], 0).add(v);
-          c2 = new THREE.Vector3(tok[i+3], tok[i+4], 0).add(v);
-          p2 = new THREE.Vector3(tok[i+5], tok[i+6], 0).add(v);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-          //v = p2.clone();
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added c " + x + "/" + howManyCurves);
-          //console.log(c);
-          i+=6;
-        }
-
-      }
-      if (tok[i]=="S" || tok[i]=="T") {
-        console.error('SVG Simplified Beziers (S and T) commands are not currently supported');
-        // Too lazy to implement this at the moment; this is a rare command I think
-        //https://developer.mozilla.org/en/docs/Web/SVG/Tutorial/Paths#Bezier_Curves
-      }
-      if (tok[i]=="Q"){
-        howManyCurves = (idxOfNextCommand - i-1)/ 4;
-        for (var x=0; x<howManyCurves; x++) {
-          c = new THREE.QuadraticBezierCurve3(
-                      v.clone(),
-                      new THREE.Vector3(tok[i+1], tok[i+2], 0),
-                      new THREE.Vector3(tok[i+3], tok[i+4], 0)
-                  );
-          v = new THREE.Vector3(tok[i+3], tok[i+4], 0);
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added Q")
-          //console.log(c)
-          i+=4;
-        }
-      }
-      if (tok[i]=="q"){
-        howManyCurves = (idxOfNextCommand - i-1)/ 4;
-        for (var x=0; x<howManyCurves; x++) {
-          var p1 = v.clone();
-          var p2 = new THREE.Vector3(tok[i+1], tok[i+2], 0).add(p1);
-          var p3 = new THREE.Vector3(tok[i+3], tok[i+4], 0).add(p2);
-          v = p3.clone();
-
-          c = new THREE.QuadraticBezierCurve3(p1, p2, p3);
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added q")
-          //console.log(c)
-          i+=4;
-        }
-
-      }
-      if (tok[i]=="Z" || tok[i]=="z"){
-        // Draw line to start of path
-        geometry.vertices.push(geometry.vertices[0].clone());
-      }
-    } // foreach token
-    return geometry;
-} // function svgPathToGeometry
-*/
-
-
-/*
-
-function svgPathToGeometry(tok, opts){
-    var geometry = new THREE.Geometry();
-    var v = new THREE.Vector3(0,0,0);
-    var c = null;
-    var howManyCurves=0;
-    var x;
-    var p1, p2, c1, c2;
-
-    for (var i=0; i<tok.length; i++){
-      if (! (isFinite(tok[i]) || tok[i].search(/[mlhvcsqtaz]/i)>=0) ) {
-        console.warn("Invalid item in tokenized SVG string: tok["+i+"]=" + tok[i] +"\nComplete string:\n"+tok.join(" "));
-      }
-    }
-
-    for (var i=0; i<tok.length; i++){
-
-
-      // Skip over all numeric values; we only care about finding commands
-      if (isFinite(tok[i])) continue; 
-
-      var idxOfNextCommand = i; 
-      for (var j=i+1; j<tok.length; j++) { if (!isFinite(tok[j]))  {idxOfNextCommand=j; break; } }
-      if (idxOfNextCommand==i) idxOfNextCommand = tok.length;
-
-      if (tok[i]=="M"){
-        v = new THREE.Vector3(tok[i+1], tok[i+2], 0);
-        geometry.vertices.push(v.clone());
-        if (i>0) console.warn('SVG path contains M commands after the first command. This is not yet supported and these M commands will be drawn as lines.');
-      }
-      if (tok[i]=="m"){
-        v = new THREE.Vector3(tok[i+1], tok[i+2], 0).add(v);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="L"){ // L commands can be followed by a number of x,y coordinate pairs
-        howManyCurves = (idxOfNextCommand - i-1)/ 2;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0,j=i+1; x<howManyCurves; x++) {
-          v = new THREE.Vector3(tok[j++], tok[j++], 0);
-          geometry.vertices.push(v.clone());
-        }
-      }
-      if (tok[i]=="l"){ // L commands can be followed by a number of x,y coordinate pairs
-        howManyCurves = (idxOfNextCommand - i-1)/ 2;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0, j=i+1; x<howManyCurves; x++) {
-          v = new THREE.Vector3(tok[j++], tok[j++], 0).add(v);
-          geometry.vertices.push(v.clone());
-        }
-        //v = geometry.vertices[geometry.vertices.length-1];
-      }
-      if (tok[i]=="H") {
-        v = new THREE.Vector3(tok[i+1], v.y, 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="h") {
-        v = new THREE.Vector3(tok[i+1] + v.x, v.y, 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="V") {
-        v = new THREE.Vector3(v.x, tok[i+1], 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="v") {
-        v = new THREE.Vector3(v.x, tok[i+1]+v.y, 0);
-        geometry.vertices.push(v.clone());
-      }
-      if (tok[i]=="A"){
-        console.assert(idxOfNextCommand == i+8,"SVG Parser cannot handle multiple A in a sequence");
-        //f ction arcToSVG(x1, y1,    rx,       ry,       angle,   large_arc_flag, sweep_flag,   x2,       y2,     recursive) {
-        var tmp = arcToSVG(v.x, v.y, tok[i+1], tok[i+2], tok[i+3], tok[i+4],        tok[i+5],   tok[i+6], tok[i+7]);
-        i+=7;
-        howManyCurves = tmp.length/ 6;
-        for (var ii=0, jj=0; ii<howManyCurves; ii++){
-          p1 = v.clone();
-          c1 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          p2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-        }
-      }
-      if (tok[i]=="a"){
-        console.assert(idxOfNextCommand == i+8,"SVG Parser cannot handle multiple A in a sequence");
-        //f ction arcToSVG(x1, y1,    rx,       ry,       angle,   large_arc_flag, sweep_flag,   x2,       y2,               recursive) {
-        var tmp = arcToSVG(v.x, v.y,  tok[i+1], tok[i+2], tok[i+3], tok[i+4],         tok[i+5],   tok[i+6]+v.x, tok[i+7]+v.y);
-        howManyCurves = tmp.length/ 6;
-        for (var ii=0, jj=0; ii<howManyCurves; ii++){
-          p1 = v.clone();
-          c1 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          p2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-        }
-      }
-      if (tok[i]=="C") {
-        howManyCurves = (idxOfNextCommand - i-1)/ 6;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0; x<howManyCurves; x++) {
-          p1 = v.clone();
-          c1 = new THREE.Vector3(tok[i+1], tok[i+2], 0);
-          c2 = new THREE.Vector3(tok[i+3], tok[i+4], 0);
-          p2 = new THREE.Vector3(tok[i+5], tok[i+6], 0);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added C " + x + "/" + howManyCurves);
-          //console.log(c)
-          i+=6;
-        }
-      }
-      if (tok[i]=="c") {
-        // The "c" command can take multiple curves in sequences, hence the while loop
-        howManyCurves = (idxOfNextCommand - i-1)/ 6;
-        console.assert(howManyCurves==Math.floor(howManyCurves));
-        for (var x=0; x<howManyCurves; x++) {
-          p1 = v.clone(); // Relative coordinate
-          c1 = new THREE.Vector3(tok[i+1], tok[i+2], 0).add(v);
-          c2 = new THREE.Vector3(tok[i+3], tok[i+4], 0).add(v);
-          p2 = new THREE.Vector3(tok[i+5], tok[i+6], 0).add(v);
-          c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-          v=p2.clone();
-          //v = p2.clone();
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added c " + x + "/" + howManyCurves);
-          //console.log(c);
-          i+=6;
-        }
-
-      }
-      if (tok[i]=="S" || tok[i]=="T") {
-        console.error('SVG Simplified Beziers (S and T) commands are not currently supported');
-        // Too lazy to implement this at the moment; this is a rare command I think
-        //https://developer.mozilla.org/en/docs/Web/SVG/Tutorial/Paths#Bezier_Curves
-      }
-      if (tok[i]=="Q"){
-        howManyCurves = (idxOfNextCommand - i-1)/ 4;
-        for (var x=0; x<howManyCurves; x++) {
-          c = new THREE.QuadraticBezierCurve3(
-                      v.clone(),
-                      new THREE.Vector3(tok[i+1], tok[i+2], 0),
-                      new THREE.Vector3(tok[i+3], tok[i+4], 0)
-                  );
-          v = new THREE.Vector3(tok[i+3], tok[i+4], 0);
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added Q")
-          //console.log(c)
-          i+=4;
-        }
-      }
-      if (tok[i]=="q"){
-        howManyCurves = (idxOfNextCommand - i-1)/ 4;
-        for (var x=0; x<howManyCurves; x++) {
-          var p1 = v.clone();
-          var p2 = new THREE.Vector3(tok[i+1], tok[i+2], 0).add(p1);
-          var p3 = new THREE.Vector3(tok[i+3], tok[i+4], 0).add(p2);
-          v = p3.clone();
-
-          c = new THREE.QuadraticBezierCurve3(p1, p2, p3);
-          geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-          //console.log("added q")
-          //console.log(c)
-          i+=4;
-        }
-
-      }
-      if (tok[i]=="Z" || tok[i]=="z"){
-        // Draw line to start of path
-        geometry.vertices.push(geometry.vertices[0].clone());
-      }
-    } // foreach token
-    return geometry;
-} // function svgPathToGeometry
-*/
 
 
 
