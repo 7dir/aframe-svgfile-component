@@ -5,6 +5,7 @@
   "main": "index.js",
   "cdn": "dist/aframe-svgfile-component.min.js",
   "scripts": {
+    "dev": "budo examples/main.js:build.js --dir examples --port 8000 --live --open -r svgo_plugins/convertStyleToAttrs.js",
     "build": "browserify index.js -o docs/aframe-svgfile-component.js",
     "dist": "webpack index.js dist/aframe-svgfile-component.js && webpack -p index.js dist/aframe-svgfile-component.min.js"
   },
@@ -31,14 +32,19 @@
   "homepage": "https://github.com/7dir/aframe-svgfile-component#readme",
   "devDependencies": {
     "browserify": "^13.0.0",
-    "webpack": "^1.13.0"
+    "webpack": "^1.13.0",
+    "budo": "^7.1.0"
   },
   "dependencies": {
     "aframe": "^0.5.0",
     "extract-svg-path": "^2.1.0",
     "load-svg": "^1.0.0",
+    "three.meshline":"^1.0.3",
     "parse-svg-path": "^0.1.2",
+    "normalize-svg-path":"^0.1.0",
+    "svgo":"^0.7.2",
     "svg-mesh-3d": "^1.1.0",
+    "three.meshline": "1.0.3",
     "three-simplicial-complex": "^69.0.6"
   }
 }

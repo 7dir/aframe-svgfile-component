@@ -11,6 +11,8 @@ Usage
 	<head>
 		<title>My A-Frame Scene</title>
 		<script src="https://aframe.io/releases/0.5.0/aframe.min.js"></script>
+		
+		<script src="aframe-svgfile-component.js"></script>
 		<script src="aframe-svgfile-component.js"></script>
 	</head>
 
@@ -23,10 +25,12 @@ Usage
 
 ## API
 Attribute | Description | Default
+--- | --- | ---
 width | Optional. Width of the image, in AFrame units (meters). | Undefined
 height | Optional. Height of the image in AFrame units. If only one of `height` or `width` is specified, the other will be set using the image aspect ratio | Undefined
 color | Color to fill polygons with | #c23d3e
 debug | Display wireframe instead of filled polygons? | false
+
 
 Tip: You can force Illustrator to export to SVG using `<path>`s instead of `<polygon>`/`<circle>`/etc by selecting an object(s) and using "Make Compound Path" from the right-click context menu.
 
