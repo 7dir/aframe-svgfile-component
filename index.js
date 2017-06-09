@@ -139,10 +139,10 @@ AFRAME.registerComponent('svgfile', {
         // rect, polygon should've been converted to <path> by SVGO at this point
         if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
         if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
+        if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
 
         // These elements are not supported:
         if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
-        if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
         if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
 
         Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).map(function (path) {
