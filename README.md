@@ -28,18 +28,21 @@ Attribute | Description | Default
 --- | --- | ---
 width | Width of the image, in AFrame units (meters). | Undefined
 height | Height of the image in AFrame units. If only one of `height` or `width` is specified, the other will be set using the image aspect ratio | Undefined
-color | Color to fill polygons with | #c23d3e
+color | Default color for polygons and lines | #c23d3e
 debug | Display wireframe instead of filled polygons? | false
 opacity | Controls opacity of entire image | 1
 curveQuality | How many line segments per curve | 20
-debug | Show wireframe mesh | false
 
-Tip: Turn on full-scene antialiasing to get smoother vector graphics: `<a-scene antialias="true" >`
 
-This component only supports farily simple SVG files. `path` and the geometric primitives are supported. `image` and `text` are not supported; these you should handle separately using AFrame's builtin image and text objects. 
+Tip: Consider turning on full-scene antialiasing: `<a-scene antialias="true" >`
+
+This component only supports farily simple SVG files. `path` and the geometric primitives (`rect`,`line`,`circle`, `polygon`, etc) are supported. `image` and `text` are not supported; these you should handle separately using AFrame's builtin image and text objects. 
 Style support is very limited. The component tries to find the fill and stroke color, but it can only handle basic style attributes (like "fill" on a path) and does not read style or class information.
 
 If width or height are not specified, the image will render using a 1:1 mapping from SVG units (pixels) to AFrame units (meters).
+
+
+
 
 
 

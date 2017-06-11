@@ -4,6 +4,7 @@
   "description": "Svgfile component for A-Frame.",
   "main": "index.js",
   "cdn": "dist/aframe-svgfile-component.min.js",
+  "uglify-js": "git+https://github.com/mishoo/UglifyJS2.git#harmony",
   "scripts": {
     "dev": "budo examples/main.js:build.js --dir examples --port 8000 --live --open ",
     "build": "browserify -x THREE -x aframe  index.js -o docs/aframe-svgfile-component.js && browserify -x THREE -x threejs -x aframe  index.js -o examples/build.js  ",
