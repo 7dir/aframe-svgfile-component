@@ -1,23 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="119.13" height="38.96" viewBox="0 0 119.13 38.96">
   <title>mrioarrows2</title>
-    <path d="M0,10.86c59.19-1.2,59.19-7.53,106.25-8.07l7.69-.07" transform="translate(0.25 -1.27)" style="fill: none;stroke: #231f20;stroke-miterlimit: 10;stroke-width: 0.5px"/>
-    <polygon points="113.22 2.9 118.63 1.4 113.19 0 113.22 2.9" style="fill: green"/>
-    <polygon points="102.32 38.97 118.63 34.78 102.41 30.25 102.32 38.97" style="fill: blue"/>
-  <!--
-    <path d="M0,36c9.39,0,44-6.46,56.75-6.47,19.31,0,31.45,5.92,48.33,6.42" transform="translate(0.25 -1.27)" style="fill: none;stroke: #231f20;stroke-miterlimit: 10;stroke-width: 1.5px"/>
-    <polygon points="102.32 38.97 118.63 34.78 102.41 30.25 102.32 38.97" style="fill: #231f20"/>
-  <g>
-    <path d="M0,18.84c9.39,0,14.33-2.46,27.13-2.46,19.75,0,30.38,11.91,77.13,10.46,0.67,0,3.08,0,5.76,0" transform="translate(0.25 -1.27)" style="fill: none;stroke: #231f20;stroke-miterlimit: 10"/>
-    <polygon points="108.26 28.5 119.13 25.69 108.31 22.69 108.26 28.5" style="fill: #231f20"/>
-  </g>
-  <g>
-    <path d="M-0.25,9.84c9.39,0,14.33-2.46,27.13-2.46,19.75,0,30.38,11.91,77.13,10.46,1,0,6.27,0,10.19.08" transform="translate(0.25 -1.27)" style="fill: none;stroke: #231f20;stroke-miterlimit: 10;stroke-width: 0.5px"/>
-    <polygon points="113.44 18.1 118.88 16.69 113.47 15.19 113.44 18.1" style="fill: #231f20"/>
-  </g>
-  <g>
-    <path d="M0,20.05C9.39,20.05,14.33,27,27.13,27c13.71,0,26.54-16.1,40.25-16.1,14.5,0,23.79,10,36.88,10.14l9.69,0.11" transform="translate(0.25 -1.27)" style="fill: none;stroke: #231f20;stroke-miterlimit: 10;stroke-width: 0.5px"/>
-    <polygon points="113.19 21.29 118.63 19.9 113.22 18.38 113.19 21.29" style="fill: #231f20"/>
-  </g>
--->
+    <path d="M0,10.86c59.19-1.2,59.19-7.53,106.25-8.07l7.69-.07" transform="translate(0.25 -1.27)" style="fill: none;stroke: black;stroke-miterlimit: 10;stroke-width: 0.5px"/>
+    <polygon points="113.22 2.9 118.63 1.4 113.19 0 113.22 2.9" style="fill: black"/>
+
+    <path d="M0,36c9.39,0,44-6.46,56.75-6.47,19.31,0,31.45,5.92,48.33,6.42" transform="translate(0.25 -1.27)" style="fill: none;stroke: black;stroke-miterlimit: 10;stroke-width: 1.5px"/>
+    <polygon points="102.32 38.97 118.63 34.78 102.41 30.25 102.32 38.97" style="fill: black"/>
+
+    <path d="M0,18.84c9.39,0,14.33-2.46,27.13-2.46,19.75,0,30.38,11.91,77.13,10.46,0.67,0,3.08,0,5.76,0" transform="translate(0.25 -1.27)" style="fill: none;stroke: black;stroke-miterlimit: 10"/>
+    <polygon points="108.26 28.5 119.13 25.69 108.31 22.69 108.26 28.5" style="fill: black"/>
+
+    <path d="M-0.25,9.84 c9.39,0,14.33-2.46,27.13-2.46,19.75,0,30.38,11.91,77.13,10.46,1,0,6.27,0,10.19.08" transform="translate(0.25 -1.27)" style="fill: none;stroke: black;stroke-miterlimit: 10;stroke-width: 0.5px"/>
+    <polygon points="113.44 18.1 118.88 16.69 113.47 15.19 113.44 18.1" style="fill: black"/>
+
+    <polygon points="113.44 18.1 118.88 16.69 113.47 15.19 113.44 18.1" style="fill: black"/>
+
+
+
+    <path d="M0,20.05 C9.39,20.05,14.33,27,27.13,27  c13.71,0,26.54-16.1,40.25-16.1,   14.5,0,23.79,10,36.88,10.14  l9.69,0.11" transform="translate(0.25 -1.27)" style="fill: none;stroke:blue;stroke-miterlimit: 10;stroke-width: 0.5px"/>
+    <polygon points="113.19 21.29 118.63 19.9 113.22 18.38 113.19 21.29" style="fill: black"/>
+
+
+
+
+
+
 
 </svg>

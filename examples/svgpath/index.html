@@ -1,10 +1,11 @@
 <html>   
   <head>
     <title>A-Frame Svgfile Component - SVG Path</title>
-    <!--
     <script src="https://aframe.io/releases/0.5.0/aframe.min.js"></script>
-    -->
+    <script src="../../dist/aframe-svgfile-component.js?asdfasd"></script>
+    <!--
     <script src="../build.js"></script>
+    -->
   </head>
   <body>
     <a-scene antialias="true">    
@@ -13,10 +14,10 @@
     <img src="mrioarrows2.svg" id="mysvg" style="display:none"/>
     </a-assets>
               
-      <a-entity geometry="primitive: box; " material="wireframe:true; color: #F79F24"  position="0 0 -12"></a-entity>
+      <a-entity geometry="primitive: box; " material="wireframe:true; color: #F79F24"  position="0 0 -1"></a-entity>
       
       <!-- position sets the upper lefthand corner of the SVG -->
-      <a-entity svgfile="svgFile: #mysvg; width:10;  color: orange; " position="0 0 -10" rotation="0 0 0"></a-entity>
+      <a-entity svgfile="svgFile: #mysvg; width:10;  color: orange; " position="0 0 0" rotation="0 0 0"></a-entity>
 
       
       <a-sky color="#fff"></a-sky>
