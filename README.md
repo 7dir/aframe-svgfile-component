@@ -1,6 +1,10 @@
 # aframe-svgfile-component
 
-[demo aframe-svgfile-component](http://7dir.ru/aframe-svgfile-component/)
+<p align="center">
+  <img src="http://i.imgur.com/wxTXZIj.png"/>
+</p>
+
+[DEMO](http://7dir.ru/aframe-svgfile-component/)
 
 Use SVG files in an AFrame scene. Lines are rendered using THREE.MeshLine, and polygons are normal THREE geometry objects. Supports only quite simple SVG files at the moment.
 
