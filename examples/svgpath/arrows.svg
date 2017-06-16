@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 119.13 38.96"><defs><style>
+	.a,.c,.d{fill:none;stroke:#231f20;stroke-miterlimit:10;}
+	.a{stroke-width:0.5px;}
+	.b{fill:#231f20;}
+	.c{stroke-width:1.5px;}</style></defs><title>arrows</title>
+
+
+  <rect class="rr1" x="2" y="17" width="70" height="7" stroke="green" fill="transparent" stroke-width="1"/>
+  <rect class="rr2" x="20" y="10" width="0" height="00" stroke="red" fill="transparent" stroke-width="5"/>
+  <rect class="rr2" x="60" y="10" rx="10" ry="10" width="30" height="30" stroke="purple" fill="transparent" stroke-width="2"/>
+
+  <rect class="rr2" x="20" y="10"  width="20" height="40" stroke="blue" fill="transparent" stroke-width="5"/>
+  <circle class="cc1" cx="25" cy="75" r="20" stroke="red" fill="red" stroke-width="5"/>
+  <ellipse class="cc2" cx="75" cy="75" rx="20" ry="5" stroke="red" fill="blue" stroke-width="5"/>
+
+
+<polygon class="b1" stroke="red" points="102.32 38.97   118.63 34.78    102.41 30.25    102.32 38.97"/>
+
+<polygon class="b3" stroke="blue" points="108.26 28.5 119.13 25.69 108.31 22.69 108.26 28.5"/>
+<polygon class="b4" stroke="green" points="113.44 18.1 118.88 16.69 113.47 15.19 113.44 18.1"/>
+<polygon class="b5" stroke="orange" points="113.19 21.29 118.63 19.9 113.22 18.38 113.19 21.29"/>
+
+
+<!-- bad> -->
+<polygon class="b2" stroke="purple" points="113.22 2.9    118.63 1.4    113.19 0    113.22 2.9"/>
+
+
+
+<path class="a" d="M0,10.86c59.19-1.2,59.19-7.53,106.25-8.07" stroke="purple" transform="translate(0.25 -1.27)"/>
+
+<path class="c" d="M0,36c9.39,0,44-6.46,56.75-6.47,19.31,0,31.45,5.92,48.33,6.42" stroke="red" transform="translate(0.25 -1.27)"/>
+
+
+
+<path class="d" d="M0,18.84c9.39,0,14.33-2.46,27.13-2.46,19.75,0,30.38,11.91,77.13,10.46,0.67,0,3.08,0,5.76,0" stroke="blue" transform="translate(0.25 -1.27)"/>
+
+<path class="a" d="M-0.25,9.84c9.39,0,14.33-2.46,27.13-2.46,19.75,0,30.38,11.91,77.13,10.46,1,0,6.27,0,10.19.08"  stroke="green" transform="translate(0.25 -1.27)"/>
+
+
+
+<path class="a" d="M0,20.05 C9.39,20.05,14.33,27,27.13,27 c13.71,0,26.54-16.1,40.25-16.1,14.5,0,23.79,10,36.88,10.14"  stroke="orange" transform="translate(0.25 -1.27)"/>
+
+</svg>

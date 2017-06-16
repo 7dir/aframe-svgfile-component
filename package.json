@@ -1,12 +1,16 @@
 {
   "name": "aframe-svgfile-component",
-  "version": "1.0.1",
+  "version": "1.1.1",
   "description": "Svgfile component for A-Frame.",
   "main": "index.js",
   "cdn": "dist/aframe-svgfile-component.min.js",
+  "uglify-js": "git+https://github.com/mishoo/UglifyJS2.git#harmony",
   "scripts": {
-    "build": "browserify index.js -o docs/aframe-svgfile-component.js",
-    "dist": "webpack index.js dist/aframe-svgfile-component.js && webpack -p index.js dist/aframe-svgfile-component.min.js"
+    "dev": "budo examples/main.js:build.js --dir examples --port 8000 --live --open ",
+    "d":  "browserify  -x THREE -x threejs -x aframe index.js -o dist/aframe-svgfile-component.js ",
+    "build": "browserify -x THREE -x aframe  index.js -o docs/aframe-svgfile-component.js && browserify -x THREE -x threejs -x aframe  index.js -o examples/build.js  ",
+    "dist": "browserify  -x THREE -x threejs -x aframe index.js -o dist/aframe-svgfile-component.js  && uglifyjs  dist/aframe-svgfile-component.js --compress --mangle --output dist/aframe-svgfile-component.min.js",
+    "bad": "webpack index.js dist/aframe-svgfile-component.js && webpack -p index.js dist/aframe-svgfile-component.min.js"
   },
   "repository": {
     "type": "git",
@@ -31,14 +35,26 @@
   "homepage": "https://github.com/7dir/aframe-svgfile-component#readme",
   "devDependencies": {
     "browserify": "^13.0.0",
-    "webpack": "^1.13.0"
+    "webpack": "^1.13.0",
+    "budo": "^7.1.0"
   },
   "dependencies": {
     "aframe": "^0.5.0",
+    "babel": "^6.23.0",
+    "babel-preset-es2015": "^6.24.1",
+    "babelify": "^7.3.0",
+    "csso": "^3.1.1",
     "extract-svg-path": "^2.1.0",
+    "fs": "0.0.1-security",
     "load-svg": "^1.0.0",
+    "normalize-svg-path": "^0.1.0",
     "parse-svg-path": "^0.1.2",
     "svg-mesh-3d": "^1.1.0",
-    "three-simplicial-complex": "^69.0.6"
+    "svgo": "^0.7.2",
+    "three-simplicial-complex": "^69.0.6",
+    "three.meshline": "^1.0.3",
+    "uglify-es": "^3.0.15",
+    "uglify-js": "^3.0.15",
+    "uglifyify": "^3.0.4"
   }
 }

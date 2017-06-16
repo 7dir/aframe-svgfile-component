@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>A-Frame Svg Component - Basic</title>
+
+	<script src="../build.js"></script>
+	
+  </head>
+  <body>
+    <a-scene>
+
+      <a-entity geometry="primitive:box" material="color:#f00; wireframe:true" position="0 0 -10" scale="1 1 1"></a-entity>
+      <!-- position sets the upper lefthand corner of the SVG -->
+      <a-entity svgfile="svgFile: ../assets/github.svg; width:1; height:1; opacity:0.5; color: green; " position="0 0 -10" rotation="0 0 0"></a-entity>
+
+      <!--
+      <a-entity svgfile="svgFile: ../assets/github2.svg" position="0 2 -3" rotation="0 0 0"></a-entity>
+    -->
+      <a-sky color="#FFEED0"></a-sky>
+    </a-scene>
+
+
+  </body>
+</html>
