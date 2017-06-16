@@ -33,8 +33,7 @@
   "homepage": "https://github.com/7dir/aframe-svgfile-component#readme",
   "devDependencies": {
     "browserify": "^13.0.0",
-    "webpack": "^1.13.0",
-    "budo": "^7.1.0"
+    "webpack": "^1.13.0"
   },
   "dependencies": {
     "aframe": "^0.5.0",
