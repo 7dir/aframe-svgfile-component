@@ -1,16 +1,14 @@
 {
   "name": "aframe-svgfile-component",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Svgfile component for A-Frame.",
   "main": "index.js",
   "cdn": "dist/aframe-svgfile-component.min.js",
   "uglify-js": "git+https://github.com/mishoo/UglifyJS2.git#harmony",
   "scripts": {
-    "dev": "budo examples/main.js:build.js --dir examples --port 8000 --live --open ",
-    "d":  "browserify  -x THREE -x threejs -x aframe index.js -o dist/aframe-svgfile-component.js ",
-    "build": "browserify -x THREE -x aframe  index.js -o docs/aframe-svgfile-component.js && browserify -x THREE -x threejs -x aframe  index.js -o examples/build.js  ",
-    "dist": "browserify  -x THREE -x threejs -x aframe index.js -o dist/aframe-svgfile-component.js  && uglifyjs  dist/aframe-svgfile-component.js --compress --mangle --output dist/aframe-svgfile-component.min.js",
-    "bad": "webpack index.js dist/aframe-svgfile-component.js && webpack -p index.js dist/aframe-svgfile-component.min.js"
+    "dist": "browserify  -x THREE -x threejs -x aframe index.js -o dist/aframe-svgfile-component.js ",
+    "dist-min": "uglifyjs  dist/aframe-svgfile-component.js --compress --mangle --output dist/aframe-svgfile-component.min.js",
+    "example": "cp dist/aframe-svgfile-component.min.js docs/"
   },
   "repository": {
     "type": "git",

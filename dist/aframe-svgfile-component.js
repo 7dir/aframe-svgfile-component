@@ -1,4 +1,577 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+// js import vs require
+/*jshint esversion: 6 */
+
+var load = require('load-svg');
+var svgMesh3d = require('svg-mesh-3d');
+var MeshLine = require('three.meshline');
+var SVGO = require('svgo');
+var normalizeSVGPath = require('normalize-svg-path');
+require('./path-data-polyfill.es5.js');
+
+/* global AFRAME */
+
+if (typeof AFRAME === 'undefined') {
+  throw new Error('Component attempted to register before AFRAME was available.');
+}
+
+/**
+ * Svgpath component for A-Frame.
+ */
+AFRAME.registerComponent('svgfile', {
+  schema: {
+    color: {type: 'color', default: '#c23d3e'},
+    svgFile: {type: 'asset', default: ''},
+    width: { type: 'number', default: NaN},
+    height: { type: 'number', default: NaN},
+    opacity: {type: 'number', default: NaN},
+    curveQuality: {type: 'number', default:20},
+    strokeWidthToAFrameUnits: { type:'number', default: 0.01},
+    debug: {type: 'boolean', default: false} // Set to True to see wireframe
+  },
+
+  /**
+   * Set if component needs multiple instancing.
+   */
+  multiple: true,
+
+  
+  addlisteners: function () {
+    // canvas does not fire resize events, need window
+    window.addEventListener( 'resize', this.do_update.bind (this) );
+  },
+  do_update: function () {
+  
+    var canvas = this.el.sceneEl.canvas;
+    this.resolution.set( canvas.width,  canvas.height );
+    //console.log( this.resolution );
+    this.update();
+
+  },
+
+  /**
+   * Called once when component is attached. Generally for initial setup.
+   */
+  init: function () { },
+
+  update: function(oldData){
+
+    oldData = oldData || {};
+
+
+    var data = this.data;
+    var svgfileComponent = this;
+    var el = this.el;
+    var myself = this;
+    var meshData;
+    this.resolution = new THREE.Vector2 ( window.innerWidth, window.innerHeight ) ;
+    var sceneEl = this.el.sceneEl;
+    sceneEl.addEventListener( 'render-target-loaded', this.do_update.bind(this) );
+    sceneEl.addEventListener( 'render-target-loaded', this.addlisteners.bind(this) );
+    var convertTransform = require('svgo/plugins/convertTransform.js');
+    var convertStyleToAttrs = require('svgo/plugins/convertStyleToAttrs.js');
+    var convertShapeToPath = require('./plugins/convertShapeToPath.js'); 
+    var convertPathData = require('svgo/plugins/convertPathData.js'); // This generates nearly unparsable compact numbers, like "-1.4.03"
+    var removeComments = require('svgo/plugins/removeComments.js');
+    var svgo = new SVGO({
+      full    : true,
+      quiet:false,
+      multipass:true,
+      plugins : [ 
+        {convertStyleToAttrs:convertStyleToAttrs},
+        {convertShapeToPath:convertShapeToPath},
+        {convertTransform:convertTransform},
+        //{convertPathData: convertPathData},
+        {removeComments: removeComments} ],
+      js2svg  : { pretty: true }
+    });
+
+
+
+    // Run init() as a callback after we load the SVG content from the file URL
+    if (this.svgDOM === undefined) {
+      load(data.svgFile, function (err, svgDOM) {
+        svgfileComponent.svgDOM = svgDOM;
+        svgfileComponent.update();
+      });
+      return;
+    }
+
+    // Run init() again as a callback after we run the SVG through SVGO (to convert polygons to path, clean up)
+    if (this.svgDOMcleaned === undefined) {
+      svgo.optimize(svgfileComponent.svgDOM.outerHTML, function(result) {
+        var parser = new DOMParser();
+         // TODO: turn off debug result.data
+        // console.log(result.data);
+        svgfileComponent.svgDOMcleaned = parser.parseFromString(result.data, "image/svg+xml");
+        svgfileComponent.update({ready: true});
+      });
+      return;
+    }
+
+    /// We should have a {ready:true} object at this point if we should continue further
+    if (Object.keys(oldData).length === 0 && oldData.constructor === Object) return;
+
+
+    function hasNoFill(el){
+      var fill = el.getAttribute("fill") || "yes";
+      fill=fill.toLowerCase();
+      return (fill == "transparent" || fill=="none");
+    }
+
+    function calcColor(el){
+      // Should look up CSS Class too...
+      var f= el.getAttribute("fill") || data.color;
+      if (f=="transparent" || f=="none") f = null;
+      return f;
+    }
+    function calcSColor(el){
+      return el.getAttribute("stroke") || data.color;
+    }
+
+    function pathDataToString(dat){
+      return dat.reduce(function (acc, val){
+        return acc + ' ' + val.type + ' ' + val.values.join(' ');
+      },'');
+    }
+    function getStrokeWidth(path){
+      if (!path) return 1; 
+      var z = path.getAttribute("stroke-width");
+      if (z==null || z===undefined ) return 1;
+      if (typeof z == "string") z=z.replace("px","")*1;
+      return z;
+    }
+    // Reference: https://developer.mozilla.org/en/docs/Web/API/SVGTransform
+    function getScaleTransform(path){
+      var ret = {x:1, y:1};
+      for (var i=0; i<path.transform.baseVal.length; i++) {
+        if (path.transform.baseVal[i].type==3) {ret.x += path.transform.baseVal[i].matrix.a; ret.y += path.transform.baseVal[i].matrix.d;}
+      }
+      return ret;
+    }
+    function getTranslateTransform(path){
+      var ret = {x:0, y:0};
+      for (var i=0; i<path.transform.baseVal.length; i++) {
+        if (path.transform.baseVal[i].type==2) {ret.x += path.transform.baseVal[i].matrix.e; ret.y += path.transform.baseVal[i].matrix.f;}
+      }
+      return ret;
+    }
+
+    function extractSVGPaths(svgDoc) {
+
+        var ret = [];
+        // rect, polygon should've been converted to <path> by SVGO at this point
+        if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
+        if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
+        if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
+
+        // These elements are not supported:
+        if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
+        if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
+
+        Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).forEach(function (path) {
+          var d = pathDataToString(path.getPathData());
+          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
+          n.closed =  d.search(/Z/i)>0;
+          if (hasNoFill(path)) n.closed=false;
+          ret.push(n);
+        });
+        Array.prototype.slice.call(svgDoc.getElementsByTagName('circle')).forEach(function (path) {
+          //https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path
+          //var cx=path.cx.baseVal.value; var cy=path.cy.baseVal.value; var r=path.r.baseVal.value; var nr=-r; var dr=r*2; var ndr=-dr;
+          //var d = `M ${cx}, ${cy}    m ${nr}, 0     a ${r},${r} 0 1,0 ${dr},0    a ${r},${r} 0 1,0 ${ndr},0`;
+          var cirlceAttrsToPath = function(r,cx,cy) { return `M ${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;};
+          var d = cirlceAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value); 
+          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
+          if (hasNoFill(path)) n.closed =false;
+          ret.push(n);
+        });
+        Array.prototype.slice.call(svgDoc.getElementsByTagName('ellipse')).forEach(function (path) {
+          // https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path/10477334#10477334
+          function ellipseAttrsToPath (rx,cx,ry,cy) {
+            return `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
+          }
+          var d = ellipseAttrsToPath( path.rx.baseVal.value, path.cx.baseVal.value, path.ry.baseVal.value, path.cy.baseVal.value);
+          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
+          if (hasNoFill(path)) n.closed =false;
+          ret.push(n);
+        });
+
+
+        return ret;
+    } // function extractSVGPaths()
+
+
+
+
+
+
+    var allPaths = extractSVGPaths(svgfileComponent.svgDOMcleaned);
+
+    // Get the SVG image size, in SVG coordinates
+    var viewBox = AFRAME.utils.coordinates.parse(svgfileComponent.svgDOMcleaned.documentElement.getAttribute('viewBox'));
+    if (!viewBox){
+      console.error('No viewBox attribute found in SVG file. This is required. Note that this property is case sensitive.');
+      console.log('Info: https://www.w3.org/TR/SVG/styling.html#CaseSensitivity');
+    }
+    var width = viewBox.z - viewBox.x;
+    var height = viewBox.w - viewBox.y;
+    var aspectRatio = width/height;
+    if (isNaN(data.width) && isNaN(data.height)) { // Neither is specified; use SVG native size
+      data.width=width; data.height = height;
+    } else if (!isNaN(data.width) ) { // Width is specified, force height to match according to aspectRatio
+      data.height = data.width/aspectRatio;
+    } else if (!isNaN(data.height)) { // Height is specified, force width to match according to aspectRatio
+      data.width = data.height*aspectRatio;
+    }
+
+
+
+    for (var ii=0; ii<allPaths.length; ii++){
+        var n = allPaths[ii];
+        var mesh;
+
+        n.fillColor = n.fillColor || data.color;
+        // n.closed=false;
+
+        if (n.closed) {
+              if (data.debug){
+                console.log('MeshPolygon for ');
+                console.log(n);
+              }
+              var __private_meshData = svgMesh3d(n.d, { // TODO: change from n.d to using n.path.getPathData() SVG2 interface
+                delaunay: true,
+                clean: true,
+                exterior: false,
+                randomization: 1,
+                normalize:false,
+                simplify: 1,
+                scale: data.curveQuality*10 //a positive number, the scale at which to approximate the curves from the SVG paths
+              });
+
+              var __private_material = new THREE.MeshStandardMaterial({
+                wireframe: data.debug,
+                color: n.fillColor,
+                side: THREE.DoubleSide,
+                opacity: isNaN(data.opacity) ? 1 : data.opacity,
+                transparent: isNaN(data.opacity) || data.opacity==1 ? false : true
+              });
+
+            var createGeometry = require('three-simplicial-complex')(THREE);
+            var __private_geometry = createGeometry(__private_meshData);
+              __private_geometry.scale(data.width/width, data.height/height, 1); // Convert from SVG to AFrame units
+              __private_geometry.scale(n.scale.x, n.scale.y, 1); // Apply the transforms while the geometry is still in SVG units
+              __private_geometry.translate(data.width/width * n.translate.x, - data.height/height * n.translate.y, 0);
+              __private_geometry.translate( -data.width/2, data.height/2, 0); // Center at 0,0
+
+              this.el.object3D.add(new THREE.Mesh(__private_geometry, __private_material.clone()));// Set mesh on entity.
+
+        } else { // !n.closed -- draw as MeshLine
+
+
+              if (data.debug){
+                console.log('MeshLine for ');
+                console.log(n);
+              }
+
+              var __private_material = new MeshLine.MeshLineMaterial({
+                color: new THREE.Color(n.strokeColor),
+                resolution: this.resolution,
+                sizeAttenuation: 1,
+                wireframe:false,
+                lineWidth: n.strokeWidth * data.strokeWidthToAFrameUnits,
+                side: THREE.DoubleSide,
+                opacity: isNaN(data.opacity) ? 1 : data.opacity,
+                transparent:  isNaN(data.opacity) ? false : true, // Default opaccity=null so this will be false
+                depthTest: isNaN(data.opacity) ? true : false 
+
+                //near: 0.1,
+                //far: 1000
+              });
+              var debug_material = new THREE.MeshStandardMaterial({ wireframe:true, color:0x00ff00});
+
+              var svgPathData = n.path.getPathData(); // Uses the SVG2 polyfill. Gives us an array of PathSeg objects; must easier to parse 
+
+              var __private_geometry = svgPathDataToGeometry(svgPathData, {curveQuality: data.curveQuality, height: height});
+              __private_geometry.scale(data.width/width, data.height/height, 1); // Convert from SVG to AFrame units
+              __private_geometry.scale(n.scale.x, n.scale.y, 1); // Apply the transforms while the geometry is still in SVG units
+              __private_geometry.translate(data.width/width * n.translate.x, (- data.height/height * n.translate.y) - (data.height/height * height), 0);
+              __private_geometry.translate( -data.width/2, data.height/2, 0); // Center at 0,0
+
+              var geometryAsArray = [];  // For some inexplicable reason, my THREE.Geometry here is *not* an instanceof THREE.Geometry inside MeshLine. Whatevs.
+              for (var v=0; v<__private_geometry.vertices.length; v++) {
+                geometryAsArray.push(__private_geometry.vertices[v].x);
+                geometryAsArray.push(__private_geometry.vertices[v].y);
+                geometryAsArray.push(__private_geometry.vertices[v].z);
+              }
+              var line = new MeshLine.MeshLine();
+              line.setGeometry( geometryAsArray);
+              /* I have NO FREAKING CLUE why the 9th item does not render?! It appears as a cube. Either a fault in THREE or, perhaps in the MeshLineMaterial shaders */
+              if (this.el.object3D.children.length==9) {
+                line.geometry = line.geometry.clone(); // Cloning the 9th item makes it work like a charm. Of course.
+              }  
+              this.el.object3D.add(new THREE.Mesh(line.geometry,  __private_material));
+
+        } // Draw as polygon or as line?
+
+    } // foreach path
+
+  },
+
+
+
+
+  /**
+   * Called when a component is removed (e.g., via removeAttribute).
+   * Generally undoes all modifications to the entity.
+   */
+  remove: function () { },
+
+  /**
+   * Called on each scene tick.
+   */
+  // tick: function (t) { },
+
+  /**
+   * Called when entity pauses.
+   * Use to stop or remove any dynamic or background behavior such as events.
+   */
+  pause: function () { },
+
+  /**
+   * Called when entity resumes.
+   * Use to continue or add any dynamic or background behavior such as events.
+   */
+  play: function () { },
+
+
+  calcBoundingBox: function(meshData){
+    var ret = {
+      x: {min:Infinity, max: -Infinity},
+      y: {min:Infinity, max: -Infinity},
+      z: {min:Infinity, max: -Infinity}};
+    for (var p in meshData.positions) {
+      ret.x.min = Math.min(ret.x.min, meshData.positions[p][0]);
+      ret.x.max = Math.max(ret.x.max, meshData.positions[p][0]);
+      ret.y.min = Math.min(ret.y.min, meshData.positions[p][1]);
+      ret.y.max = Math.max(ret.y.max, meshData.positions[p][1]);
+      ret.z.min = Math.min(ret.z.min, meshData.positions[p][2]);
+      ret.z.max = Math.max(ret.z.max, meshData.positions[p][2]);
+    }
+    return ret;
+  },
+
+
+
+
+}); // end AFRame component
+
+
+
+
+
+
+function svgPathDataToGeometry(svgPathData, opts){
+    var geometry = new THREE.Geometry();
+    var v = new THREE.Vector3(0,0,0);
+    var c = null;
+    var howManyCurves=0;
+    var x, tmp;
+    var p1, p2, c1, c2;
+    var values;
+    var basisVector;
+    var lastPenDown;
+
+    for (var k=0; k<svgPathData.length; k++) {
+      var svgCommand = svgPathData[k];
+      values = svgCommand.values;
+
+      switch (svgCommand.type) {
+        case "M":
+          tmp = xyListToVertices(values);
+          v = tmp.endpoint;
+          lastPenDown = v.clone();
+          geometry.vertices = geometry.vertices.concat(tmp.vertices.map(function(v){return v.clone();}));
+          //if (i>0) console.warn('SVG path contains M commands after the first command. This is not yet supported and these M commands will be drawn as lines.');
+          break;
+        case "H":
+          console.assert(svgCommand.values.length==1);
+          v = new THREE.Vector3(values[0], v.y, 0);
+          geometry.vertices.push(v);
+          break;
+        case "V":
+          console.assert(values.length==1);
+          v = new THREE.Vector3(v.x, values[0], 0);
+          geometry.vertices.push(v.clone());
+          break;
+        case "L":
+          tmp = xyListToVertices(values);
+          v = tmp.endpoint;
+          geometry.vertices = geometry.vertices.concat(tmp.vertices.map(function(v){return v.clone();}));
+          break;
+        case "l":
+          tmp = xyListToVertices(values);
+          tmp.vertices.forEach(function(t){
+            geometry.vertices.push(new THREE.Vector3(t.x + v.x, t.y+v.y, 0));
+          });
+          break;
+        case "Z":
+          geometry.vertices.push(lastPenDown.clone());
+          break;
+        case "c":
+        case "C":
+            if (svgCommand.type=="C") basisVector = new THREE.Vector3(0,0,0);
+            if (svgCommand.type=="c") basisVector = v;
+            // The "c" command can take multiple curves in sequences, hence the while loop
+            howManyCurves = values.length/6;
+            console.assert(howManyCurves==Math.floor(howManyCurves));
+            for (var h=0, z=0; h<howManyCurves; h++) {
+              p1 = v.clone(); // Relative coordinate
+              c1 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
+              c2 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
+              p2 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
+              c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
+              v=p2.clone();
+              geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
+              //console.log("added c " + x + "/" + howManyCurves);
+              //console.log(c);
+            }
+            break;
+        case "A":
+            geometry.vertices.pop(); // Remove the M command
+            var howManyArcs = values.length/ 7;
+            for (var arcNumber=0, z=0; arcNumber<howManyArcs; arcNumber++){
+              var tmp = arcToSVG(v.x, v.y, values[z++], values[z++], values[z++], values[z++],        values[z++],   values[z++], values[z++]);
+              howManyCurves = tmp.length/ 6;
+              for (var h=0, jj=0; h<howManyCurves; h++){
+                p1 = v.clone();
+                c1 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
+                c2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
+                p2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
+                c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
+                v=p2.clone();
+                geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
+              }
+            }
+            break;  
+        default:
+          console.warn('bad');
+          console.error('Unrecognized SVG command:' + svgCommand.type);
+
+      } // swtich statement
+
+    } // foreach SVG command in the path
+    geometry.vertices.forEach(function(v){ v.y = opts.height-v.y; });
+    return geometry;
+} // end svgPathDataToGeometry ()
+
+function xyListToVertices(values){
+  var ret = {endpoint: null, vertices: [] };
+  for (var i=0; i<values.length;) {
+    ret.vertices.push(new THREE.Vector3(values[i++], values[i++],0));
+  }
+  ret.endpoint = ret.vertices[ret.vertices.length-1];
+  return ret;
+}
+
+
+
+
+
+
+// This function is ripped from
+// github.com/DmitryBaranovskiy/raphael/blob/4d97d4/raphael.js#L2216-L2304
+// which references w3.org/TR/SVG11/implnote.html#ArcImplementationNotes
+// TODO: make it human readable
+
+var PI = Math.PI;
+function __PRIVATE_radians(degress){
+  return degress * (PI / 180);
+}
+var _120 = __PRIVATE_radians(120);
+
+function deg2rad(deg){
+  return (deg  / 180) * Math.PI;
+}
+
+function arcToSVG(x1, y1, rx, ry, angle, large_arc_flag, sweep_flag, x2, y2, recursive) {
+  var f1,f2, cx,cy, res;
+  angle = deg2rad(angle);
+  if (!recursive) {
+    var xy = __PRIVATE_rotate(x1, y1, -angle);
+    x1 = xy.x;
+    y1 = xy.y;
+    xy = __PRIVATE_rotate(x2, y2, -angle);
+    x2 = xy.x;
+    y2 = xy.y;
+    var x = (x1 - x2) / 2;
+    var y = (y1 - y2) / 2;
+    var h = (x * x) / (rx * rx) + (y * y) / (ry * ry);
+    if (h > 1) {
+      h = Math.sqrt(h);
+      rx = h * rx;
+      ry = h * ry;
+    }
+    var rx2 = rx * rx;
+    var ry2 = ry * ry;
+    var k = (large_arc_flag == sweep_flag ? -1 : 1) * Math.sqrt(Math.abs((rx2 * ry2 - rx2 * y * y - ry2 * x * x) / (rx2 * y * y + ry2 * x * x)));
+    if (k == Infinity) {k = 1;} // neutralize
+    cx = k * rx * y / ry + (x1 + x2) / 2;
+    cy = k * -ry * x / rx + (y1 + y2) / 2;
+    f1 = Math.asin(((y1 - cy) / ry).toFixed(9));
+    f2 = Math.asin(((y2 - cy) / ry).toFixed(9));
+
+    f1 = x1 < cx ? PI - f1 : f1;
+    f2 = x2 < cx ? PI - f2 : f2;
+    if (f1 < 0) f1 = PI * 2 + f1;
+    if (f2 < 0) f2 = PI * 2 + f2;
+    if (sweep_flag && f1 > f2) f1 = f1 - PI * 2;
+    if (!sweep_flag && f2 > f1) f2 = f2 - PI * 2;
+  } else {
+    f1 = recursive[0];
+    f2 = recursive[1];
+    cx = recursive[2];
+    cy = recursive[3];
+  }
+  // greater than 120 degrees requires multiple segments
+  if (Math.abs(f2 - f1) > _120) {
+    var f2old = f2;
+    var x2old = x2;
+    var y2old = y2;
+    f2 = f1 + _120 * (sweep_flag && f2 > f1 ? 1 : -1);
+    x2 = cx + rx * Math.cos(f2);
+    y2 = cy + ry * Math.sin(f2);
+    res = arcToSVG(x2, y2, rx, ry, angle, 0, sweep_flag, x2old, y2old, [f2, f2old, cx, cy]);
+  }
+  var t = Math.tan((f2 - f1) / 4);
+  var hx = 4 / 3 * rx * t;
+  var hy = 4 / 3 * ry * t;
+  var curve = [
+    2 * x1 - (x1 + hx * Math.sin(f1)),
+    2 * y1 - (y1 - hy * Math.cos(f1)),
+    x2 + hx * Math.sin(f2),
+    y2 - hy * Math.cos(f2),
+    x2,
+    y2
+  ];
+  if (recursive) return curve;
+  if (res) curve = curve.concat(res);
+  for (var i = 0; i < curve.length;) {
+    var rot = __PRIVATE_rotate(curve[i], curve[i+1], angle);
+    curve[i++] = rot.x;
+    curve[i++] = rot.y;
+  }
+  return curve;
+}
+
+function __PRIVATE_rotate(x, y, rad){
+  return {
+    x: x * Math.cos(rad) - y * Math.sin(rad),
+    y: x * Math.sin(rad) + y * Math.cos(rad)
+  };
+}
+
+},{"./path-data-polyfill.es5.js":157,"./plugins/convertShapeToPath.js":158,"load-svg":55,"normalize-svg-path":60,"svg-mesh-3d":98,"svgo":100,"svgo/plugins/convertPathData.js":140,"svgo/plugins/convertStyleToAttrs.js":141,"svgo/plugins/convertTransform.js":142,"svgo/plugins/removeComments.js":143,"three-simplicial-complex":144,"three.meshline":145}],2:[function(require,module,exports){
 
 module.exports = absolutize
 
@@ -67,7 +640,7 @@ function absolutize(path){
 	})
 }
 
-},{}],2:[function(require,module,exports){
+},{}],3:[function(require,module,exports){
 function clone(point) { //TODO: use gl-vec2 for this
     return [point[0], point[1]]
 }
@@ -266,9 +839,9 @@ module.exports = function createBezierBuilder(opt) {
     }
 }
 
-},{}],3:[function(require,module,exports){
+},{}],4:[function(require,module,exports){
 module.exports = require('./function')()
-},{"./function":2}],4:[function(require,module,exports){
+},{"./function":3}],5:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -384,7 +957,7 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],5:[function(require,module,exports){
+},{}],6:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -397,7 +970,7 @@ function add(a, b) {
     a[1].mul(b[1]))
 }
 
-},{"./lib/rationalize":15}],6:[function(require,module,exports){
+},{"./lib/rationalize":16}],7:[function(require,module,exports){
 'use strict'
 
 module.exports = cmp
@@ -406,7 +979,7 @@ function cmp(a, b) {
     return a[0].mul(b[1]).cmp(b[0].mul(a[1]))
 }
 
-},{}],7:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -417,7 +990,7 @@ function div(a, b) {
   return rationalize(a[0].mul(b[1]), a[1].mul(b[0]))
 }
 
-},{"./lib/rationalize":15}],8:[function(require,module,exports){
+},{"./lib/rationalize":16}],9:[function(require,module,exports){
 'use strict'
 
 var isRat = require('./is-rat')
@@ -479,7 +1052,7 @@ function makeRational(numer, denom) {
   return rationalize(a, b)
 }
 
-},{"./div":7,"./is-rat":9,"./lib/is-bn":13,"./lib/num-to-bn":14,"./lib/rationalize":15,"./lib/str-to-bn":16}],9:[function(require,module,exports){
+},{"./div":8,"./is-rat":10,"./lib/is-bn":14,"./lib/num-to-bn":15,"./lib/rationalize":16,"./lib/str-to-bn":17}],10:[function(require,module,exports){
 'use strict'
 
 var isBN = require('./lib/is-bn')
@@ -490,7 +1063,7 @@ function isRat(x) {
   return Array.isArray(x) && x.length === 2 && isBN(x[0]) && isBN(x[1])
 }
 
-},{"./lib/is-bn":13}],10:[function(require,module,exports){
+},{"./lib/is-bn":14}],11:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -501,7 +1074,7 @@ function sign (x) {
   return x.cmp(new BN(0))
 }
 
-},{"bn.js":23}],11:[function(require,module,exports){
+},{"bn.js":24}],12:[function(require,module,exports){
 'use strict'
 
 var sign = require('./bn-sign')
@@ -526,7 +1099,7 @@ function bn2num(b) {
   return sign(b) * out
 }
 
-},{"./bn-sign":10}],12:[function(require,module,exports){
+},{"./bn-sign":11}],13:[function(require,module,exports){
 'use strict'
 
 var db = require('double-bits')
@@ -547,7 +1120,7 @@ function ctzNumber(x) {
   return h + 32
 }
 
-},{"bit-twiddle":22,"double-bits":48}],13:[function(require,module,exports){
+},{"bit-twiddle":23,"double-bits":46}],14:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -560,7 +1133,7 @@ function isBN(x) {
   return x && typeof x === 'object' && Boolean(x.words)
 }
 
-},{"bn.js":23}],14:[function(require,module,exports){
+},{"bn.js":24}],15:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -577,7 +1150,7 @@ function num2bn(x) {
   }
 }
 
-},{"bn.js":23,"double-bits":48}],15:[function(require,module,exports){
+},{"bn.js":24,"double-bits":46}],16:[function(require,module,exports){
 'use strict'
 
 var num2bn = require('./num-to-bn')
@@ -605,7 +1178,7 @@ function rationalize(numer, denom) {
   return [ numer, denom ]
 }
 
-},{"./bn-sign":10,"./num-to-bn":14}],16:[function(require,module,exports){
+},{"./bn-sign":11,"./num-to-bn":15}],17:[function(require,module,exports){
 'use strict'
 
 var BN = require('bn.js')
@@ -616,7 +1189,7 @@ function str2BN(x) {
   return new BN(x)
 }
 
-},{"bn.js":23}],17:[function(require,module,exports){
+},{"bn.js":24}],18:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -627,7 +1200,7 @@ function mul(a, b) {
   return rationalize(a[0].mul(b[0]), a[1].mul(b[1]))
 }
 
-},{"./lib/rationalize":15}],18:[function(require,module,exports){
+},{"./lib/rationalize":16}],19:[function(require,module,exports){
 'use strict'
 
 var bnsign = require('./lib/bn-sign')
@@ -638,7 +1211,7 @@ function sign(x) {
   return bnsign(x[0]) * bnsign(x[1])
 }
 
-},{"./lib/bn-sign":10}],19:[function(require,module,exports){
+},{"./lib/bn-sign":11}],20:[function(require,module,exports){
 'use strict'
 
 var rationalize = require('./lib/rationalize')
@@ -649,7 +1222,7 @@ function sub(a, b) {
   return rationalize(a[0].mul(b[1]).sub(a[1].mul(b[0])), a[1].mul(b[1]))
 }
 
-},{"./lib/rationalize":15}],20:[function(require,module,exports){
+},{"./lib/rationalize":16}],21:[function(require,module,exports){
 'use strict'
 
 var bn2num = require('./lib/bn-to-num')
@@ -687,7 +1260,7 @@ function roundRat (f) {
   }
 }
 
-},{"./lib/bn-to-num":11,"./lib/ctz":12}],21:[function(require,module,exports){
+},{"./lib/bn-to-num":12,"./lib/ctz":13}],22:[function(require,module,exports){
 "use strict"
 
 function compileSearch(funcName, predicate, reversed, extraArgs, earlyOut) {
@@ -741,7 +1314,7 @@ module.exports = {
   eq: compileBoundsSearch("-", true, "EQ", true)
 }
 
-},{}],22:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 /**
  * Bit twiddling hacks for JavaScript.
  *
@@ -947,7 +1520,7 @@ exports.nextCombination = function(v) {
 }
 
 
-},{}],23:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 (function (module, exports) {
   'use strict';
 
@@ -4376,7 +4949,7 @@ exports.nextCombination = function(v) {
   };
 })(typeof module === 'undefined' || module, this);
 
-},{}],24:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 'use strict'
 
 module.exports = findBounds
@@ -4399,7 +4972,7 @@ function findBounds(points) {
   }
   return [lo, hi]
 }
-},{}],25:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 'use strict'
 
 module.exports = boxIntersectWrapper
@@ -4538,7 +5111,7 @@ function boxIntersectWrapper(arg0, arg1, arg2) {
       throw new Error('box-intersect: Invalid arguments')
   }
 }
-},{"./lib/intersect":27,"./lib/sweep":31,"typedarray-pool":102}],26:[function(require,module,exports){
+},{"./lib/intersect":28,"./lib/sweep":32,"typedarray-pool":150}],27:[function(require,module,exports){
 'use strict'
 
 var DIMENSION   = 'd'
@@ -4683,7 +5256,7 @@ function bruteForcePlanner(full) {
 
 exports.partial = bruteForcePlanner(false)
 exports.full    = bruteForcePlanner(true)
-},{}],27:[function(require,module,exports){
+},{}],28:[function(require,module,exports){
 'use strict'
 
 module.exports = boxIntersectIter
@@ -5178,7 +5751,7 @@ function boxIntersectIter(
     }
   }
 }
-},{"./brute":26,"./median":28,"./partition":29,"./sweep":31,"bit-twiddle":22,"typedarray-pool":102}],28:[function(require,module,exports){
+},{"./brute":27,"./median":29,"./partition":30,"./sweep":32,"bit-twiddle":23,"typedarray-pool":150}],29:[function(require,module,exports){
 'use strict'
 
 module.exports = findMedian
@@ -5321,7 +5894,7 @@ function findMedian(d, axis, start, end, boxes, ids) {
     start, mid, boxes, ids,
     boxes[elemSize*mid+axis])
 }
-},{"./partition":29}],29:[function(require,module,exports){
+},{"./partition":30}],30:[function(require,module,exports){
 'use strict'
 
 module.exports = genPartition
@@ -5342,7 +5915,7 @@ function genPartition(predicate, args) {
         .replace('$', predicate))
   return Function.apply(void 0, fargs)
 }
-},{}],30:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 'use strict';
 
 //This code is extracted from ndarray-sort
@@ -5579,7 +6152,7 @@ function quickSort(left, right, data) {
     quickSort(less, great, data);
   }
 }
-},{}],31:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 'use strict'
 
 module.exports = {
@@ -6014,11 +6587,198 @@ red_loop:
     }
   }
 }
-},{"./sort":30,"bit-twiddle":22,"typedarray-pool":102}],32:[function(require,module,exports){
+},{"./sort":31,"bit-twiddle":23,"typedarray-pool":150}],33:[function(require,module,exports){
 
-},{}],33:[function(require,module,exports){
-arguments[4][32][0].apply(exports,arguments)
-},{"dup":32}],34:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
+arguments[4][33][0].apply(exports,arguments)
+},{"dup":33}],35:[function(require,module,exports){
+// shim for using process in browser
+var process = module.exports = {};
+
+// cached from whatever global is present so that test runners that stub it
+// don't break things.  But we need to wrap it in a try catch in case it is
+// wrapped in strict mode code which doesn't define any globals.  It's inside a
+// function because try/catches deoptimize in certain engines.
+
+var cachedSetTimeout;
+var cachedClearTimeout;
+
+function defaultSetTimout() {
+    throw new Error('setTimeout has not been defined');
+}
+function defaultClearTimeout () {
+    throw new Error('clearTimeout has not been defined');
+}
+(function () {
+    try {
+        if (typeof setTimeout === 'function') {
+            cachedSetTimeout = setTimeout;
+        } else {
+            cachedSetTimeout = defaultSetTimout;
+        }
+    } catch (e) {
+        cachedSetTimeout = defaultSetTimout;
+    }
+    try {
+        if (typeof clearTimeout === 'function') {
+            cachedClearTimeout = clearTimeout;
+        } else {
+            cachedClearTimeout = defaultClearTimeout;
+        }
+    } catch (e) {
+        cachedClearTimeout = defaultClearTimeout;
+    }
+} ())
+function runTimeout(fun) {
+    if (cachedSetTimeout === setTimeout) {
+        //normal enviroments in sane situations
+        return setTimeout(fun, 0);
+    }
+    // if setTimeout wasn't available but was latter defined
+    if ((cachedSetTimeout === defaultSetTimout || !cachedSetTimeout) && setTimeout) {
+        cachedSetTimeout = setTimeout;
+        return setTimeout(fun, 0);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedSetTimeout(fun, 0);
+    } catch(e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't trust the global object when called normally
+            return cachedSetTimeout.call(null, fun, 0);
+        } catch(e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error
+            return cachedSetTimeout.call(this, fun, 0);
+        }
+    }
+
+
+}
+function runClearTimeout(marker) {
+    if (cachedClearTimeout === clearTimeout) {
+        //normal enviroments in sane situations
+        return clearTimeout(marker);
+    }
+    // if clearTimeout wasn't available but was latter defined
+    if ((cachedClearTimeout === defaultClearTimeout || !cachedClearTimeout) && clearTimeout) {
+        cachedClearTimeout = clearTimeout;
+        return clearTimeout(marker);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedClearTimeout(marker);
+    } catch (e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't  trust the global object when called normally
+            return cachedClearTimeout.call(null, marker);
+        } catch (e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error.
+            // Some versions of I.E. have different rules for clearTimeout vs setTimeout
+            return cachedClearTimeout.call(this, marker);
+        }
+    }
+
+
+
+}
+var queue = [];
+var draining = false;
+var currentQueue;
+var queueIndex = -1;
+
+function cleanUpNextTick() {
+    if (!draining || !currentQueue) {
+        return;
+    }
+    draining = false;
+    if (currentQueue.length) {
+        queue = currentQueue.concat(queue);
+    } else {
+        queueIndex = -1;
+    }
+    if (queue.length) {
+        drainQueue();
+    }
+}
+
+function drainQueue() {
+    if (draining) {
+        return;
+    }
+    var timeout = runTimeout(cleanUpNextTick);
+    draining = true;
+
+    var len = queue.length;
+    while(len) {
+        currentQueue = queue;
+        queue = [];
+        while (++queueIndex < len) {
+            if (currentQueue) {
+                currentQueue[queueIndex].run();
+            }
+        }
+        queueIndex = -1;
+        len = queue.length;
+    }
+    currentQueue = null;
+    draining = false;
+    runClearTimeout(timeout);
+}
+
+process.nextTick = function (fun) {
+    var args = new Array(arguments.length - 1);
+    if (arguments.length > 1) {
+        for (var i = 1; i < arguments.length; i++) {
+            args[i - 1] = arguments[i];
+        }
+    }
+    queue.push(new Item(fun, args));
+    if (queue.length === 1 && !draining) {
+        runTimeout(drainQueue);
+    }
+};
+
+// v8 likes predictible objects
+function Item(fun, array) {
+    this.fun = fun;
+    this.array = array;
+}
+Item.prototype.run = function () {
+    this.fun.apply(null, this.array);
+};
+process.title = 'browser';
+process.browser = true;
+process.env = {};
+process.argv = [];
+process.version = ''; // empty string to avoid regexp issues
+process.versions = {};
+
+function noop() {}
+
+process.on = noop;
+process.addListener = noop;
+process.once = noop;
+process.off = noop;
+process.removeListener = noop;
+process.removeAllListeners = noop;
+process.emit = noop;
+process.prependListener = noop;
+process.prependOnceListener = noop;
+
+process.listeners = function (name) { return [] }
+
+process.binding = function (name) {
+    throw new Error('process.binding is not supported');
+};
+
+process.cwd = function () { return '/' };
+process.chdir = function (dir) {
+    throw new Error('process.chdir is not supported');
+};
+process.umask = function() { return 0; };
+
+},{}],36:[function(require,module,exports){
+(function (global){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -6031,57 +6791,80 @@ arguments[4][32][0].apply(exports,arguments)
 
 var base64 = require('base64-js')
 var ieee754 = require('ieee754')
+var isArray = require('isarray')
 
 exports.Buffer = Buffer
 exports.SlowBuffer = SlowBuffer
 exports.INSPECT_MAX_BYTES = 50
 
-var K_MAX_LENGTH = 0x7fffffff
-exports.kMaxLength = K_MAX_LENGTH
-
 /**
  * If `Buffer.TYPED_ARRAY_SUPPORT`:
  *   === true    Use Uint8Array implementation (fastest)
- *   === false   Print warning and recommend using `buffer` v4.x which has an Object
- *               implementation (most compatible, even IE6)
+ *   === false   Use Object implementation (most compatible, even IE6)
  *
  * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,
  * Opera 11.6+, iOS 4.2+.
  *
- * We report that the browser does not support typed arrays if the are not subclassable
- * using __proto__. Firefox 4-29 lacks support for adding new properties to `Uint8Array`
- * (See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438). IE 10 lacks support
- * for __proto__ and has a buggy typed array implementation.
- */
-Buffer.TYPED_ARRAY_SUPPORT = typedArraySupport()
+ * Due to various browser bugs, sometimes the Object implementation will be used even
+ * when the browser supports typed arrays.
+ *
+ * Note:
+ *
+ *   - Firefox 4-29 lacks support for adding new properties to `Uint8Array` instances,
+ *     See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438.
+ *
+ *   - Chrome 9-10 is missing the `TypedArray.prototype.subarray` function.
+ *
+ *   - IE10 has a broken `TypedArray.prototype.subarray` function which returns arrays of
+ *     incorrect length in some situations.
 
-if (!Buffer.TYPED_ARRAY_SUPPORT && typeof console !== 'undefined' &&
-    typeof console.error === 'function') {
-  console.error(
-    'This browser lacks typed array (Uint8Array) support which is required by ' +
-    '`buffer` v5.x. Use `buffer` v4.x if you require old browser support.'
-  )
-}
+ * We detect these buggy browsers and set `Buffer.TYPED_ARRAY_SUPPORT` to `false` so they
+ * get the Object implementation, which is slower but behaves correctly.
+ */
+Buffer.TYPED_ARRAY_SUPPORT = global.TYPED_ARRAY_SUPPORT !== undefined
+  ? global.TYPED_ARRAY_SUPPORT
+  : typedArraySupport()
+
+/*
+ * Export kMaxLength after typed array support is determined.
+ */
+exports.kMaxLength = kMaxLength()
 
 function typedArraySupport () {
-  // Can typed array instances can be augmented?
   try {
     var arr = new Uint8Array(1)
     arr.__proto__ = {__proto__: Uint8Array.prototype, foo: function () { return 42 }}
-    return arr.foo() === 42
+    return arr.foo() === 42 && // typed array instances can be augmented
+        typeof arr.subarray === 'function' && // chrome 9-10 lack `subarray`
+        arr.subarray(1, 1).byteLength === 0 // ie10 has broken `subarray`
   } catch (e) {
     return false
   }
 }
 
-function createBuffer (length) {
-  if (length > K_MAX_LENGTH) {
+function kMaxLength () {
+  return Buffer.TYPED_ARRAY_SUPPORT
+    ? 0x7fffffff
+    : 0x3fffffff
+}
+
+function createBuffer (that, length) {
+  if (kMaxLength() < length) {
     throw new RangeError('Invalid typed array length')
   }
-  // Return an augmented `Uint8Array` instance
-  var buf = new Uint8Array(length)
-  buf.__proto__ = Buffer.prototype
-  return buf
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    // Return an augmented `Uint8Array` instance, for best performance
+    that = new Uint8Array(length)
+    that.__proto__ = Buffer.prototype
+  } else {
+    // Fallback: Return an object instance of the Buffer class
+    if (that === null) {
+      that = new Buffer(length)
+    }
+    that.length = length
+  }
+
+  return that
 }
 
 /**
@@ -6095,6 +6878,10 @@ function createBuffer (length) {
  */
 
 function Buffer (arg, encodingOrOffset, length) {
+  if (!Buffer.TYPED_ARRAY_SUPPORT && !(this instanceof Buffer)) {
+    return new Buffer(arg, encodingOrOffset, length)
+  }
+
   // Common case.
   if (typeof arg === 'number') {
     if (typeof encodingOrOffset === 'string') {
@@ -6102,38 +6889,33 @@ function Buffer (arg, encodingOrOffset, length) {
         'If encoding is specified then the first argument must be a string'
       )
     }
-    return allocUnsafe(arg)
+    return allocUnsafe(this, arg)
   }
-  return from(arg, encodingOrOffset, length)
-}
-
-// Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
-if (typeof Symbol !== 'undefined' && Symbol.species &&
-    Buffer[Symbol.species] === Buffer) {
-  Object.defineProperty(Buffer, Symbol.species, {
-    value: null,
-    configurable: true,
-    enumerable: false,
-    writable: false
-  })
+  return from(this, arg, encodingOrOffset, length)
 }
 
 Buffer.poolSize = 8192 // not used by this implementation
 
-function from (value, encodingOrOffset, length) {
+// TODO: Legacy, not needed anymore. Remove in next major version.
+Buffer._augment = function (arr) {
+  arr.__proto__ = Buffer.prototype
+  return arr
+}
+
+function from (that, value, encodingOrOffset, length) {
   if (typeof value === 'number') {
     throw new TypeError('"value" argument must not be a number')
   }
 
-  if (value instanceof ArrayBuffer) {
-    return fromArrayBuffer(value, encodingOrOffset, length)
+  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+    return fromArrayBuffer(that, value, encodingOrOffset, length)
   }
 
   if (typeof value === 'string') {
-    return fromString(value, encodingOrOffset)
+    return fromString(that, value, encodingOrOffset)
   }
 
-  return fromObject(value)
+  return fromObject(that, value)
 }
 
 /**
@@ -6145,13 +6927,21 @@ function from (value, encodingOrOffset, length) {
  * Buffer.from(arrayBuffer[, byteOffset[, length]])
  **/
 Buffer.from = function (value, encodingOrOffset, length) {
-  return from(value, encodingOrOffset, length)
+  return from(null, value, encodingOrOffset, length)
 }
 
-// Note: Change prototype *after* Buffer.from is defined to workaround Chrome bug:
-// https://github.com/feross/buffer/pull/148
-Buffer.prototype.__proto__ = Uint8Array.prototype
-Buffer.__proto__ = Uint8Array
+if (Buffer.TYPED_ARRAY_SUPPORT) {
+  Buffer.prototype.__proto__ = Uint8Array.prototype
+  Buffer.__proto__ = Uint8Array
+  if (typeof Symbol !== 'undefined' && Symbol.species &&
+      Buffer[Symbol.species] === Buffer) {
+    // Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
+    Object.defineProperty(Buffer, Symbol.species, {
+      value: null,
+      configurable: true
+    })
+  }
+}
 
 function assertSize (size) {
   if (typeof size !== 'number') {
@@ -6161,20 +6951,20 @@ function assertSize (size) {
   }
 }
 
-function alloc (size, fill, encoding) {
+function alloc (that, size, fill, encoding) {
   assertSize(size)
   if (size <= 0) {
-    return createBuffer(size)
+    return createBuffer(that, size)
   }
   if (fill !== undefined) {
     // Only pay attention to encoding if it's a string. This
     // prevents accidentally sending in a number that would
     // be interpretted as a start offset.
     return typeof encoding === 'string'
-      ? createBuffer(size).fill(fill, encoding)
-      : createBuffer(size).fill(fill)
+      ? createBuffer(that, size).fill(fill, encoding)
+      : createBuffer(that, size).fill(fill)
   }
-  return createBuffer(size)
+  return createBuffer(that, size)
 }
 
 /**
@@ -6182,28 +6972,34 @@ function alloc (size, fill, encoding) {
  * alloc(size[, fill[, encoding]])
  **/
 Buffer.alloc = function (size, fill, encoding) {
-  return alloc(size, fill, encoding)
+  return alloc(null, size, fill, encoding)
 }
 
-function allocUnsafe (size) {
+function allocUnsafe (that, size) {
   assertSize(size)
-  return createBuffer(size < 0 ? 0 : checked(size) | 0)
+  that = createBuffer(that, size < 0 ? 0 : checked(size) | 0)
+  if (!Buffer.TYPED_ARRAY_SUPPORT) {
+    for (var i = 0; i < size; ++i) {
+      that[i] = 0
+    }
+  }
+  return that
 }
 
 /**
  * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.
  * */
 Buffer.allocUnsafe = function (size) {
-  return allocUnsafe(size)
+  return allocUnsafe(null, size)
 }
 /**
  * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.
  */
 Buffer.allocUnsafeSlow = function (size) {
-  return allocUnsafe(size)
+  return allocUnsafe(null, size)
 }
 
-function fromString (string, encoding) {
+function fromString (that, string, encoding) {
   if (typeof encoding !== 'string' || encoding === '') {
     encoding = 'utf8'
   }
@@ -6213,30 +7009,32 @@ function fromString (string, encoding) {
   }
 
   var length = byteLength(string, encoding) | 0
-  var buf = createBuffer(length)
+  that = createBuffer(that, length)
 
-  var actual = buf.write(string, encoding)
+  var actual = that.write(string, encoding)
 
   if (actual !== length) {
     // Writing a hex string, for example, that contains invalid characters will
     // cause everything after the first invalid character to be ignored. (e.g.
     // 'abxxcd' will be treated as 'ab')
-    buf = buf.slice(0, actual)
+    that = that.slice(0, actual)
   }
 
-  return buf
+  return that
 }
 
-function fromArrayLike (array) {
+function fromArrayLike (that, array) {
   var length = array.length < 0 ? 0 : checked(array.length) | 0
-  var buf = createBuffer(length)
+  that = createBuffer(that, length)
   for (var i = 0; i < length; i += 1) {
-    buf[i] = array[i] & 255
+    that[i] = array[i] & 255
   }
-  return buf
+  return that
 }
 
-function fromArrayBuffer (array, byteOffset, length) {
+function fromArrayBuffer (that, array, byteOffset, length) {
+  array.byteLength // this throws if `array` is not a valid ArrayBuffer
+
   if (byteOffset < 0 || array.byteLength < byteOffset) {
     throw new RangeError('\'offset\' is out of bounds')
   }
@@ -6245,43 +7043,49 @@ function fromArrayBuffer (array, byteOffset, length) {
     throw new RangeError('\'length\' is out of bounds')
   }
 
-  var buf
   if (byteOffset === undefined && length === undefined) {
-    buf = new Uint8Array(array)
+    array = new Uint8Array(array)
   } else if (length === undefined) {
-    buf = new Uint8Array(array, byteOffset)
+    array = new Uint8Array(array, byteOffset)
   } else {
-    buf = new Uint8Array(array, byteOffset, length)
+    array = new Uint8Array(array, byteOffset, length)
   }
 
-  // Return an augmented `Uint8Array` instance
-  buf.__proto__ = Buffer.prototype
-  return buf
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    // Return an augmented `Uint8Array` instance, for best performance
+    that = array
+    that.__proto__ = Buffer.prototype
+  } else {
+    // Fallback: Return an object instance of the Buffer class
+    that = fromArrayLike(that, array)
+  }
+  return that
 }
 
-function fromObject (obj) {
+function fromObject (that, obj) {
   if (Buffer.isBuffer(obj)) {
     var len = checked(obj.length) | 0
-    var buf = createBuffer(len)
+    that = createBuffer(that, len)
 
-    if (buf.length === 0) {
-      return buf
+    if (that.length === 0) {
+      return that
     }
 
-    obj.copy(buf, 0, 0, len)
-    return buf
+    obj.copy(that, 0, 0, len)
+    return that
   }
 
   if (obj) {
-    if (isArrayBufferView(obj) || 'length' in obj) {
-      if (typeof obj.length !== 'number' || numberIsNaN(obj.length)) {
-        return createBuffer(0)
+    if ((typeof ArrayBuffer !== 'undefined' &&
+        obj.buffer instanceof ArrayBuffer) || 'length' in obj) {
+      if (typeof obj.length !== 'number' || isnan(obj.length)) {
+        return createBuffer(that, 0)
       }
-      return fromArrayLike(obj)
+      return fromArrayLike(that, obj)
     }
 
-    if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
-      return fromArrayLike(obj.data)
+    if (obj.type === 'Buffer' && isArray(obj.data)) {
+      return fromArrayLike(that, obj.data)
     }
   }
 
@@ -6289,11 +7093,11 @@ function fromObject (obj) {
 }
 
 function checked (length) {
-  // Note: cannot use `length < K_MAX_LENGTH` here because that fails when
+  // Note: cannot use `length < kMaxLength()` here because that fails when
   // length is NaN (which is otherwise coerced to zero.)
-  if (length >= K_MAX_LENGTH) {
+  if (length >= kMaxLength()) {
     throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
-                         'size: 0x' + K_MAX_LENGTH.toString(16) + ' bytes')
+                         'size: 0x' + kMaxLength().toString(16) + ' bytes')
   }
   return length | 0
 }
@@ -6306,7 +7110,7 @@ function SlowBuffer (length) {
 }
 
 Buffer.isBuffer = function isBuffer (b) {
-  return b != null && b._isBuffer === true
+  return !!(b != null && b._isBuffer)
 }
 
 Buffer.compare = function compare (a, b) {
@@ -6352,7 +7156,7 @@ Buffer.isEncoding = function isEncoding (encoding) {
 }
 
 Buffer.concat = function concat (list, length) {
-  if (!Array.isArray(list)) {
+  if (!isArray(list)) {
     throw new TypeError('"list" argument must be an Array of Buffers')
   }
 
@@ -6385,7 +7189,8 @@ function byteLength (string, encoding) {
   if (Buffer.isBuffer(string)) {
     return string.length
   }
-  if (isArrayBufferView(string) || string instanceof ArrayBuffer) {
+  if (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' &&
+      (ArrayBuffer.isView(string) || string instanceof ArrayBuffer)) {
     return string.byteLength
   }
   if (typeof string !== 'string') {
@@ -6495,12 +7300,8 @@ function slowToString (encoding, start, end) {
   }
 }
 
-// This property is used by `Buffer.isBuffer` (and the `is-buffer` npm package)
-// to detect a Buffer instance. It's not possible to use `instanceof Buffer`
-// reliably in a browserify context because there could be multiple different
-// copies of the 'buffer' package in use. This method works even for Buffer
-// instances that were created from another copy of the `buffer` package.
-// See: https://github.com/feross/buffer/issues/154
+// The property is used by `Buffer.isBuffer` and `is-buffer` (in Safari 5-7) to detect
+// Buffer instances.
 Buffer.prototype._isBuffer = true
 
 function swap (b, n, m) {
@@ -6547,7 +7348,7 @@ Buffer.prototype.swap64 = function swap64 () {
 }
 
 Buffer.prototype.toString = function toString () {
-  var length = this.length
+  var length = this.length | 0
   if (length === 0) return ''
   if (arguments.length === 0) return utf8Slice(this, 0, length)
   return slowToString.apply(this, arguments)
@@ -6651,7 +7452,7 @@ function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
     byteOffset = -0x80000000
   }
   byteOffset = +byteOffset  // Coerce to Number.
-  if (numberIsNaN(byteOffset)) {
+  if (isNaN(byteOffset)) {
     // byteOffset: it it's undefined, null, NaN, "foo", etc, search whole buffer
     byteOffset = dir ? 0 : (buffer.length - 1)
   }
@@ -6680,7 +7481,8 @@ function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
     return arrayIndexOf(buffer, val, byteOffset, encoding, dir)
   } else if (typeof val === 'number') {
     val = val & 0xFF // Search for a byte value [0-255]
-    if (typeof Uint8Array.prototype.indexOf === 'function') {
+    if (Buffer.TYPED_ARRAY_SUPPORT &&
+        typeof Uint8Array.prototype.indexOf === 'function') {
       if (dir) {
         return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)
       } else {
@@ -6782,7 +7584,7 @@ function hexWrite (buf, string, offset, length) {
   }
   for (var i = 0; i < length; ++i) {
     var parsed = parseInt(string.substr(i * 2, 2), 16)
-    if (numberIsNaN(parsed)) return i
+    if (isNaN(parsed)) return i
     buf[offset + i] = parsed
   }
   return i
@@ -6821,14 +7623,15 @@ Buffer.prototype.write = function write (string, offset, length, encoding) {
     offset = 0
   // Buffer#write(string, offset[, length][, encoding])
   } else if (isFinite(offset)) {
-    offset = offset >>> 0
+    offset = offset | 0
     if (isFinite(length)) {
-      length = length >>> 0
+      length = length | 0
       if (encoding === undefined) encoding = 'utf8'
     } else {
       encoding = length
       length = undefined
     }
+  // legacy write(string, encoding, offset, length) - remove in v0.13
   } else {
     throw new Error(
       'Buffer.write(string, encoding, offset[, length]) is no longer supported'
@@ -7027,7 +7830,7 @@ function utf16leSlice (buf, start, end) {
   var bytes = buf.slice(start, end)
   var res = ''
   for (var i = 0; i < bytes.length; i += 2) {
-    res += String.fromCharCode(bytes[i] + (bytes[i + 1] * 256))
+    res += String.fromCharCode(bytes[i] + bytes[i + 1] * 256)
   }
   return res
 }
@@ -7053,9 +7856,18 @@ Buffer.prototype.slice = function slice (start, end) {
 
   if (end < start) end = start
 
-  var newBuf = this.subarray(start, end)
-  // Return an augmented `Uint8Array` instance
-  newBuf.__proto__ = Buffer.prototype
+  var newBuf
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    newBuf = this.subarray(start, end)
+    newBuf.__proto__ = Buffer.prototype
+  } else {
+    var sliceLen = end - start
+    newBuf = new Buffer(sliceLen, undefined)
+    for (var i = 0; i < sliceLen; ++i) {
+      newBuf[i] = this[i + start]
+    }
+  }
+
   return newBuf
 }
 
@@ -7068,8 +7880,8 @@ function checkOffset (offset, ext, length) {
 }
 
 Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
+  offset = offset | 0
+  byteLength = byteLength | 0
   if (!noAssert) checkOffset(offset, byteLength, this.length)
 
   var val = this[offset]
@@ -7083,8 +7895,8 @@ Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert)
 }
 
 Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
+  offset = offset | 0
+  byteLength = byteLength | 0
   if (!noAssert) {
     checkOffset(offset, byteLength, this.length)
   }
@@ -7099,25 +7911,21 @@ Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert)
 }
 
 Buffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 1, this.length)
   return this[offset]
 }
 
 Buffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   return this[offset] | (this[offset + 1] << 8)
 }
 
 Buffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   return (this[offset] << 8) | this[offset + 1]
 }
 
 Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return ((this[offset]) |
@@ -7127,7 +7935,6 @@ Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
 }
 
 Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset] * 0x1000000) +
@@ -7137,8 +7944,8 @@ Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
 }
 
 Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
+  offset = offset | 0
+  byteLength = byteLength | 0
   if (!noAssert) checkOffset(offset, byteLength, this.length)
 
   var val = this[offset]
@@ -7155,8 +7962,8 @@ Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
 }
 
 Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
+  offset = offset | 0
+  byteLength = byteLength | 0
   if (!noAssert) checkOffset(offset, byteLength, this.length)
 
   var i = byteLength
@@ -7173,28 +7980,24 @@ Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
 }
 
 Buffer.prototype.readInt8 = function readInt8 (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 1, this.length)
   if (!(this[offset] & 0x80)) return (this[offset])
   return ((0xff - this[offset] + 1) * -1)
 }
 
 Buffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   var val = this[offset] | (this[offset + 1] << 8)
   return (val & 0x8000) ? val | 0xFFFF0000 : val
 }
 
 Buffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 2, this.length)
   var val = this[offset + 1] | (this[offset] << 8)
   return (val & 0x8000) ? val | 0xFFFF0000 : val
 }
 
 Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset]) |
@@ -7204,7 +8007,6 @@ Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
 }
 
 Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset] << 24) |
@@ -7214,25 +8016,21 @@ Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
 }
 
 Buffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
   return ieee754.read(this, offset, true, 23, 4)
 }
 
 Buffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 4, this.length)
   return ieee754.read(this, offset, false, 23, 4)
 }
 
 Buffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 8, this.length)
   return ieee754.read(this, offset, true, 52, 8)
 }
 
 Buffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {
-  offset = offset >>> 0
   if (!noAssert) checkOffset(offset, 8, this.length)
   return ieee754.read(this, offset, false, 52, 8)
 }
@@ -7245,8 +8043,8 @@ function checkInt (buf, value, offset, ext, max, min) {
 
 Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
+  offset = offset | 0
+  byteLength = byteLength | 0
   if (!noAssert) {
     var maxBytes = Math.pow(2, 8 * byteLength) - 1
     checkInt(this, value, offset, byteLength, maxBytes, 0)
@@ -7264,8 +8062,8 @@ Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, 
 
 Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
+  offset = offset | 0
+  byteLength = byteLength | 0
   if (!noAssert) {
     var maxBytes = Math.pow(2, 8 * byteLength) - 1
     checkInt(this, value, offset, byteLength, maxBytes, 0)
@@ -7283,57 +8081,89 @@ Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, 
 
 Buffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)
+  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
   this[offset] = (value & 0xff)
   return offset + 1
 }
 
+function objectWriteUInt16 (buf, value, offset, littleEndian) {
+  if (value < 0) value = 0xffff + value + 1
+  for (var i = 0, j = Math.min(buf.length - offset, 2); i < j; ++i) {
+    buf[offset + i] = (value & (0xff << (8 * (littleEndian ? i : 1 - i)))) >>>
+      (littleEndian ? i : 1 - i) * 8
+  }
+}
+
 Buffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
-  this[offset] = (value & 0xff)
-  this[offset + 1] = (value >>> 8)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value & 0xff)
+    this[offset + 1] = (value >>> 8)
+  } else {
+    objectWriteUInt16(this, value, offset, true)
+  }
   return offset + 2
 }
 
 Buffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
-  this[offset] = (value >>> 8)
-  this[offset + 1] = (value & 0xff)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value >>> 8)
+    this[offset + 1] = (value & 0xff)
+  } else {
+    objectWriteUInt16(this, value, offset, false)
+  }
   return offset + 2
+}
+
+function objectWriteUInt32 (buf, value, offset, littleEndian) {
+  if (value < 0) value = 0xffffffff + value + 1
+  for (var i = 0, j = Math.min(buf.length - offset, 4); i < j; ++i) {
+    buf[offset + i] = (value >>> (littleEndian ? i : 3 - i) * 8) & 0xff
+  }
 }
 
 Buffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
-  this[offset + 3] = (value >>> 24)
-  this[offset + 2] = (value >>> 16)
-  this[offset + 1] = (value >>> 8)
-  this[offset] = (value & 0xff)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset + 3] = (value >>> 24)
+    this[offset + 2] = (value >>> 16)
+    this[offset + 1] = (value >>> 8)
+    this[offset] = (value & 0xff)
+  } else {
+    objectWriteUInt32(this, value, offset, true)
+  }
   return offset + 4
 }
 
 Buffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
-  this[offset] = (value >>> 24)
-  this[offset + 1] = (value >>> 16)
-  this[offset + 2] = (value >>> 8)
-  this[offset + 3] = (value & 0xff)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value >>> 24)
+    this[offset + 1] = (value >>> 16)
+    this[offset + 2] = (value >>> 8)
+    this[offset + 3] = (value & 0xff)
+  } else {
+    objectWriteUInt32(this, value, offset, false)
+  }
   return offset + 4
 }
 
 Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) {
-    var limit = Math.pow(2, (8 * byteLength) - 1)
+    var limit = Math.pow(2, 8 * byteLength - 1)
 
     checkInt(this, value, offset, byteLength, limit - 1, -limit)
   }
@@ -7354,9 +8184,9 @@ Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, no
 
 Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) {
-    var limit = Math.pow(2, (8 * byteLength) - 1)
+    var limit = Math.pow(2, 8 * byteLength - 1)
 
     checkInt(this, value, offset, byteLength, limit - 1, -limit)
   }
@@ -7377,8 +8207,9 @@ Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, no
 
 Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)
+  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
   if (value < 0) value = 0xff + value + 1
   this[offset] = (value & 0xff)
   return offset + 1
@@ -7386,42 +8217,58 @@ Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
 
 Buffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  this[offset] = (value & 0xff)
-  this[offset + 1] = (value >>> 8)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value & 0xff)
+    this[offset + 1] = (value >>> 8)
+  } else {
+    objectWriteUInt16(this, value, offset, true)
+  }
   return offset + 2
 }
 
 Buffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  this[offset] = (value >>> 8)
-  this[offset + 1] = (value & 0xff)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value >>> 8)
+    this[offset + 1] = (value & 0xff)
+  } else {
+    objectWriteUInt16(this, value, offset, false)
+  }
   return offset + 2
 }
 
 Buffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
-  this[offset] = (value & 0xff)
-  this[offset + 1] = (value >>> 8)
-  this[offset + 2] = (value >>> 16)
-  this[offset + 3] = (value >>> 24)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value & 0xff)
+    this[offset + 1] = (value >>> 8)
+    this[offset + 2] = (value >>> 16)
+    this[offset + 3] = (value >>> 24)
+  } else {
+    objectWriteUInt32(this, value, offset, true)
+  }
   return offset + 4
 }
 
 Buffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {
   value = +value
-  offset = offset >>> 0
+  offset = offset | 0
   if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
   if (value < 0) value = 0xffffffff + value + 1
-  this[offset] = (value >>> 24)
-  this[offset + 1] = (value >>> 16)
-  this[offset + 2] = (value >>> 8)
-  this[offset + 3] = (value & 0xff)
+  if (Buffer.TYPED_ARRAY_SUPPORT) {
+    this[offset] = (value >>> 24)
+    this[offset + 1] = (value >>> 16)
+    this[offset + 2] = (value >>> 8)
+    this[offset + 3] = (value & 0xff)
+  } else {
+    objectWriteUInt32(this, value, offset, false)
+  }
   return offset + 4
 }
 
@@ -7431,8 +8278,6 @@ function checkIEEE754 (buf, value, offset, ext, max, min) {
 }
 
 function writeFloat (buf, value, offset, littleEndian, noAssert) {
-  value = +value
-  offset = offset >>> 0
   if (!noAssert) {
     checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)
   }
@@ -7449,8 +8294,6 @@ Buffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) 
 }
 
 function writeDouble (buf, value, offset, littleEndian, noAssert) {
-  value = +value
-  offset = offset >>> 0
   if (!noAssert) {
     checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)
   }
@@ -7499,7 +8342,7 @@ Buffer.prototype.copy = function copy (target, targetStart, start, end) {
     for (i = len - 1; i >= 0; --i) {
       target[i + targetStart] = this[i + start]
     }
-  } else if (len < 1000) {
+  } else if (len < 1000 || !Buffer.TYPED_ARRAY_SUPPORT) {
     // ascending copy from start
     for (i = 0; i < len; ++i) {
       target[i + targetStart] = this[i + start]
@@ -7568,7 +8411,7 @@ Buffer.prototype.fill = function fill (val, start, end, encoding) {
   } else {
     var bytes = Buffer.isBuffer(val)
       ? val
-      : new Buffer(val, encoding)
+      : utf8ToBytes(new Buffer(val, encoding).toString())
     var len = bytes.length
     for (i = 0; i < end - start; ++i) {
       this[i + start] = bytes[i % len]
@@ -7581,11 +8424,11 @@ Buffer.prototype.fill = function fill (val, start, end, encoding) {
 // HELPER FUNCTIONS
 // ================
 
-var INVALID_BASE64_RE = /[^+/0-9A-Za-z-_]/g
+var INVALID_BASE64_RE = /[^+\/0-9A-Za-z-_]/g
 
 function base64clean (str) {
   // Node strips out invalid characters like \n and \t from the string, base64-js does not
-  str = str.trim().replace(INVALID_BASE64_RE, '')
+  str = stringtrim(str).replace(INVALID_BASE64_RE, '')
   // Node converts strings with length < 2 to ''
   if (str.length < 2) return ''
   // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not
@@ -7593,6 +8436,11 @@ function base64clean (str) {
     str = str + '='
   }
   return str
+}
+
+function stringtrim (str) {
+  if (str.trim) return str.trim()
+  return str.replace(/^\s+|\s+$/g, '')
 }
 
 function toHex (n) {
@@ -7717,637 +8565,19 @@ function blitBuffer (src, dst, offset, length) {
   return i
 }
 
-// Node 0.10 supports `ArrayBuffer` but lacks `ArrayBuffer.isView`
-function isArrayBufferView (obj) {
-  return (typeof ArrayBuffer.isView === 'function') && ArrayBuffer.isView(obj)
-}
-
-function numberIsNaN (obj) {
-  return obj !== obj // eslint-disable-line no-self-compare
-}
-
-},{"base64-js":4,"ieee754":53}],35:[function(require,module,exports){
-exports.endianness = function () { return 'LE' };
-
-exports.hostname = function () {
-    if (typeof location !== 'undefined') {
-        return location.hostname
-    }
-    else return '';
-};
-
-exports.loadavg = function () { return [] };
-
-exports.uptime = function () { return 0 };
-
-exports.freemem = function () {
-    return Number.MAX_VALUE;
-};
-
-exports.totalmem = function () {
-    return Number.MAX_VALUE;
-};
-
-exports.cpus = function () { return [] };
-
-exports.type = function () { return 'Browser' };
-
-exports.release = function () {
-    if (typeof navigator !== 'undefined') {
-        return navigator.appVersion;
-    }
-    return '';
-};
-
-exports.networkInterfaces
-= exports.getNetworkInterfaces
-= function () { return {} };
-
-exports.arch = function () { return 'javascript' };
-
-exports.platform = function () { return 'browser' };
-
-exports.tmpdir = exports.tmpDir = function () {
-    return '/tmp';
-};
-
-exports.EOL = '\n';
-
-},{}],36:[function(require,module,exports){
-// shim for using process in browser
-var process = module.exports = {};
-
-// cached from whatever global is present so that test runners that stub it
-// don't break things.  But we need to wrap it in a try catch in case it is
-// wrapped in strict mode code which doesn't define any globals.  It's inside a
-// function because try/catches deoptimize in certain engines.
-
-var cachedSetTimeout;
-var cachedClearTimeout;
-
-function defaultSetTimout() {
-    throw new Error('setTimeout has not been defined');
-}
-function defaultClearTimeout () {
-    throw new Error('clearTimeout has not been defined');
-}
-(function () {
-    try {
-        if (typeof setTimeout === 'function') {
-            cachedSetTimeout = setTimeout;
-        } else {
-            cachedSetTimeout = defaultSetTimout;
-        }
-    } catch (e) {
-        cachedSetTimeout = defaultSetTimout;
-    }
-    try {
-        if (typeof clearTimeout === 'function') {
-            cachedClearTimeout = clearTimeout;
-        } else {
-            cachedClearTimeout = defaultClearTimeout;
-        }
-    } catch (e) {
-        cachedClearTimeout = defaultClearTimeout;
-    }
-} ())
-function runTimeout(fun) {
-    if (cachedSetTimeout === setTimeout) {
-        //normal enviroments in sane situations
-        return setTimeout(fun, 0);
-    }
-    // if setTimeout wasn't available but was latter defined
-    if ((cachedSetTimeout === defaultSetTimout || !cachedSetTimeout) && setTimeout) {
-        cachedSetTimeout = setTimeout;
-        return setTimeout(fun, 0);
-    }
-    try {
-        // when when somebody has screwed with setTimeout but no I.E. maddness
-        return cachedSetTimeout(fun, 0);
-    } catch(e){
-        try {
-            // When we are in I.E. but the script has been evaled so I.E. doesn't trust the global object when called normally
-            return cachedSetTimeout.call(null, fun, 0);
-        } catch(e){
-            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error
-            return cachedSetTimeout.call(this, fun, 0);
-        }
-    }
-
-
-}
-function runClearTimeout(marker) {
-    if (cachedClearTimeout === clearTimeout) {
-        //normal enviroments in sane situations
-        return clearTimeout(marker);
-    }
-    // if clearTimeout wasn't available but was latter defined
-    if ((cachedClearTimeout === defaultClearTimeout || !cachedClearTimeout) && clearTimeout) {
-        cachedClearTimeout = clearTimeout;
-        return clearTimeout(marker);
-    }
-    try {
-        // when when somebody has screwed with setTimeout but no I.E. maddness
-        return cachedClearTimeout(marker);
-    } catch (e){
-        try {
-            // When we are in I.E. but the script has been evaled so I.E. doesn't  trust the global object when called normally
-            return cachedClearTimeout.call(null, marker);
-        } catch (e){
-            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error.
-            // Some versions of I.E. have different rules for clearTimeout vs setTimeout
-            return cachedClearTimeout.call(this, marker);
-        }
-    }
-
-
-
-}
-var queue = [];
-var draining = false;
-var currentQueue;
-var queueIndex = -1;
-
-function cleanUpNextTick() {
-    if (!draining || !currentQueue) {
-        return;
-    }
-    draining = false;
-    if (currentQueue.length) {
-        queue = currentQueue.concat(queue);
-    } else {
-        queueIndex = -1;
-    }
-    if (queue.length) {
-        drainQueue();
-    }
-}
-
-function drainQueue() {
-    if (draining) {
-        return;
-    }
-    var timeout = runTimeout(cleanUpNextTick);
-    draining = true;
-
-    var len = queue.length;
-    while(len) {
-        currentQueue = queue;
-        queue = [];
-        while (++queueIndex < len) {
-            if (currentQueue) {
-                currentQueue[queueIndex].run();
-            }
-        }
-        queueIndex = -1;
-        len = queue.length;
-    }
-    currentQueue = null;
-    draining = false;
-    runClearTimeout(timeout);
-}
-
-process.nextTick = function (fun) {
-    var args = new Array(arguments.length - 1);
-    if (arguments.length > 1) {
-        for (var i = 1; i < arguments.length; i++) {
-            args[i - 1] = arguments[i];
-        }
-    }
-    queue.push(new Item(fun, args));
-    if (queue.length === 1 && !draining) {
-        runTimeout(drainQueue);
-    }
-};
-
-// v8 likes predictible objects
-function Item(fun, array) {
-    this.fun = fun;
-    this.array = array;
-}
-Item.prototype.run = function () {
-    this.fun.apply(null, this.array);
-};
-process.title = 'browser';
-process.browser = true;
-process.env = {};
-process.argv = [];
-process.version = ''; // empty string to avoid regexp issues
-process.versions = {};
-
-function noop() {}
-
-process.on = noop;
-process.addListener = noop;
-process.once = noop;
-process.off = noop;
-process.removeListener = noop;
-process.removeAllListeners = noop;
-process.emit = noop;
-process.prependListener = noop;
-process.prependOnceListener = noop;
-
-process.listeners = function (name) { return [] }
-
-process.binding = function (name) {
-    throw new Error('process.binding is not supported');
-};
-
-process.cwd = function () { return '/' };
-process.chdir = function (dir) {
-    throw new Error('process.chdir is not supported');
-};
-process.umask = function() { return 0; };
-
-},{}],37:[function(require,module,exports){
-module.exports = require('buffer')
-
-},{"buffer":34}],38:[function(require,module,exports){
-'use strict';
-
-var Buffer = require('safe-buffer').Buffer;
-
-var isEncoding = Buffer.isEncoding || function (encoding) {
-  encoding = '' + encoding;
-  switch (encoding && encoding.toLowerCase()) {
-    case 'hex':case 'utf8':case 'utf-8':case 'ascii':case 'binary':case 'base64':case 'ucs2':case 'ucs-2':case 'utf16le':case 'utf-16le':case 'raw':
-      return true;
-    default:
-      return false;
-  }
-};
-
-function _normalizeEncoding(enc) {
-  if (!enc) return 'utf8';
-  var retried;
-  while (true) {
-    switch (enc) {
-      case 'utf8':
-      case 'utf-8':
-        return 'utf8';
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return 'utf16le';
-      case 'latin1':
-      case 'binary':
-        return 'latin1';
-      case 'base64':
-      case 'ascii':
-      case 'hex':
-        return enc;
-      default:
-        if (retried) return; // undefined
-        enc = ('' + enc).toLowerCase();
-        retried = true;
-    }
-  }
-};
-
-// Do not cache `Buffer.isEncoding` when checking encoding names as some
-// modules monkey-patch it to support additional encodings
-function normalizeEncoding(enc) {
-  var nenc = _normalizeEncoding(enc);
-  if (typeof nenc !== 'string' && (Buffer.isEncoding === isEncoding || !isEncoding(enc))) throw new Error('Unknown encoding: ' + enc);
-  return nenc || enc;
-}
-
-// StringDecoder provides an interface for efficiently splitting a series of
-// buffers into a series of JS strings without breaking apart multi-byte
-// characters.
-exports.StringDecoder = StringDecoder;
-function StringDecoder(encoding) {
-  this.encoding = normalizeEncoding(encoding);
-  var nb;
-  switch (this.encoding) {
-    case 'utf16le':
-      this.text = utf16Text;
-      this.end = utf16End;
-      nb = 4;
-      break;
-    case 'utf8':
-      this.fillLast = utf8FillLast;
-      nb = 4;
-      break;
-    case 'base64':
-      this.text = base64Text;
-      this.end = base64End;
-      nb = 3;
-      break;
-    default:
-      this.write = simpleWrite;
-      this.end = simpleEnd;
-      return;
-  }
-  this.lastNeed = 0;
-  this.lastTotal = 0;
-  this.lastChar = Buffer.allocUnsafe(nb);
-}
-
-StringDecoder.prototype.write = function (buf) {
-  if (buf.length === 0) return '';
-  var r;
-  var i;
-  if (this.lastNeed) {
-    r = this.fillLast(buf);
-    if (r === undefined) return '';
-    i = this.lastNeed;
-    this.lastNeed = 0;
-  } else {
-    i = 0;
-  }
-  if (i < buf.length) return r ? r + this.text(buf, i) : this.text(buf, i);
-  return r || '';
-};
-
-StringDecoder.prototype.end = utf8End;
-
-// Returns only complete characters in a Buffer
-StringDecoder.prototype.text = utf8Text;
-
-// Attempts to complete a partial non-UTF-8 character using bytes from a Buffer
-StringDecoder.prototype.fillLast = function (buf) {
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, buf.length);
-  this.lastNeed -= buf.length;
-};
-
-// Checks the type of a UTF-8 byte, whether it's ASCII, a leading byte, or a
-// continuation byte.
-function utf8CheckByte(byte) {
-  if (byte <= 0x7F) return 0;else if (byte >> 5 === 0x06) return 2;else if (byte >> 4 === 0x0E) return 3;else if (byte >> 3 === 0x1E) return 4;
-  return -1;
-}
-
-// Checks at most 3 bytes at the end of a Buffer in order to detect an
-// incomplete multi-byte UTF-8 character. The total number of bytes (2, 3, or 4)
-// needed to complete the UTF-8 character (if applicable) are returned.
-function utf8CheckIncomplete(self, buf, i) {
-  var j = buf.length - 1;
-  if (j < i) return 0;
-  var nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 1;
-    return nb;
-  }
-  if (--j < i) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 2;
-    return nb;
-  }
-  if (--j < i) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) {
-      if (nb === 2) nb = 0;else self.lastNeed = nb - 3;
-    }
-    return nb;
-  }
-  return 0;
-}
-
-// Validates as many continuation bytes for a multi-byte UTF-8 character as
-// needed or are available. If we see a non-continuation byte where we expect
-// one, we "replace" the validated continuation bytes we've seen so far with
-// UTF-8 replacement characters ('\ufffd'), to match v8's UTF-8 decoding
-// behavior. The continuation byte check is included three times in the case
-// where all of the continuation bytes for a character exist in the same buffer.
-// It is also done this way as a slight performance increase instead of using a
-// loop.
-function utf8CheckExtraBytes(self, buf, p) {
-  if ((buf[0] & 0xC0) !== 0x80) {
-    self.lastNeed = 0;
-    return '\ufffd'.repeat(p);
-  }
-  if (self.lastNeed > 1 && buf.length > 1) {
-    if ((buf[1] & 0xC0) !== 0x80) {
-      self.lastNeed = 1;
-      return '\ufffd'.repeat(p + 1);
-    }
-    if (self.lastNeed > 2 && buf.length > 2) {
-      if ((buf[2] & 0xC0) !== 0x80) {
-        self.lastNeed = 2;
-        return '\ufffd'.repeat(p + 2);
-      }
-    }
-  }
-}
-
-// Attempts to complete a multi-byte UTF-8 character using bytes from a Buffer.
-function utf8FillLast(buf) {
-  var p = this.lastTotal - this.lastNeed;
-  var r = utf8CheckExtraBytes(this, buf, p);
-  if (r !== undefined) return r;
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, p, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, p, 0, buf.length);
-  this.lastNeed -= buf.length;
-}
-
-// Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
-// partial character, the character's bytes are buffered until the required
-// number of bytes are available.
-function utf8Text(buf, i) {
-  var total = utf8CheckIncomplete(this, buf, i);
-  if (!this.lastNeed) return buf.toString('utf8', i);
-  this.lastTotal = total;
-  var end = buf.length - (total - this.lastNeed);
-  buf.copy(this.lastChar, 0, end);
-  return buf.toString('utf8', i, end);
-}
-
-// For UTF-8, a replacement character for each buffered byte of a (partial)
-// character needs to be added to the output.
-function utf8End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + '\ufffd'.repeat(this.lastTotal - this.lastNeed);
-  return r;
-}
-
-// UTF-16LE typically needs two bytes per character, but even if we have an even
-// number of bytes available, we need to check if we end on a leading/high
-// surrogate. In that case, we need to wait for the next two bytes in order to
-// decode the last character properly.
-function utf16Text(buf, i) {
-  if ((buf.length - i) % 2 === 0) {
-    var r = buf.toString('utf16le', i);
-    if (r) {
-      var c = r.charCodeAt(r.length - 1);
-      if (c >= 0xD800 && c <= 0xDBFF) {
-        this.lastNeed = 2;
-        this.lastTotal = 4;
-        this.lastChar[0] = buf[buf.length - 2];
-        this.lastChar[1] = buf[buf.length - 1];
-        return r.slice(0, -1);
-      }
-    }
-    return r;
-  }
-  this.lastNeed = 1;
-  this.lastTotal = 2;
-  this.lastChar[0] = buf[buf.length - 1];
-  return buf.toString('utf16le', i, buf.length - 1);
-}
-
-// For UTF-16LE we do not explicitly append special replacement characters if we
-// end on a partial character, we simply let v8 handle that.
-function utf16End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) {
-    var end = this.lastTotal - this.lastNeed;
-    return r + this.lastChar.toString('utf16le', 0, end);
-  }
-  return r;
-}
-
-function base64Text(buf, i) {
-  var n = (buf.length - i) % 3;
-  if (n === 0) return buf.toString('base64', i);
-  this.lastNeed = 3 - n;
-  this.lastTotal = 3;
-  if (n === 1) {
-    this.lastChar[0] = buf[buf.length - 1];
-  } else {
-    this.lastChar[0] = buf[buf.length - 2];
-    this.lastChar[1] = buf[buf.length - 1];
-  }
-  return buf.toString('base64', i, buf.length - n);
-}
-
-function base64End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + this.lastChar.toString('base64', 0, 3 - this.lastNeed);
-  return r;
-}
-
-// Pass bytes on through for single-byte encodings (e.g. ascii, latin1, hex)
-function simpleWrite(buf) {
-  return buf.toString(this.encoding);
-}
-
-function simpleEnd(buf) {
-  return buf && buf.length ? this.write(buf) : '';
-}
-},{"safe-buffer":37}],39:[function(require,module,exports){
-(function (global){
-'use strict';
-
-var buffer = require('buffer');
-var Buffer = buffer.Buffer;
-var SlowBuffer = buffer.SlowBuffer;
-var MAX_LEN = buffer.kMaxLength || 2147483647;
-exports.alloc = function alloc(size, fill, encoding) {
-  if (typeof Buffer.alloc === 'function') {
-    return Buffer.alloc(size, fill, encoding);
-  }
-  if (typeof encoding === 'number') {
-    throw new TypeError('encoding must not be number');
-  }
-  if (typeof size !== 'number') {
-    throw new TypeError('size must be a number');
-  }
-  if (size > MAX_LEN) {
-    throw new RangeError('size is too large');
-  }
-  var enc = encoding;
-  var _fill = fill;
-  if (_fill === undefined) {
-    enc = undefined;
-    _fill = 0;
-  }
-  var buf = new Buffer(size);
-  if (typeof _fill === 'string') {
-    var fillBuf = new Buffer(_fill, enc);
-    var flen = fillBuf.length;
-    var i = -1;
-    while (++i < size) {
-      buf[i] = fillBuf[i % flen];
-    }
-  } else {
-    buf.fill(_fill);
-  }
-  return buf;
-}
-exports.allocUnsafe = function allocUnsafe(size) {
-  if (typeof Buffer.allocUnsafe === 'function') {
-    return Buffer.allocUnsafe(size);
-  }
-  if (typeof size !== 'number') {
-    throw new TypeError('size must be a number');
-  }
-  if (size > MAX_LEN) {
-    throw new RangeError('size is too large');
-  }
-  return new Buffer(size);
-}
-exports.from = function from(value, encodingOrOffset, length) {
-  if (typeof Buffer.from === 'function' && (!global.Uint8Array || Uint8Array.from !== Buffer.from)) {
-    return Buffer.from(value, encodingOrOffset, length);
-  }
-  if (typeof value === 'number') {
-    throw new TypeError('"value" argument must not be a number');
-  }
-  if (typeof value === 'string') {
-    return new Buffer(value, encodingOrOffset);
-  }
-  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
-    var offset = encodingOrOffset;
-    if (arguments.length === 1) {
-      return new Buffer(value);
-    }
-    if (typeof offset === 'undefined') {
-      offset = 0;
-    }
-    var len = length;
-    if (typeof len === 'undefined') {
-      len = value.byteLength - offset;
-    }
-    if (offset >= value.byteLength) {
-      throw new RangeError('\'offset\' is out of bounds');
-    }
-    if (len > value.byteLength - offset) {
-      throw new RangeError('\'length\' is out of bounds');
-    }
-    return new Buffer(value.slice(offset, offset + len));
-  }
-  if (Buffer.isBuffer(value)) {
-    var out = new Buffer(value.length);
-    value.copy(out, 0, 0, value.length);
-    return out;
-  }
-  if (value) {
-    if (Array.isArray(value) || (typeof ArrayBuffer !== 'undefined' && value.buffer instanceof ArrayBuffer) || 'length' in value) {
-      return new Buffer(value);
-    }
-    if (value.type === 'Buffer' && Array.isArray(value.data)) {
-      return new Buffer(value.data);
-    }
-  }
-
-  throw new TypeError('First argument must be a string, Buffer, ' + 'ArrayBuffer, Array, or array-like object.');
-}
-exports.allocUnsafeSlow = function allocUnsafeSlow(size) {
-  if (typeof Buffer.allocUnsafeSlow === 'function') {
-    return Buffer.allocUnsafeSlow(size);
-  }
-  if (typeof size !== 'number') {
-    throw new TypeError('size must be a number');
-  }
-  if (size >= MAX_LEN) {
-    throw new RangeError('size is too large');
-  }
-  return new SlowBuffer(size);
+function isnan (val) {
+  return val !== val // eslint-disable-line no-self-compare
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"buffer":34}],40:[function(require,module,exports){
+},{"base64-js":5,"ieee754":51,"isarray":37}],37:[function(require,module,exports){
+var toString = {}.toString;
+
+module.exports = Array.isArray || function (arr) {
+  return toString.call(arr) == '[object Array]';
+};
+
+},{}],38:[function(require,module,exports){
 'use strict'
 
 var monotoneTriangulate = require('./lib/monotone')
@@ -8431,7 +8661,7 @@ function cdt2d(points, edges, options) {
   }
 }
 
-},{"./lib/delaunay":41,"./lib/filter":42,"./lib/monotone":43,"./lib/triangulation":44}],41:[function(require,module,exports){
+},{"./lib/delaunay":39,"./lib/filter":40,"./lib/monotone":41,"./lib/triangulation":42}],39:[function(require,module,exports){
 'use strict'
 
 var inCircle = require('robust-in-sphere')[4]
@@ -8548,7 +8778,7 @@ function delaunayRefine(points, triangulation) {
   }
 }
 
-},{"binary-search-bounds":21,"robust-in-sphere":72}],42:[function(require,module,exports){
+},{"binary-search-bounds":22,"robust-in-sphere":71}],40:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8730,7 +8960,7 @@ function classifyFaces(triangulation, target, infinity) {
   return result
 }
 
-},{"binary-search-bounds":21}],43:[function(require,module,exports){
+},{"binary-search-bounds":22}],41:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -8919,7 +9149,7 @@ function monotoneTriangulate(points, edges) {
   return cells
 }
 
-},{"binary-search-bounds":21,"robust-orientation":73}],44:[function(require,module,exports){
+},{"binary-search-bounds":22,"robust-orientation":72}],42:[function(require,module,exports){
 'use strict'
 
 var bsearch = require('binary-search-bounds')
@@ -9025,7 +9255,7 @@ function createTriangulation(numVerts, edges) {
   return new Triangulation(stars, edges)
 }
 
-},{"binary-search-bounds":21}],45:[function(require,module,exports){
+},{"binary-search-bounds":22}],43:[function(require,module,exports){
 'use strict'
 
 module.exports = cleanPSLG
@@ -9408,7 +9638,7 @@ function cleanPSLG (points, edges, colors) {
   return modified
 }
 
-},{"./lib/rat-seg-intersect":46,"big-rat":8,"big-rat/cmp":6,"big-rat/to-float":20,"box-intersect":25,"nextafter":60,"rat-vec":69,"robust-segment-intersect":75,"union-find":103}],46:[function(require,module,exports){
+},{"./lib/rat-seg-intersect":44,"big-rat":9,"big-rat/cmp":7,"big-rat/to-float":21,"box-intersect":26,"nextafter":58,"rat-vec":68,"robust-segment-intersect":74,"union-find":151}],44:[function(require,module,exports){
 'use strict'
 
 module.exports = solveIntersection
@@ -9452,7 +9682,7 @@ function solveIntersection (a, b, c, d) {
   return r
 }
 
-},{"big-rat/div":7,"big-rat/mul":17,"big-rat/sign":18,"big-rat/sub":19,"rat-vec/add":68,"rat-vec/muls":70,"rat-vec/sub":71}],47:[function(require,module,exports){
+},{"big-rat/div":8,"big-rat/mul":18,"big-rat/sign":19,"big-rat/sub":20,"rat-vec/add":67,"rat-vec/muls":69,"rat-vec/sub":70}],45:[function(require,module,exports){
 (function (Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -9563,7 +9793,7 @@ function objectToString(o) {
 }
 
 }).call(this,{"isBuffer":require("../../is-buffer/index.js")})
-},{"../../is-buffer/index.js":55}],48:[function(require,module,exports){
+},{"../../is-buffer/index.js":53}],46:[function(require,module,exports){
 (function (Buffer){
 var hasTypedArrays = false
 if(typeof Float64Array !== "undefined") {
@@ -9667,7 +9897,7 @@ module.exports.denormalized = function(n) {
   return !(hi & 0x7ff00000)
 }
 }).call(this,require("buffer").Buffer)
-},{"buffer":34}],49:[function(require,module,exports){
+},{"buffer":36}],47:[function(require,module,exports){
 "use strict"
 
 function dupe_array(count, value, i) {
@@ -9717,7 +9947,7 @@ function dupe(count, value) {
 }
 
 module.exports = dupe
-},{}],50:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10021,7 +10251,7 @@ function isUndefined(arg) {
   return arg === void 0;
 }
 
-},{}],51:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 var isFunction = require('is-function')
 
 module.exports = forEach
@@ -10069,7 +10299,7 @@ function forEachObject(object, iterator, context) {
     }
 }
 
-},{"is-function":56}],52:[function(require,module,exports){
+},{"is-function":54}],50:[function(require,module,exports){
 (function (global){
 var win;
 
@@ -10086,7 +10316,7 @@ if (typeof window !== "undefined") {
 module.exports = win;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],53:[function(require,module,exports){
+},{}],51:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = nBytes * 8 - mLen - 1
@@ -10172,7 +10402,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],54:[function(require,module,exports){
+},{}],52:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -10197,7 +10427,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],55:[function(require,module,exports){
+},{}],53:[function(require,module,exports){
 /*!
  * Determine if an object is a Buffer
  *
@@ -10220,7 +10450,7 @@ function isSlowBuffer (obj) {
   return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
 }
 
-},{}],56:[function(require,module,exports){
+},{}],54:[function(require,module,exports){
 module.exports = isFunction
 
 var toString = Object.prototype.toString
@@ -10237,7 +10467,7 @@ function isFunction (fn) {
       fn === window.prompt))
 };
 
-},{}],57:[function(require,module,exports){
+},{}],55:[function(require,module,exports){
 var xhr = require('xhr');
 
 module.exports = function (opts, cb) {
@@ -10256,7 +10486,7 @@ module.exports = function (opts, cb) {
     });
 };
 
-},{"xhr":59}],58:[function(require,module,exports){
+},{"xhr":57}],56:[function(require,module,exports){
 module.exports = once
 
 once.proto = once(function () {
@@ -10277,7 +10507,7 @@ function once (fn) {
   }
 }
 
-},{}],59:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 var window = require("global/window")
 var once = require("once")
 var parseHeaders = require('parse-headers')
@@ -10456,7 +10686,7 @@ function createXHR(options, callback) {
 
 function noop() {}
 
-},{"global/window":52,"once":58,"parse-headers":64}],60:[function(require,module,exports){
+},{"global/window":50,"once":56,"parse-headers":63}],58:[function(require,module,exports){
 "use strict"
 
 var doubleBits = require("double-bits")
@@ -10499,7 +10729,7 @@ function nextafter(x, y) {
   }
   return doubleBits.pack(lo, hi)
 }
-},{"double-bits":48}],61:[function(require,module,exports){
+},{"double-bits":46}],59:[function(require,module,exports){
 var getBounds = require('bound-points')
 var unlerp = require('unlerp')
 
@@ -10532,7 +10762,7 @@ function normalizePathScale (positions, bounds) {
   }
   return positions
 }
-},{"bound-points":24,"unlerp":104}],62:[function(require,module,exports){
+},{"bound-points":25,"unlerp":152}],60:[function(require,module,exports){
 
 var π = Math.PI
 var _120 = radians(120)
@@ -10734,7 +10964,7 @@ function radians(degress){
 	return degress * (π / 180)
 }
 
-},{}],63:[function(require,module,exports){
+},{}],61:[function(require,module,exports){
 /*
 object-assign
 (c) Sindre Sorhus
@@ -10826,7 +11056,54 @@ module.exports = shouldUseNative() ? Object.assign : function (target, source) {
 	return to;
 };
 
-},{}],64:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
+exports.endianness = function () { return 'LE' };
+
+exports.hostname = function () {
+    if (typeof location !== 'undefined') {
+        return location.hostname
+    }
+    else return '';
+};
+
+exports.loadavg = function () { return [] };
+
+exports.uptime = function () { return 0 };
+
+exports.freemem = function () {
+    return Number.MAX_VALUE;
+};
+
+exports.totalmem = function () {
+    return Number.MAX_VALUE;
+};
+
+exports.cpus = function () { return [] };
+
+exports.type = function () { return 'Browser' };
+
+exports.release = function () {
+    if (typeof navigator !== 'undefined') {
+        return navigator.appVersion;
+    }
+    return '';
+};
+
+exports.networkInterfaces
+= exports.getNetworkInterfaces
+= function () { return {} };
+
+exports.arch = function () { return 'javascript' };
+
+exports.platform = function () { return 'browser' };
+
+exports.tmpdir = exports.tmpDir = function () {
+    return '/tmp';
+};
+
+exports.EOL = '\n';
+
+},{}],63:[function(require,module,exports){
 var trim = require('trim')
   , forEach = require('for-each')
   , isArray = function(arg) {
@@ -10858,7 +11135,7 @@ module.exports = function (headers) {
 
   return result
 }
-},{"for-each":51,"trim":99}],65:[function(require,module,exports){
+},{"for-each":49,"trim":147}],64:[function(require,module,exports){
 
 module.exports = parse
 
@@ -10917,7 +11194,7 @@ function parseValues(args) {
 	return numbers ? numbers.map(Number) : []
 }
 
-},{}],66:[function(require,module,exports){
+},{}],65:[function(require,module,exports){
 (function (process){
 'use strict';
 
@@ -10964,7 +11241,7 @@ function nextTick(fn, arg1, arg2, arg3) {
 }
 
 }).call(this,require('_process'))
-},{"_process":36}],67:[function(require,module,exports){
+},{"_process":35}],66:[function(require,module,exports){
 'use strict';
 module.exports = function (min, max) {
 	if (max === undefined) {
@@ -10979,7 +11256,7 @@ module.exports = function (min, max) {
 	return Math.random() * (max - min) + min;
 };
 
-},{}],68:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 'use strict'
 
 var bnadd = require('big-rat/add')
@@ -10995,7 +11272,7 @@ function add (a, b) {
   return r
 }
 
-},{"big-rat/add":5}],69:[function(require,module,exports){
+},{"big-rat/add":6}],68:[function(require,module,exports){
 'use strict'
 
 module.exports = float2rat
@@ -11010,7 +11287,7 @@ function float2rat(v) {
   return result
 }
 
-},{"big-rat":8}],70:[function(require,module,exports){
+},{"big-rat":9}],69:[function(require,module,exports){
 'use strict'
 
 var rat = require('big-rat')
@@ -11028,7 +11305,7 @@ function muls(a, x) {
   return r
 }
 
-},{"big-rat":8,"big-rat/mul":17}],71:[function(require,module,exports){
+},{"big-rat":9,"big-rat/mul":18}],70:[function(require,module,exports){
 'use strict'
 
 var bnsub = require('big-rat/sub')
@@ -11044,7 +11321,7 @@ function sub(a, b) {
   return r
 }
 
-},{"big-rat/sub":19}],72:[function(require,module,exports){
+},{"big-rat/sub":20}],71:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -11212,7 +11489,7 @@ function generateInSphereTest() {
 }
 
 generateInSphereTest()
-},{"robust-scale":74,"robust-subtract":76,"robust-sum":77,"two-product":100}],73:[function(require,module,exports){
+},{"robust-scale":73,"robust-subtract":75,"robust-sum":76,"two-product":148}],72:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -11403,7 +11680,7 @@ function generateOrientationProc() {
 }
 
 generateOrientationProc()
-},{"robust-scale":74,"robust-subtract":76,"robust-sum":77,"two-product":100}],74:[function(require,module,exports){
+},{"robust-scale":73,"robust-subtract":75,"robust-sum":76,"two-product":148}],73:[function(require,module,exports){
 "use strict"
 
 var twoProduct = require("two-product")
@@ -11454,7 +11731,7 @@ function scaleLinearExpansion(e, scale) {
   g.length = count
   return g
 }
-},{"two-product":100,"two-sum":101}],75:[function(require,module,exports){
+},{"two-product":148,"two-sum":149}],74:[function(require,module,exports){
 "use strict"
 
 module.exports = segmentsIntersect
@@ -11502,7 +11779,7 @@ function segmentsIntersect(a0, a1, b0, b1) {
 
   return true
 }
-},{"robust-orientation":73}],76:[function(require,module,exports){
+},{"robust-orientation":72}],75:[function(require,module,exports){
 "use strict"
 
 module.exports = robustSubtract
@@ -11659,7 +11936,7 @@ function robustSubtract(e, f) {
   g.length = count
   return g
 }
-},{}],77:[function(require,module,exports){
+},{}],76:[function(require,module,exports){
 "use strict"
 
 module.exports = linearExpansionSum
@@ -11816,7 +12093,1595 @@ function linearExpansionSum(e, f) {
   g.length = count
   return g
 }
-},{}],78:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
+module.exports = require('buffer')
+
+},{"buffer":36}],78:[function(require,module,exports){
+(function (Buffer){
+;(function (sax) { // wrapper for non-node envs
+  sax.parser = function (strict, opt) { return new SAXParser(strict, opt) }
+  sax.SAXParser = SAXParser
+  sax.SAXStream = SAXStream
+  sax.createStream = createStream
+
+  // When we pass the MAX_BUFFER_LENGTH position, start checking for buffer overruns.
+  // When we check, schedule the next check for MAX_BUFFER_LENGTH - (max(buffer lengths)),
+  // since that's the earliest that a buffer overrun could occur.  This way, checks are
+  // as rare as required, but as often as necessary to ensure never crossing this bound.
+  // Furthermore, buffers are only tested at most once per write(), so passing a very
+  // large string into write() might have undesirable effects, but this is manageable by
+  // the caller, so it is assumed to be safe.  Thus, a call to write() may, in the extreme
+  // edge case, result in creating at most one complete copy of the string passed in.
+  // Set to Infinity to have unlimited buffers.
+  sax.MAX_BUFFER_LENGTH = 64 * 1024
+
+  var buffers = [
+    'comment', 'sgmlDecl', 'textNode', 'tagName', 'doctype',
+    'procInstName', 'procInstBody', 'entity', 'attribName',
+    'attribValue', 'cdata', 'script'
+  ]
+
+  sax.EVENTS = [
+    'text',
+    'processinginstruction',
+    'sgmldeclaration',
+    'doctype',
+    'comment',
+    'opentagstart',
+    'attribute',
+    'opentag',
+    'closetag',
+    'opencdata',
+    'cdata',
+    'closecdata',
+    'error',
+    'end',
+    'ready',
+    'script',
+    'opennamespace',
+    'closenamespace'
+  ]
+
+  function SAXParser (strict, opt) {
+    if (!(this instanceof SAXParser)) {
+      return new SAXParser(strict, opt)
+    }
+
+    var parser = this
+    clearBuffers(parser)
+    parser.q = parser.c = ''
+    parser.bufferCheckPosition = sax.MAX_BUFFER_LENGTH
+    parser.opt = opt || {}
+    parser.opt.lowercase = parser.opt.lowercase || parser.opt.lowercasetags
+    parser.looseCase = parser.opt.lowercase ? 'toLowerCase' : 'toUpperCase'
+    parser.tags = []
+    parser.closed = parser.closedRoot = parser.sawRoot = false
+    parser.tag = parser.error = null
+    parser.strict = !!strict
+    parser.noscript = !!(strict || parser.opt.noscript)
+    parser.state = S.BEGIN
+    parser.strictEntities = parser.opt.strictEntities
+    parser.ENTITIES = parser.strictEntities ? Object.create(sax.XML_ENTITIES) : Object.create(sax.ENTITIES)
+    parser.attribList = []
+
+    // namespaces form a prototype chain.
+    // it always points at the current tag,
+    // which protos to its parent tag.
+    if (parser.opt.xmlns) {
+      parser.ns = Object.create(rootNS)
+    }
+
+    // mostly just for error reporting
+    parser.trackPosition = parser.opt.position !== false
+    if (parser.trackPosition) {
+      parser.position = parser.line = parser.column = 0
+    }
+    emit(parser, 'onready')
+  }
+
+  if (!Object.create) {
+    Object.create = function (o) {
+      function F () {}
+      F.prototype = o
+      var newf = new F()
+      return newf
+    }
+  }
+
+  if (!Object.keys) {
+    Object.keys = function (o) {
+      var a = []
+      for (var i in o) if (o.hasOwnProperty(i)) a.push(i)
+      return a
+    }
+  }
+
+  function checkBufferLength (parser) {
+    var maxAllowed = Math.max(sax.MAX_BUFFER_LENGTH, 10)
+    var maxActual = 0
+    for (var i = 0, l = buffers.length; i < l; i++) {
+      var len = parser[buffers[i]].length
+      if (len > maxAllowed) {
+        // Text/cdata nodes can get big, and since they're buffered,
+        // we can get here under normal conditions.
+        // Avoid issues by emitting the text node now,
+        // so at least it won't get any bigger.
+        switch (buffers[i]) {
+          case 'textNode':
+            closeText(parser)
+            break
+
+          case 'cdata':
+            emitNode(parser, 'oncdata', parser.cdata)
+            parser.cdata = ''
+            break
+
+          case 'script':
+            emitNode(parser, 'onscript', parser.script)
+            parser.script = ''
+            break
+
+          default:
+            error(parser, 'Max buffer length exceeded: ' + buffers[i])
+        }
+      }
+      maxActual = Math.max(maxActual, len)
+    }
+    // schedule the next check for the earliest possible buffer overrun.
+    var m = sax.MAX_BUFFER_LENGTH - maxActual
+    parser.bufferCheckPosition = m + parser.position
+  }
+
+  function clearBuffers (parser) {
+    for (var i = 0, l = buffers.length; i < l; i++) {
+      parser[buffers[i]] = ''
+    }
+  }
+
+  function flushBuffers (parser) {
+    closeText(parser)
+    if (parser.cdata !== '') {
+      emitNode(parser, 'oncdata', parser.cdata)
+      parser.cdata = ''
+    }
+    if (parser.script !== '') {
+      emitNode(parser, 'onscript', parser.script)
+      parser.script = ''
+    }
+  }
+
+  SAXParser.prototype = {
+    end: function () { end(this) },
+    write: write,
+    resume: function () { this.error = null; return this },
+    close: function () { return this.write(null) },
+    flush: function () { flushBuffers(this) }
+  }
+
+  var Stream
+  try {
+    Stream = require('stream').Stream
+  } catch (ex) {
+    Stream = function () {}
+  }
+
+  var streamWraps = sax.EVENTS.filter(function (ev) {
+    return ev !== 'error' && ev !== 'end'
+  })
+
+  function createStream (strict, opt) {
+    return new SAXStream(strict, opt)
+  }
+
+  function SAXStream (strict, opt) {
+    if (!(this instanceof SAXStream)) {
+      return new SAXStream(strict, opt)
+    }
+
+    Stream.apply(this)
+
+    this._parser = new SAXParser(strict, opt)
+    this.writable = true
+    this.readable = true
+
+    var me = this
+
+    this._parser.onend = function () {
+      me.emit('end')
+    }
+
+    this._parser.onerror = function (er) {
+      me.emit('error', er)
+
+      // if didn't throw, then means error was handled.
+      // go ahead and clear error, so we can write again.
+      me._parser.error = null
+    }
+
+    this._decoder = null
+
+    streamWraps.forEach(function (ev) {
+      Object.defineProperty(me, 'on' + ev, {
+        get: function () {
+          return me._parser['on' + ev]
+        },
+        set: function (h) {
+          if (!h) {
+            me.removeAllListeners(ev)
+            me._parser['on' + ev] = h
+            return h
+          }
+          me.on(ev, h)
+        },
+        enumerable: true,
+        configurable: false
+      })
+    })
+  }
+
+  SAXStream.prototype = Object.create(Stream.prototype, {
+    constructor: {
+      value: SAXStream
+    }
+  })
+
+  SAXStream.prototype.write = function (data) {
+    if (typeof Buffer === 'function' &&
+      typeof Buffer.isBuffer === 'function' &&
+      Buffer.isBuffer(data)) {
+      if (!this._decoder) {
+        var SD = require('string_decoder').StringDecoder
+        this._decoder = new SD('utf8')
+      }
+      data = this._decoder.write(data)
+    }
+
+    this._parser.write(data.toString())
+    this.emit('data', data)
+    return true
+  }
+
+  SAXStream.prototype.end = function (chunk) {
+    if (chunk && chunk.length) {
+      this.write(chunk)
+    }
+    this._parser.end()
+    return true
+  }
+
+  SAXStream.prototype.on = function (ev, handler) {
+    var me = this
+    if (!me._parser['on' + ev] && streamWraps.indexOf(ev) !== -1) {
+      me._parser['on' + ev] = function () {
+        var args = arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments)
+        args.splice(0, 0, ev)
+        me.emit.apply(me, args)
+      }
+    }
+
+    return Stream.prototype.on.call(me, ev, handler)
+  }
+
+  // character classes and tokens
+  var whitespace = '\r\n\t '
+
+  // this really needs to be replaced with character classes.
+  // XML allows all manner of ridiculous numbers and digits.
+
+  // (Letter | "_" | ":")
+  var quote = '\'"'
+  var attribEnd = whitespace + '>'
+  var CDATA = '[CDATA['
+  var DOCTYPE = 'DOCTYPE'
+  var XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace'
+  var XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/'
+  var rootNS = { xml: XML_NAMESPACE, xmlns: XMLNS_NAMESPACE }
+
+  // turn all the string character sets into character class objects.
+  whitespace = charClass(whitespace)
+
+  // http://www.w3.org/TR/REC-xml/#NT-NameStartChar
+  // This implementation works on strings, a single character at a time
+  // as such, it cannot ever support astral-plane characters (10000-EFFFF)
+  // without a significant breaking change to either this  parser, or the
+  // JavaScript language.  Implementation of an emoji-capable xml parser
+  // is left as an exercise for the reader.
+  var nameStart = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
+
+  var nameBody = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
+
+  var entityStart = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
+  var entityBody = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
+
+  quote = charClass(quote)
+  attribEnd = charClass(attribEnd)
+
+  function charClass (str) {
+    return str.split('').reduce(function (s, c) {
+      s[c] = true
+      return s
+    }, {})
+  }
+
+  function isMatch (regex, c) {
+    return regex.test(c)
+  }
+
+  function is (charclass, c) {
+    return charclass[c]
+  }
+
+  function notMatch (regex, c) {
+    return !isMatch(regex, c)
+  }
+
+  function not (charclass, c) {
+    return !is(charclass, c)
+  }
+
+  var S = 0
+  sax.STATE = {
+    BEGIN: S++, // leading byte order mark or whitespace
+    BEGIN_WHITESPACE: S++, // leading whitespace
+    TEXT: S++, // general stuff
+    TEXT_ENTITY: S++, // &amp and such.
+    OPEN_WAKA: S++, // <
+    SGML_DECL: S++, // <!BLARG
+    SGML_DECL_QUOTED: S++, // <!BLARG foo "bar
+    DOCTYPE: S++, // <!DOCTYPE
+    DOCTYPE_QUOTED: S++, // <!DOCTYPE "//blah
+    DOCTYPE_DTD: S++, // <!DOCTYPE "//blah" [ ...
+    DOCTYPE_DTD_QUOTED: S++, // <!DOCTYPE "//blah" [ "foo
+    COMMENT_STARTING: S++, // <!-
+    COMMENT: S++, // <!--
+    COMMENT_ENDING: S++, // <!-- blah -
+    COMMENT_ENDED: S++, // <!-- blah --
+    CDATA: S++, // <![CDATA[ something
+    CDATA_ENDING: S++, // ]
+    CDATA_ENDING_2: S++, // ]]
+    PROC_INST: S++, // <?hi
+    PROC_INST_BODY: S++, // <?hi there
+    PROC_INST_ENDING: S++, // <?hi "there" ?
+    OPEN_TAG: S++, // <strong
+    OPEN_TAG_SLASH: S++, // <strong /
+    ATTRIB: S++, // <a
+    ATTRIB_NAME: S++, // <a foo
+    ATTRIB_NAME_SAW_WHITE: S++, // <a foo _
+    ATTRIB_VALUE: S++, // <a foo=
+    ATTRIB_VALUE_QUOTED: S++, // <a foo="bar
+    ATTRIB_VALUE_CLOSED: S++, // <a foo="bar"
+    ATTRIB_VALUE_UNQUOTED: S++, // <a foo=bar
+    ATTRIB_VALUE_ENTITY_Q: S++, // <foo bar="&quot;"
+    ATTRIB_VALUE_ENTITY_U: S++, // <foo bar=&quot
+    CLOSE_TAG: S++, // </a
+    CLOSE_TAG_SAW_WHITE: S++, // </a   >
+    SCRIPT: S++, // <script> ...
+    SCRIPT_ENDING: S++ // <script> ... <
+  }
+
+  sax.XML_ENTITIES = {
+    'amp': '&',
+    'gt': '>',
+    'lt': '<',
+    'quot': '"',
+    'apos': "'"
+  }
+
+  sax.ENTITIES = {
+    'amp': '&',
+    'gt': '>',
+    'lt': '<',
+    'quot': '"',
+    'apos': "'",
+    'AElig': 198,
+    'Aacute': 193,
+    'Acirc': 194,
+    'Agrave': 192,
+    'Aring': 197,
+    'Atilde': 195,
+    'Auml': 196,
+    'Ccedil': 199,
+    'ETH': 208,
+    'Eacute': 201,
+    'Ecirc': 202,
+    'Egrave': 200,
+    'Euml': 203,
+    'Iacute': 205,
+    'Icirc': 206,
+    'Igrave': 204,
+    'Iuml': 207,
+    'Ntilde': 209,
+    'Oacute': 211,
+    'Ocirc': 212,
+    'Ograve': 210,
+    'Oslash': 216,
+    'Otilde': 213,
+    'Ouml': 214,
+    'THORN': 222,
+    'Uacute': 218,
+    'Ucirc': 219,
+    'Ugrave': 217,
+    'Uuml': 220,
+    'Yacute': 221,
+    'aacute': 225,
+    'acirc': 226,
+    'aelig': 230,
+    'agrave': 224,
+    'aring': 229,
+    'atilde': 227,
+    'auml': 228,
+    'ccedil': 231,
+    'eacute': 233,
+    'ecirc': 234,
+    'egrave': 232,
+    'eth': 240,
+    'euml': 235,
+    'iacute': 237,
+    'icirc': 238,
+    'igrave': 236,
+    'iuml': 239,
+    'ntilde': 241,
+    'oacute': 243,
+    'ocirc': 244,
+    'ograve': 242,
+    'oslash': 248,
+    'otilde': 245,
+    'ouml': 246,
+    'szlig': 223,
+    'thorn': 254,
+    'uacute': 250,
+    'ucirc': 251,
+    'ugrave': 249,
+    'uuml': 252,
+    'yacute': 253,
+    'yuml': 255,
+    'copy': 169,
+    'reg': 174,
+    'nbsp': 160,
+    'iexcl': 161,
+    'cent': 162,
+    'pound': 163,
+    'curren': 164,
+    'yen': 165,
+    'brvbar': 166,
+    'sect': 167,
+    'uml': 168,
+    'ordf': 170,
+    'laquo': 171,
+    'not': 172,
+    'shy': 173,
+    'macr': 175,
+    'deg': 176,
+    'plusmn': 177,
+    'sup1': 185,
+    'sup2': 178,
+    'sup3': 179,
+    'acute': 180,
+    'micro': 181,
+    'para': 182,
+    'middot': 183,
+    'cedil': 184,
+    'ordm': 186,
+    'raquo': 187,
+    'frac14': 188,
+    'frac12': 189,
+    'frac34': 190,
+    'iquest': 191,
+    'times': 215,
+    'divide': 247,
+    'OElig': 338,
+    'oelig': 339,
+    'Scaron': 352,
+    'scaron': 353,
+    'Yuml': 376,
+    'fnof': 402,
+    'circ': 710,
+    'tilde': 732,
+    'Alpha': 913,
+    'Beta': 914,
+    'Gamma': 915,
+    'Delta': 916,
+    'Epsilon': 917,
+    'Zeta': 918,
+    'Eta': 919,
+    'Theta': 920,
+    'Iota': 921,
+    'Kappa': 922,
+    'Lambda': 923,
+    'Mu': 924,
+    'Nu': 925,
+    'Xi': 926,
+    'Omicron': 927,
+    'Pi': 928,
+    'Rho': 929,
+    'Sigma': 931,
+    'Tau': 932,
+    'Upsilon': 933,
+    'Phi': 934,
+    'Chi': 935,
+    'Psi': 936,
+    'Omega': 937,
+    'alpha': 945,
+    'beta': 946,
+    'gamma': 947,
+    'delta': 948,
+    'epsilon': 949,
+    'zeta': 950,
+    'eta': 951,
+    'theta': 952,
+    'iota': 953,
+    'kappa': 954,
+    'lambda': 955,
+    'mu': 956,
+    'nu': 957,
+    'xi': 958,
+    'omicron': 959,
+    'pi': 960,
+    'rho': 961,
+    'sigmaf': 962,
+    'sigma': 963,
+    'tau': 964,
+    'upsilon': 965,
+    'phi': 966,
+    'chi': 967,
+    'psi': 968,
+    'omega': 969,
+    'thetasym': 977,
+    'upsih': 978,
+    'piv': 982,
+    'ensp': 8194,
+    'emsp': 8195,
+    'thinsp': 8201,
+    'zwnj': 8204,
+    'zwj': 8205,
+    'lrm': 8206,
+    'rlm': 8207,
+    'ndash': 8211,
+    'mdash': 8212,
+    'lsquo': 8216,
+    'rsquo': 8217,
+    'sbquo': 8218,
+    'ldquo': 8220,
+    'rdquo': 8221,
+    'bdquo': 8222,
+    'dagger': 8224,
+    'Dagger': 8225,
+    'bull': 8226,
+    'hellip': 8230,
+    'permil': 8240,
+    'prime': 8242,
+    'Prime': 8243,
+    'lsaquo': 8249,
+    'rsaquo': 8250,
+    'oline': 8254,
+    'frasl': 8260,
+    'euro': 8364,
+    'image': 8465,
+    'weierp': 8472,
+    'real': 8476,
+    'trade': 8482,
+    'alefsym': 8501,
+    'larr': 8592,
+    'uarr': 8593,
+    'rarr': 8594,
+    'darr': 8595,
+    'harr': 8596,
+    'crarr': 8629,
+    'lArr': 8656,
+    'uArr': 8657,
+    'rArr': 8658,
+    'dArr': 8659,
+    'hArr': 8660,
+    'forall': 8704,
+    'part': 8706,
+    'exist': 8707,
+    'empty': 8709,
+    'nabla': 8711,
+    'isin': 8712,
+    'notin': 8713,
+    'ni': 8715,
+    'prod': 8719,
+    'sum': 8721,
+    'minus': 8722,
+    'lowast': 8727,
+    'radic': 8730,
+    'prop': 8733,
+    'infin': 8734,
+    'ang': 8736,
+    'and': 8743,
+    'or': 8744,
+    'cap': 8745,
+    'cup': 8746,
+    'int': 8747,
+    'there4': 8756,
+    'sim': 8764,
+    'cong': 8773,
+    'asymp': 8776,
+    'ne': 8800,
+    'equiv': 8801,
+    'le': 8804,
+    'ge': 8805,
+    'sub': 8834,
+    'sup': 8835,
+    'nsub': 8836,
+    'sube': 8838,
+    'supe': 8839,
+    'oplus': 8853,
+    'otimes': 8855,
+    'perp': 8869,
+    'sdot': 8901,
+    'lceil': 8968,
+    'rceil': 8969,
+    'lfloor': 8970,
+    'rfloor': 8971,
+    'lang': 9001,
+    'rang': 9002,
+    'loz': 9674,
+    'spades': 9824,
+    'clubs': 9827,
+    'hearts': 9829,
+    'diams': 9830
+  }
+
+  Object.keys(sax.ENTITIES).forEach(function (key) {
+    var e = sax.ENTITIES[key]
+    var s = typeof e === 'number' ? String.fromCharCode(e) : e
+    sax.ENTITIES[key] = s
+  })
+
+  for (var s in sax.STATE) {
+    sax.STATE[sax.STATE[s]] = s
+  }
+
+  // shorthand
+  S = sax.STATE
+
+  function emit (parser, event, data) {
+    parser[event] && parser[event](data)
+  }
+
+  function emitNode (parser, nodeType, data) {
+    if (parser.textNode) closeText(parser)
+    emit(parser, nodeType, data)
+  }
+
+  function closeText (parser) {
+    parser.textNode = textopts(parser.opt, parser.textNode)
+    if (parser.textNode) emit(parser, 'ontext', parser.textNode)
+    parser.textNode = ''
+  }
+
+  function textopts (opt, text) {
+    if (opt.trim) text = text.trim()
+    if (opt.normalize) text = text.replace(/\s+/g, ' ')
+    return text
+  }
+
+  function error (parser, er) {
+    closeText(parser)
+    if (parser.trackPosition) {
+      er += '\nLine: ' + parser.line +
+        '\nColumn: ' + parser.column +
+        '\nChar: ' + parser.c
+    }
+    er = new Error(er)
+    parser.error = er
+    emit(parser, 'onerror', er)
+    return parser
+  }
+
+  function end (parser) {
+    if (parser.sawRoot && !parser.closedRoot) strictFail(parser, 'Unclosed root tag')
+    if ((parser.state !== S.BEGIN) &&
+      (parser.state !== S.BEGIN_WHITESPACE) &&
+      (parser.state !== S.TEXT)) {
+      error(parser, 'Unexpected end')
+    }
+    closeText(parser)
+    parser.c = ''
+    parser.closed = true
+    emit(parser, 'onend')
+    SAXParser.call(parser, parser.strict, parser.opt)
+    return parser
+  }
+
+  function strictFail (parser, message) {
+    if (typeof parser !== 'object' || !(parser instanceof SAXParser)) {
+      throw new Error('bad call to strictFail')
+    }
+    if (parser.strict) {
+      error(parser, message)
+    }
+  }
+
+  function newTag (parser) {
+    if (!parser.strict) parser.tagName = parser.tagName[parser.looseCase]()
+    var parent = parser.tags[parser.tags.length - 1] || parser
+    var tag = parser.tag = { name: parser.tagName, attributes: {} }
+
+    // will be overridden if tag contails an xmlns="foo" or xmlns:foo="bar"
+    if (parser.opt.xmlns) {
+      tag.ns = parent.ns
+    }
+    parser.attribList.length = 0
+    emitNode(parser, 'onopentagstart', tag)
+  }
+
+  function qname (name, attribute) {
+    var i = name.indexOf(':')
+    var qualName = i < 0 ? [ '', name ] : name.split(':')
+    var prefix = qualName[0]
+    var local = qualName[1]
+
+    // <x "xmlns"="http://foo">
+    if (attribute && name === 'xmlns') {
+      prefix = 'xmlns'
+      local = ''
+    }
+
+    return { prefix: prefix, local: local }
+  }
+
+  function attrib (parser) {
+    if (!parser.strict) {
+      parser.attribName = parser.attribName[parser.looseCase]()
+    }
+
+    if (parser.attribList.indexOf(parser.attribName) !== -1 ||
+      parser.tag.attributes.hasOwnProperty(parser.attribName)) {
+      parser.attribName = parser.attribValue = ''
+      return
+    }
+
+    if (parser.opt.xmlns) {
+      var qn = qname(parser.attribName, true)
+      var prefix = qn.prefix
+      var local = qn.local
+
+      if (prefix === 'xmlns') {
+        // namespace binding attribute. push the binding into scope
+        if (local === 'xml' && parser.attribValue !== XML_NAMESPACE) {
+          strictFail(parser,
+            'xml: prefix must be bound to ' + XML_NAMESPACE + '\n' +
+            'Actual: ' + parser.attribValue)
+        } else if (local === 'xmlns' && parser.attribValue !== XMLNS_NAMESPACE) {
+          strictFail(parser,
+            'xmlns: prefix must be bound to ' + XMLNS_NAMESPACE + '\n' +
+            'Actual: ' + parser.attribValue)
+        } else {
+          var tag = parser.tag
+          var parent = parser.tags[parser.tags.length - 1] || parser
+          if (tag.ns === parent.ns) {
+            tag.ns = Object.create(parent.ns)
+          }
+          tag.ns[local] = parser.attribValue
+        }
+      }
+
+      // defer onattribute events until all attributes have been seen
+      // so any new bindings can take effect. preserve attribute order
+      // so deferred events can be emitted in document order
+      parser.attribList.push([parser.attribName, parser.attribValue])
+    } else {
+      // in non-xmlns mode, we can emit the event right away
+      parser.tag.attributes[parser.attribName] = parser.attribValue
+      emitNode(parser, 'onattribute', {
+        name: parser.attribName,
+        value: parser.attribValue
+      })
+    }
+
+    parser.attribName = parser.attribValue = ''
+  }
+
+  function openTag (parser, selfClosing) {
+    if (parser.opt.xmlns) {
+      // emit namespace binding events
+      var tag = parser.tag
+
+      // add namespace info to tag
+      var qn = qname(parser.tagName)
+      tag.prefix = qn.prefix
+      tag.local = qn.local
+      tag.uri = tag.ns[qn.prefix] || ''
+
+      if (tag.prefix && !tag.uri) {
+        strictFail(parser, 'Unbound namespace prefix: ' +
+          JSON.stringify(parser.tagName))
+        tag.uri = qn.prefix
+      }
+
+      var parent = parser.tags[parser.tags.length - 1] || parser
+      if (tag.ns && parent.ns !== tag.ns) {
+        Object.keys(tag.ns).forEach(function (p) {
+          emitNode(parser, 'onopennamespace', {
+            prefix: p,
+            uri: tag.ns[p]
+          })
+        })
+      }
+
+      // handle deferred onattribute events
+      // Note: do not apply default ns to attributes:
+      //   http://www.w3.org/TR/REC-xml-names/#defaulting
+      for (var i = 0, l = parser.attribList.length; i < l; i++) {
+        var nv = parser.attribList[i]
+        var name = nv[0]
+        var value = nv[1]
+        var qualName = qname(name, true)
+        var prefix = qualName.prefix
+        var local = qualName.local
+        var uri = prefix === '' ? '' : (tag.ns[prefix] || '')
+        var a = {
+          name: name,
+          value: value,
+          prefix: prefix,
+          local: local,
+          uri: uri
+        }
+
+        // if there's any attributes with an undefined namespace,
+        // then fail on them now.
+        if (prefix && prefix !== 'xmlns' && !uri) {
+          strictFail(parser, 'Unbound namespace prefix: ' +
+            JSON.stringify(prefix))
+          a.uri = prefix
+        }
+        parser.tag.attributes[name] = a
+        emitNode(parser, 'onattribute', a)
+      }
+      parser.attribList.length = 0
+    }
+
+    parser.tag.isSelfClosing = !!selfClosing
+
+    // process the tag
+    parser.sawRoot = true
+    parser.tags.push(parser.tag)
+    emitNode(parser, 'onopentag', parser.tag)
+    if (!selfClosing) {
+      // special case for <script> in non-strict mode.
+      if (!parser.noscript && parser.tagName.toLowerCase() === 'script') {
+        parser.state = S.SCRIPT
+      } else {
+        parser.state = S.TEXT
+      }
+      parser.tag = null
+      parser.tagName = ''
+    }
+    parser.attribName = parser.attribValue = ''
+    parser.attribList.length = 0
+  }
+
+  function closeTag (parser) {
+    if (!parser.tagName) {
+      strictFail(parser, 'Weird empty close tag.')
+      parser.textNode += '</>'
+      parser.state = S.TEXT
+      return
+    }
+
+    if (parser.script) {
+      if (parser.tagName !== 'script') {
+        parser.script += '</' + parser.tagName + '>'
+        parser.tagName = ''
+        parser.state = S.SCRIPT
+        return
+      }
+      emitNode(parser, 'onscript', parser.script)
+      parser.script = ''
+    }
+
+    // first make sure that the closing tag actually exists.
+    // <a><b></c></b></a> will close everything, otherwise.
+    var t = parser.tags.length
+    var tagName = parser.tagName
+    if (!parser.strict) {
+      tagName = tagName[parser.looseCase]()
+    }
+    var closeTo = tagName
+    while (t--) {
+      var close = parser.tags[t]
+      if (close.name !== closeTo) {
+        // fail the first time in strict mode
+        strictFail(parser, 'Unexpected close tag')
+      } else {
+        break
+      }
+    }
+
+    // didn't find it.  we already failed for strict, so just abort.
+    if (t < 0) {
+      strictFail(parser, 'Unmatched closing tag: ' + parser.tagName)
+      parser.textNode += '</' + parser.tagName + '>'
+      parser.state = S.TEXT
+      return
+    }
+    parser.tagName = tagName
+    var s = parser.tags.length
+    while (s-- > t) {
+      var tag = parser.tag = parser.tags.pop()
+      parser.tagName = parser.tag.name
+      emitNode(parser, 'onclosetag', parser.tagName)
+
+      var x = {}
+      for (var i in tag.ns) {
+        x[i] = tag.ns[i]
+      }
+
+      var parent = parser.tags[parser.tags.length - 1] || parser
+      if (parser.opt.xmlns && tag.ns !== parent.ns) {
+        // remove namespace bindings introduced by tag
+        Object.keys(tag.ns).forEach(function (p) {
+          var n = tag.ns[p]
+          emitNode(parser, 'onclosenamespace', { prefix: p, uri: n })
+        })
+      }
+    }
+    if (t === 0) parser.closedRoot = true
+    parser.tagName = parser.attribValue = parser.attribName = ''
+    parser.attribList.length = 0
+    parser.state = S.TEXT
+  }
+
+  function parseEntity (parser) {
+    var entity = parser.entity
+    var entityLC = entity.toLowerCase()
+    var num
+    var numStr = ''
+
+    if (parser.ENTITIES[entity]) {
+      return parser.ENTITIES[entity]
+    }
+    if (parser.ENTITIES[entityLC]) {
+      return parser.ENTITIES[entityLC]
+    }
+    entity = entityLC
+    if (entity.charAt(0) === '#') {
+      if (entity.charAt(1) === 'x') {
+        entity = entity.slice(2)
+        num = parseInt(entity, 16)
+        numStr = num.toString(16)
+      } else {
+        entity = entity.slice(1)
+        num = parseInt(entity, 10)
+        numStr = num.toString(10)
+      }
+    }
+    entity = entity.replace(/^0+/, '')
+    if (numStr.toLowerCase() !== entity) {
+      strictFail(parser, 'Invalid character entity')
+      return '&' + parser.entity + ';'
+    }
+
+    return String.fromCodePoint(num)
+  }
+
+  function beginWhiteSpace (parser, c) {
+    if (c === '<') {
+      parser.state = S.OPEN_WAKA
+      parser.startTagPosition = parser.position
+    } else if (not(whitespace, c)) {
+      // have to process this as a text node.
+      // weird, but happens.
+      strictFail(parser, 'Non-whitespace before first tag.')
+      parser.textNode = c
+      parser.state = S.TEXT
+    }
+  }
+
+  function charAt (chunk, i) {
+    var result = ''
+    if (i < chunk.length) {
+      result = chunk.charAt(i)
+    }
+    return result
+  }
+
+  function write (chunk) {
+    var parser = this
+    if (this.error) {
+      throw this.error
+    }
+    if (parser.closed) {
+      return error(parser,
+        'Cannot write after close. Assign an onready handler.')
+    }
+    if (chunk === null) {
+      return end(parser)
+    }
+    if (typeof chunk === 'object') {
+      chunk = chunk.toString()
+    }
+    var i = 0
+    var c = ''
+    while (true) {
+      c = charAt(chunk, i++)
+      parser.c = c
+
+      if (!c) {
+        break
+      }
+
+      if (parser.trackPosition) {
+        parser.position++
+        if (c === '\n') {
+          parser.line++
+          parser.column = 0
+        } else {
+          parser.column++
+        }
+      }
+
+      switch (parser.state) {
+        case S.BEGIN:
+          parser.state = S.BEGIN_WHITESPACE
+          if (c === '\uFEFF') {
+            continue
+          }
+          beginWhiteSpace(parser, c)
+          continue
+
+        case S.BEGIN_WHITESPACE:
+          beginWhiteSpace(parser, c)
+          continue
+
+        case S.TEXT:
+          if (parser.sawRoot && !parser.closedRoot) {
+            var starti = i - 1
+            while (c && c !== '<' && c !== '&') {
+              c = charAt(chunk, i++)
+              if (c && parser.trackPosition) {
+                parser.position++
+                if (c === '\n') {
+                  parser.line++
+                  parser.column = 0
+                } else {
+                  parser.column++
+                }
+              }
+            }
+            parser.textNode += chunk.substring(starti, i - 1)
+          }
+          if (c === '<' && !(parser.sawRoot && parser.closedRoot && !parser.strict)) {
+            parser.state = S.OPEN_WAKA
+            parser.startTagPosition = parser.position
+          } else {
+            if (not(whitespace, c) && (!parser.sawRoot || parser.closedRoot)) {
+              strictFail(parser, 'Text data outside of root node.')
+            }
+            if (c === '&') {
+              parser.state = S.TEXT_ENTITY
+            } else {
+              parser.textNode += c
+            }
+          }
+          continue
+
+        case S.SCRIPT:
+          // only non-strict
+          if (c === '<') {
+            parser.state = S.SCRIPT_ENDING
+          } else {
+            parser.script += c
+          }
+          continue
+
+        case S.SCRIPT_ENDING:
+          if (c === '/') {
+            parser.state = S.CLOSE_TAG
+          } else {
+            parser.script += '<' + c
+            parser.state = S.SCRIPT
+          }
+          continue
+
+        case S.OPEN_WAKA:
+          // either a /, ?, !, or text is coming next.
+          if (c === '!') {
+            parser.state = S.SGML_DECL
+            parser.sgmlDecl = ''
+          } else if (is(whitespace, c)) {
+            // wait for it...
+          } else if (isMatch(nameStart, c)) {
+            parser.state = S.OPEN_TAG
+            parser.tagName = c
+          } else if (c === '/') {
+            parser.state = S.CLOSE_TAG
+            parser.tagName = ''
+          } else if (c === '?') {
+            parser.state = S.PROC_INST
+            parser.procInstName = parser.procInstBody = ''
+          } else {
+            strictFail(parser, 'Unencoded <')
+            // if there was some whitespace, then add that in.
+            if (parser.startTagPosition + 1 < parser.position) {
+              var pad = parser.position - parser.startTagPosition
+              c = new Array(pad).join(' ') + c
+            }
+            parser.textNode += '<' + c
+            parser.state = S.TEXT
+          }
+          continue
+
+        case S.SGML_DECL:
+          if ((parser.sgmlDecl + c).toUpperCase() === CDATA) {
+            emitNode(parser, 'onopencdata')
+            parser.state = S.CDATA
+            parser.sgmlDecl = ''
+            parser.cdata = ''
+          } else if (parser.sgmlDecl + c === '--') {
+            parser.state = S.COMMENT
+            parser.comment = ''
+            parser.sgmlDecl = ''
+          } else if ((parser.sgmlDecl + c).toUpperCase() === DOCTYPE) {
+            parser.state = S.DOCTYPE
+            if (parser.doctype || parser.sawRoot) {
+              strictFail(parser,
+                'Inappropriately located doctype declaration')
+            }
+            parser.doctype = ''
+            parser.sgmlDecl = ''
+          } else if (c === '>') {
+            emitNode(parser, 'onsgmldeclaration', parser.sgmlDecl)
+            parser.sgmlDecl = ''
+            parser.state = S.TEXT
+          } else if (is(quote, c)) {
+            parser.state = S.SGML_DECL_QUOTED
+            parser.sgmlDecl += c
+          } else {
+            parser.sgmlDecl += c
+          }
+          continue
+
+        case S.SGML_DECL_QUOTED:
+          if (c === parser.q) {
+            parser.state = S.SGML_DECL
+            parser.q = ''
+          }
+          parser.sgmlDecl += c
+          continue
+
+        case S.DOCTYPE:
+          if (c === '>') {
+            parser.state = S.TEXT
+            emitNode(parser, 'ondoctype', parser.doctype)
+            parser.doctype = true // just remember that we saw it.
+          } else {
+            parser.doctype += c
+            if (c === '[') {
+              parser.state = S.DOCTYPE_DTD
+            } else if (is(quote, c)) {
+              parser.state = S.DOCTYPE_QUOTED
+              parser.q = c
+            }
+          }
+          continue
+
+        case S.DOCTYPE_QUOTED:
+          parser.doctype += c
+          if (c === parser.q) {
+            parser.q = ''
+            parser.state = S.DOCTYPE
+          }
+          continue
+
+        case S.DOCTYPE_DTD:
+          parser.doctype += c
+          if (c === ']') {
+            parser.state = S.DOCTYPE
+          } else if (is(quote, c)) {
+            parser.state = S.DOCTYPE_DTD_QUOTED
+            parser.q = c
+          }
+          continue
+
+        case S.DOCTYPE_DTD_QUOTED:
+          parser.doctype += c
+          if (c === parser.q) {
+            parser.state = S.DOCTYPE_DTD
+            parser.q = ''
+          }
+          continue
+
+        case S.COMMENT:
+          if (c === '-') {
+            parser.state = S.COMMENT_ENDING
+          } else {
+            parser.comment += c
+          }
+          continue
+
+        case S.COMMENT_ENDING:
+          if (c === '-') {
+            parser.state = S.COMMENT_ENDED
+            parser.comment = textopts(parser.opt, parser.comment)
+            if (parser.comment) {
+              emitNode(parser, 'oncomment', parser.comment)
+            }
+            parser.comment = ''
+          } else {
+            parser.comment += '-' + c
+            parser.state = S.COMMENT
+          }
+          continue
+
+        case S.COMMENT_ENDED:
+          if (c !== '>') {
+            strictFail(parser, 'Malformed comment')
+            // allow <!-- blah -- bloo --> in non-strict mode,
+            // which is a comment of " blah -- bloo "
+            parser.comment += '--' + c
+            parser.state = S.COMMENT
+          } else {
+            parser.state = S.TEXT
+          }
+          continue
+
+        case S.CDATA:
+          if (c === ']') {
+            parser.state = S.CDATA_ENDING
+          } else {
+            parser.cdata += c
+          }
+          continue
+
+        case S.CDATA_ENDING:
+          if (c === ']') {
+            parser.state = S.CDATA_ENDING_2
+          } else {
+            parser.cdata += ']' + c
+            parser.state = S.CDATA
+          }
+          continue
+
+        case S.CDATA_ENDING_2:
+          if (c === '>') {
+            if (parser.cdata) {
+              emitNode(parser, 'oncdata', parser.cdata)
+            }
+            emitNode(parser, 'onclosecdata')
+            parser.cdata = ''
+            parser.state = S.TEXT
+          } else if (c === ']') {
+            parser.cdata += ']'
+          } else {
+            parser.cdata += ']]' + c
+            parser.state = S.CDATA
+          }
+          continue
+
+        case S.PROC_INST:
+          if (c === '?') {
+            parser.state = S.PROC_INST_ENDING
+          } else if (is(whitespace, c)) {
+            parser.state = S.PROC_INST_BODY
+          } else {
+            parser.procInstName += c
+          }
+          continue
+
+        case S.PROC_INST_BODY:
+          if (!parser.procInstBody && is(whitespace, c)) {
+            continue
+          } else if (c === '?') {
+            parser.state = S.PROC_INST_ENDING
+          } else {
+            parser.procInstBody += c
+          }
+          continue
+
+        case S.PROC_INST_ENDING:
+          if (c === '>') {
+            emitNode(parser, 'onprocessinginstruction', {
+              name: parser.procInstName,
+              body: parser.procInstBody
+            })
+            parser.procInstName = parser.procInstBody = ''
+            parser.state = S.TEXT
+          } else {
+            parser.procInstBody += '?' + c
+            parser.state = S.PROC_INST_BODY
+          }
+          continue
+
+        case S.OPEN_TAG:
+          if (isMatch(nameBody, c)) {
+            parser.tagName += c
+          } else {
+            newTag(parser)
+            if (c === '>') {
+              openTag(parser)
+            } else if (c === '/') {
+              parser.state = S.OPEN_TAG_SLASH
+            } else {
+              if (not(whitespace, c)) {
+                strictFail(parser, 'Invalid character in tag name')
+              }
+              parser.state = S.ATTRIB
+            }
+          }
+          continue
+
+        case S.OPEN_TAG_SLASH:
+          if (c === '>') {
+            openTag(parser, true)
+            closeTag(parser)
+          } else {
+            strictFail(parser, 'Forward-slash in opening tag not followed by >')
+            parser.state = S.ATTRIB
+          }
+          continue
+
+        case S.ATTRIB:
+          // haven't read the attribute name yet.
+          if (is(whitespace, c)) {
+            continue
+          } else if (c === '>') {
+            openTag(parser)
+          } else if (c === '/') {
+            parser.state = S.OPEN_TAG_SLASH
+          } else if (isMatch(nameStart, c)) {
+            parser.attribName = c
+            parser.attribValue = ''
+            parser.state = S.ATTRIB_NAME
+          } else {
+            strictFail(parser, 'Invalid attribute name')
+          }
+          continue
+
+        case S.ATTRIB_NAME:
+          if (c === '=') {
+            parser.state = S.ATTRIB_VALUE
+          } else if (c === '>') {
+            strictFail(parser, 'Attribute without value')
+            parser.attribValue = parser.attribName
+            attrib(parser)
+            openTag(parser)
+          } else if (is(whitespace, c)) {
+            parser.state = S.ATTRIB_NAME_SAW_WHITE
+          } else if (isMatch(nameBody, c)) {
+            parser.attribName += c
+          } else {
+            strictFail(parser, 'Invalid attribute name')
+          }
+          continue
+
+        case S.ATTRIB_NAME_SAW_WHITE:
+          if (c === '=') {
+            parser.state = S.ATTRIB_VALUE
+          } else if (is(whitespace, c)) {
+            continue
+          } else {
+            strictFail(parser, 'Attribute without value')
+            parser.tag.attributes[parser.attribName] = ''
+            parser.attribValue = ''
+            emitNode(parser, 'onattribute', {
+              name: parser.attribName,
+              value: ''
+            })
+            parser.attribName = ''
+            if (c === '>') {
+              openTag(parser)
+            } else if (isMatch(nameStart, c)) {
+              parser.attribName = c
+              parser.state = S.ATTRIB_NAME
+            } else {
+              strictFail(parser, 'Invalid attribute name')
+              parser.state = S.ATTRIB
+            }
+          }
+          continue
+
+        case S.ATTRIB_VALUE:
+          if (is(whitespace, c)) {
+            continue
+          } else if (is(quote, c)) {
+            parser.q = c
+            parser.state = S.ATTRIB_VALUE_QUOTED
+          } else {
+            strictFail(parser, 'Unquoted attribute value')
+            parser.state = S.ATTRIB_VALUE_UNQUOTED
+            parser.attribValue = c
+          }
+          continue
+
+        case S.ATTRIB_VALUE_QUOTED:
+          if (c !== parser.q) {
+            if (c === '&') {
+              parser.state = S.ATTRIB_VALUE_ENTITY_Q
+            } else {
+              parser.attribValue += c
+            }
+            continue
+          }
+          attrib(parser)
+          parser.q = ''
+          parser.state = S.ATTRIB_VALUE_CLOSED
+          continue
+
+        case S.ATTRIB_VALUE_CLOSED:
+          if (is(whitespace, c)) {
+            parser.state = S.ATTRIB
+          } else if (c === '>') {
+            openTag(parser)
+          } else if (c === '/') {
+            parser.state = S.OPEN_TAG_SLASH
+          } else if (isMatch(nameStart, c)) {
+            strictFail(parser, 'No whitespace between attributes')
+            parser.attribName = c
+            parser.attribValue = ''
+            parser.state = S.ATTRIB_NAME
+          } else {
+            strictFail(parser, 'Invalid attribute name')
+          }
+          continue
+
+        case S.ATTRIB_VALUE_UNQUOTED:
+          if (not(attribEnd, c)) {
+            if (c === '&') {
+              parser.state = S.ATTRIB_VALUE_ENTITY_U
+            } else {
+              parser.attribValue += c
+            }
+            continue
+          }
+          attrib(parser)
+          if (c === '>') {
+            openTag(parser)
+          } else {
+            parser.state = S.ATTRIB
+          }
+          continue
+
+        case S.CLOSE_TAG:
+          if (!parser.tagName) {
+            if (is(whitespace, c)) {
+              continue
+            } else if (notMatch(nameStart, c)) {
+              if (parser.script) {
+                parser.script += '</' + c
+                parser.state = S.SCRIPT
+              } else {
+                strictFail(parser, 'Invalid tagname in closing tag.')
+              }
+            } else {
+              parser.tagName = c
+            }
+          } else if (c === '>') {
+            closeTag(parser)
+          } else if (isMatch(nameBody, c)) {
+            parser.tagName += c
+          } else if (parser.script) {
+            parser.script += '</' + parser.tagName
+            parser.tagName = ''
+            parser.state = S.SCRIPT
+          } else {
+            if (not(whitespace, c)) {
+              strictFail(parser, 'Invalid tagname in closing tag')
+            }
+            parser.state = S.CLOSE_TAG_SAW_WHITE
+          }
+          continue
+
+        case S.CLOSE_TAG_SAW_WHITE:
+          if (is(whitespace, c)) {
+            continue
+          }
+          if (c === '>') {
+            closeTag(parser)
+          } else {
+            strictFail(parser, 'Invalid characters in closing tag')
+          }
+          continue
+
+        case S.TEXT_ENTITY:
+        case S.ATTRIB_VALUE_ENTITY_Q:
+        case S.ATTRIB_VALUE_ENTITY_U:
+          var returnState
+          var buffer
+          switch (parser.state) {
+            case S.TEXT_ENTITY:
+              returnState = S.TEXT
+              buffer = 'textNode'
+              break
+
+            case S.ATTRIB_VALUE_ENTITY_Q:
+              returnState = S.ATTRIB_VALUE_QUOTED
+              buffer = 'attribValue'
+              break
+
+            case S.ATTRIB_VALUE_ENTITY_U:
+              returnState = S.ATTRIB_VALUE_UNQUOTED
+              buffer = 'attribValue'
+              break
+          }
+
+          if (c === ';') {
+            parser[buffer] += parseEntity(parser)
+            parser.entity = ''
+            parser.state = returnState
+          } else if (isMatch(parser.entity.length ? entityBody : entityStart, c)) {
+            parser.entity += c
+          } else {
+            strictFail(parser, 'Invalid character in entity name')
+            parser[buffer] += '&' + parser.entity + c
+            parser.entity = ''
+            parser.state = returnState
+          }
+
+          continue
+
+        default:
+          throw new Error(parser, 'Unknown state: ' + parser.state)
+      }
+    } // while
+
+    if (parser.position >= parser.bufferCheckPosition) {
+      checkBufferLength(parser)
+    }
+    return parser
+  }
+
+  /*! http://mths.be/fromcodepoint v0.1.0 by @mathias */
+  /* istanbul ignore next */
+  if (!String.fromCodePoint) {
+    (function () {
+      var stringFromCharCode = String.fromCharCode
+      var floor = Math.floor
+      var fromCodePoint = function () {
+        var MAX_SIZE = 0x4000
+        var codeUnits = []
+        var highSurrogate
+        var lowSurrogate
+        var index = -1
+        var length = arguments.length
+        if (!length) {
+          return ''
+        }
+        var result = ''
+        while (++index < length) {
+          var codePoint = Number(arguments[index])
+          if (
+            !isFinite(codePoint) || // `NaN`, `+Infinity`, or `-Infinity`
+            codePoint < 0 || // not a valid Unicode code point
+            codePoint > 0x10FFFF || // not a valid Unicode code point
+            floor(codePoint) !== codePoint // not an integer
+          ) {
+            throw RangeError('Invalid code point: ' + codePoint)
+          }
+          if (codePoint <= 0xFFFF) { // BMP code point
+            codeUnits.push(codePoint)
+          } else { // Astral code point; split in surrogate halves
+            // http://mathiasbynens.be/notes/javascript-encoding#surrogate-formulae
+            codePoint -= 0x10000
+            highSurrogate = (codePoint >> 10) + 0xD800
+            lowSurrogate = (codePoint % 0x400) + 0xDC00
+            codeUnits.push(highSurrogate, lowSurrogate)
+          }
+          if (index + 1 === length || codeUnits.length > MAX_SIZE) {
+            result += stringFromCharCode.apply(null, codeUnits)
+            codeUnits.length = 0
+          }
+        }
+        return result
+      }
+      /* istanbul ignore next */
+      if (Object.defineProperty) {
+        Object.defineProperty(String, 'fromCodePoint', {
+          value: fromCodePoint,
+          configurable: true,
+          writable: true
+        })
+      } else {
+        String.fromCodePoint = fromCodePoint
+      }
+    }())
+  }
+})(typeof exports === 'undefined' ? this.sax = {} : exports)
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":36,"stream":82,"string_decoder":97}],79:[function(require,module,exports){
 // square distance from a point to a segment
 function getSqSegDist(p, p1, p2) {
     var x = p1[0],
@@ -11880,7 +13745,7 @@ module.exports = function simplifyDouglasPeucker(points, tolerance) {
     return simplified;
 }
 
-},{}],79:[function(require,module,exports){
+},{}],80:[function(require,module,exports){
 var simplifyRadialDist = require('./radial-distance')
 var simplifyDouglasPeucker = require('./douglas-peucker')
 
@@ -11893,7 +13758,7 @@ module.exports = function simplify(points, tolerance) {
 
 module.exports.radialDistance = simplifyRadialDist;
 module.exports.douglasPeucker = simplifyDouglasPeucker;
-},{"./douglas-peucker":78,"./radial-distance":80}],80:[function(require,module,exports){
+},{"./douglas-peucker":79,"./radial-distance":81}],81:[function(require,module,exports){
 function getSqDist(p1, p2) {
     var dx = p1[0] - p2[0],
         dy = p1[1] - p2[1];
@@ -11925,7 +13790,7 @@ module.exports = function simplifyRadialDist(points, tolerance) {
 
     return newPoints;
 }
-},{}],81:[function(require,module,exports){
+},{}],82:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -12054,17 +13919,12 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":50,"inherits":54,"readable-stream/duplex.js":83,"readable-stream/passthrough.js":91,"readable-stream/readable.js":92,"readable-stream/transform.js":93,"readable-stream/writable.js":94}],82:[function(require,module,exports){
-var toString = {}.toString;
-
-module.exports = Array.isArray || function (arr) {
-  return toString.call(arr) == '[object Array]';
-};
-
-},{}],83:[function(require,module,exports){
+},{"events":48,"inherits":52,"readable-stream/duplex.js":84,"readable-stream/passthrough.js":92,"readable-stream/readable.js":93,"readable-stream/transform.js":94,"readable-stream/writable.js":95}],83:[function(require,module,exports){
+arguments[4][37][0].apply(exports,arguments)
+},{"dup":37}],84:[function(require,module,exports){
 module.exports = require('./lib/_stream_duplex.js');
 
-},{"./lib/_stream_duplex.js":84}],84:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":85}],85:[function(require,module,exports){
 // a duplex stream is just a stream that is both readable and writable.
 // Since JS doesn't have multiple prototypal inheritance, this class
 // prototypally inherits from Readable, and then parasitically from
@@ -12140,7 +14000,7 @@ function forEach(xs, f) {
     f(xs[i], i);
   }
 }
-},{"./_stream_readable":86,"./_stream_writable":88,"core-util-is":47,"inherits":54,"process-nextick-args":66}],85:[function(require,module,exports){
+},{"./_stream_readable":87,"./_stream_writable":89,"core-util-is":45,"inherits":52,"process-nextick-args":65}],86:[function(require,module,exports){
 // a passthrough stream.
 // basically just the most minimal sort of Transform stream.
 // Every written chunk gets output as-is.
@@ -12167,7 +14027,7 @@ function PassThrough(options) {
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":87,"core-util-is":47,"inherits":54}],86:[function(require,module,exports){
+},{"./_stream_transform":88,"core-util-is":45,"inherits":52}],87:[function(require,module,exports){
 (function (process){
 'use strict';
 
@@ -12199,9 +14059,8 @@ var EElistenerCount = function (emitter, type) {
 var Stream = require('./internal/streams/stream');
 /*</replacement>*/
 
-var Buffer = require('buffer').Buffer;
 /*<replacement>*/
-var bufferShim = require('buffer-shims');
+var Buffer = require('safe-buffer').Buffer;
 /*</replacement>*/
 
 /*<replacement>*/
@@ -12334,7 +14193,7 @@ Readable.prototype.push = function (chunk, encoding) {
   if (!state.objectMode && typeof chunk === 'string') {
     encoding = encoding || state.defaultEncoding;
     if (encoding !== state.encoding) {
-      chunk = bufferShim.from(chunk, encoding);
+      chunk = Buffer.from(chunk, encoding);
       encoding = '';
     }
   }
@@ -12654,7 +14513,7 @@ Readable.prototype.pipe = function (dest, pipeOpts) {
 
   var doEnd = (!pipeOpts || pipeOpts.end !== false) && dest !== process.stdout && dest !== process.stderr;
 
-  var endFn = doEnd ? onend : cleanup;
+  var endFn = doEnd ? onend : unpipe;
   if (state.endEmitted) processNextTick(endFn);else src.once('end', endFn);
 
   dest.on('unpipe', onunpipe);
@@ -12687,7 +14546,7 @@ Readable.prototype.pipe = function (dest, pipeOpts) {
     dest.removeListener('error', onerror);
     dest.removeListener('unpipe', onunpipe);
     src.removeListener('end', onend);
-    src.removeListener('end', cleanup);
+    src.removeListener('end', unpipe);
     src.removeListener('data', ondata);
 
     cleanedUp = true;
@@ -13044,7 +14903,7 @@ function copyFromBufferString(n, list) {
 // This function is designed to be inlinable, so please take care when making
 // changes to the function body.
 function copyFromBuffer(n, list) {
-  var ret = bufferShim.allocUnsafe(n);
+  var ret = Buffer.allocUnsafe(n);
   var p = list.head;
   var c = 1;
   p.data.copy(ret);
@@ -13105,7 +14964,7 @@ function indexOf(xs, x) {
   return -1;
 }
 }).call(this,require('_process'))
-},{"./_stream_duplex":84,"./internal/streams/BufferList":89,"./internal/streams/stream":90,"_process":36,"buffer":34,"buffer-shims":39,"core-util-is":47,"events":50,"inherits":54,"isarray":82,"process-nextick-args":66,"string_decoder/":95,"util":32}],87:[function(require,module,exports){
+},{"./_stream_duplex":85,"./internal/streams/BufferList":90,"./internal/streams/stream":91,"_process":35,"core-util-is":45,"events":48,"inherits":52,"isarray":83,"process-nextick-args":65,"safe-buffer":77,"string_decoder/":96,"util":33}],88:[function(require,module,exports){
 // a transform stream is a readable/writable stream where you do
 // something with the data.  Sometimes it's called a "filter",
 // but that's not a great name for it, since that implies a thing where
@@ -13288,7 +15147,7 @@ function done(stream, er, data) {
 
   return stream.push(null);
 }
-},{"./_stream_duplex":84,"core-util-is":47,"inherits":54}],88:[function(require,module,exports){
+},{"./_stream_duplex":85,"core-util-is":45,"inherits":52}],89:[function(require,module,exports){
 (function (process){
 // A bit simpler than readable streams.
 // Implement an async ._write(chunk, encoding, cb), and it'll handle all
@@ -13327,9 +15186,8 @@ var internalUtil = {
 var Stream = require('./internal/streams/stream');
 /*</replacement>*/
 
-var Buffer = require('buffer').Buffer;
 /*<replacement>*/
-var bufferShim = require('buffer-shims');
+var Buffer = require('safe-buffer').Buffer;
 /*</replacement>*/
 
 util.inherits(Writable, Stream);
@@ -13585,7 +15443,7 @@ Writable.prototype.setDefaultEncoding = function setDefaultEncoding(encoding) {
 
 function decodeChunk(state, chunk, encoding) {
   if (!state.objectMode && state.decodeStrings !== false && typeof chunk === 'string') {
-    chunk = bufferShim.from(chunk, encoding);
+    chunk = Buffer.from(chunk, encoding);
   }
   return chunk;
 }
@@ -13835,12 +15693,12 @@ function CorkedRequest(state) {
   };
 }
 }).call(this,require('_process'))
-},{"./_stream_duplex":84,"./internal/streams/stream":90,"_process":36,"buffer":34,"buffer-shims":39,"core-util-is":47,"inherits":54,"process-nextick-args":66,"util-deprecate":105}],89:[function(require,module,exports){
+},{"./_stream_duplex":85,"./internal/streams/stream":91,"_process":35,"core-util-is":45,"inherits":52,"process-nextick-args":65,"safe-buffer":77,"util-deprecate":153}],90:[function(require,module,exports){
 'use strict';
 
-var Buffer = require('buffer').Buffer;
 /*<replacement>*/
-var bufferShim = require('buffer-shims');
+
+var Buffer = require('safe-buffer').Buffer;
 /*</replacement>*/
 
 module.exports = BufferList;
@@ -13888,9 +15746,9 @@ BufferList.prototype.join = function (s) {
 };
 
 BufferList.prototype.concat = function (n) {
-  if (this.length === 0) return bufferShim.alloc(0);
+  if (this.length === 0) return Buffer.alloc(0);
   if (this.length === 1) return this.head.data;
-  var ret = bufferShim.allocUnsafe(n >>> 0);
+  var ret = Buffer.allocUnsafe(n >>> 0);
   var p = this.head;
   var i = 0;
   while (p) {
@@ -13900,13 +15758,13 @@ BufferList.prototype.concat = function (n) {
   }
   return ret;
 };
-},{"buffer":34,"buffer-shims":39}],90:[function(require,module,exports){
+},{"safe-buffer":77}],91:[function(require,module,exports){
 module.exports = require('events').EventEmitter;
 
-},{"events":50}],91:[function(require,module,exports){
+},{"events":48}],92:[function(require,module,exports){
 module.exports = require('./readable').PassThrough
 
-},{"./readable":92}],92:[function(require,module,exports){
+},{"./readable":93}],93:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Stream = exports;
 exports.Readable = exports;
@@ -13915,17 +15773,16 @@ exports.Duplex = require('./lib/_stream_duplex.js');
 exports.Transform = require('./lib/_stream_transform.js');
 exports.PassThrough = require('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":84,"./lib/_stream_passthrough.js":85,"./lib/_stream_readable.js":86,"./lib/_stream_transform.js":87,"./lib/_stream_writable.js":88}],93:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":85,"./lib/_stream_passthrough.js":86,"./lib/_stream_readable.js":87,"./lib/_stream_transform.js":88,"./lib/_stream_writable.js":89}],94:[function(require,module,exports){
 module.exports = require('./readable').Transform
 
-},{"./readable":92}],94:[function(require,module,exports){
+},{"./readable":93}],95:[function(require,module,exports){
 module.exports = require('./lib/_stream_writable.js');
 
-},{"./lib/_stream_writable.js":88}],95:[function(require,module,exports){
+},{"./lib/_stream_writable.js":89}],96:[function(require,module,exports){
 'use strict';
 
-var Buffer = require('buffer').Buffer;
-var bufferShim = require('buffer-shims');
+var Buffer = require('safe-buffer').Buffer;
 
 var isEncoding = Buffer.isEncoding || function (encoding) {
   encoding = '' + encoding;
@@ -14002,7 +15859,7 @@ function StringDecoder(encoding) {
   }
   this.lastNeed = 0;
   this.lastTotal = 0;
-  this.lastChar = bufferShim.allocUnsafe(nb);
+  this.lastChar = Buffer.allocUnsafe(nb);
 }
 
 StringDecoder.prototype.write = function (buf) {
@@ -14195,7 +16052,230 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"buffer":34,"buffer-shims":39}],96:[function(require,module,exports){
+},{"safe-buffer":77}],97:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+var Buffer = require('buffer').Buffer;
+
+var isBufferEncoding = Buffer.isEncoding
+  || function(encoding) {
+       switch (encoding && encoding.toLowerCase()) {
+         case 'hex': case 'utf8': case 'utf-8': case 'ascii': case 'binary': case 'base64': case 'ucs2': case 'ucs-2': case 'utf16le': case 'utf-16le': case 'raw': return true;
+         default: return false;
+       }
+     }
+
+
+function assertEncoding(encoding) {
+  if (encoding && !isBufferEncoding(encoding)) {
+    throw new Error('Unknown encoding: ' + encoding);
+  }
+}
+
+// StringDecoder provides an interface for efficiently splitting a series of
+// buffers into a series of JS strings without breaking apart multi-byte
+// characters. CESU-8 is handled as part of the UTF-8 encoding.
+//
+// @TODO Handling all encodings inside a single object makes it very difficult
+// to reason about this code, so it should be split up in the future.
+// @TODO There should be a utf8-strict encoding that rejects invalid UTF-8 code
+// points as used by CESU-8.
+var StringDecoder = exports.StringDecoder = function(encoding) {
+  this.encoding = (encoding || 'utf8').toLowerCase().replace(/[-_]/, '');
+  assertEncoding(encoding);
+  switch (this.encoding) {
+    case 'utf8':
+      // CESU-8 represents each of Surrogate Pair by 3-bytes
+      this.surrogateSize = 3;
+      break;
+    case 'ucs2':
+    case 'utf16le':
+      // UTF-16 represents each of Surrogate Pair by 2-bytes
+      this.surrogateSize = 2;
+      this.detectIncompleteChar = utf16DetectIncompleteChar;
+      break;
+    case 'base64':
+      // Base-64 stores 3 bytes in 4 chars, and pads the remainder.
+      this.surrogateSize = 3;
+      this.detectIncompleteChar = base64DetectIncompleteChar;
+      break;
+    default:
+      this.write = passThroughWrite;
+      return;
+  }
+
+  // Enough space to store all bytes of a single character. UTF-8 needs 4
+  // bytes, but CESU-8 may require up to 6 (3 bytes per surrogate).
+  this.charBuffer = new Buffer(6);
+  // Number of bytes received for the current incomplete multi-byte character.
+  this.charReceived = 0;
+  // Number of bytes expected for the current incomplete multi-byte character.
+  this.charLength = 0;
+};
+
+
+// write decodes the given buffer and returns it as JS string that is
+// guaranteed to not contain any partial multi-byte characters. Any partial
+// character found at the end of the buffer is buffered up, and will be
+// returned when calling write again with the remaining bytes.
+//
+// Note: Converting a Buffer containing an orphan surrogate to a String
+// currently works, but converting a String to a Buffer (via `new Buffer`, or
+// Buffer#write) will replace incomplete surrogates with the unicode
+// replacement character. See https://codereview.chromium.org/121173009/ .
+StringDecoder.prototype.write = function(buffer) {
+  var charStr = '';
+  // if our last write ended with an incomplete multibyte character
+  while (this.charLength) {
+    // determine how many remaining bytes this buffer has to offer for this char
+    var available = (buffer.length >= this.charLength - this.charReceived) ?
+        this.charLength - this.charReceived :
+        buffer.length;
+
+    // add the new bytes to the char buffer
+    buffer.copy(this.charBuffer, this.charReceived, 0, available);
+    this.charReceived += available;
+
+    if (this.charReceived < this.charLength) {
+      // still not enough chars in this buffer? wait for more ...
+      return '';
+    }
+
+    // remove bytes belonging to the current character from the buffer
+    buffer = buffer.slice(available, buffer.length);
+
+    // get the character that was split
+    charStr = this.charBuffer.slice(0, this.charLength).toString(this.encoding);
+
+    // CESU-8: lead surrogate (D800-DBFF) is also the incomplete character
+    var charCode = charStr.charCodeAt(charStr.length - 1);
+    if (charCode >= 0xD800 && charCode <= 0xDBFF) {
+      this.charLength += this.surrogateSize;
+      charStr = '';
+      continue;
+    }
+    this.charReceived = this.charLength = 0;
+
+    // if there are no more bytes in this buffer, just emit our char
+    if (buffer.length === 0) {
+      return charStr;
+    }
+    break;
+  }
+
+  // determine and set charLength / charReceived
+  this.detectIncompleteChar(buffer);
+
+  var end = buffer.length;
+  if (this.charLength) {
+    // buffer the incomplete character bytes we got
+    buffer.copy(this.charBuffer, 0, buffer.length - this.charReceived, end);
+    end -= this.charReceived;
+  }
+
+  charStr += buffer.toString(this.encoding, 0, end);
+
+  var end = charStr.length - 1;
+  var charCode = charStr.charCodeAt(end);
+  // CESU-8: lead surrogate (D800-DBFF) is also the incomplete character
+  if (charCode >= 0xD800 && charCode <= 0xDBFF) {
+    var size = this.surrogateSize;
+    this.charLength += size;
+    this.charReceived += size;
+    this.charBuffer.copy(this.charBuffer, size, 0, size);
+    buffer.copy(this.charBuffer, 0, 0, size);
+    return charStr.substring(0, end);
+  }
+
+  // or just emit the charStr
+  return charStr;
+};
+
+// detectIncompleteChar determines if there is an incomplete UTF-8 character at
+// the end of the given buffer. If so, it sets this.charLength to the byte
+// length that character, and sets this.charReceived to the number of bytes
+// that are available for this character.
+StringDecoder.prototype.detectIncompleteChar = function(buffer) {
+  // determine how many bytes we have to check at the end of this buffer
+  var i = (buffer.length >= 3) ? 3 : buffer.length;
+
+  // Figure out if one of the last i bytes of our buffer announces an
+  // incomplete char.
+  for (; i > 0; i--) {
+    var c = buffer[buffer.length - i];
+
+    // See http://en.wikipedia.org/wiki/UTF-8#Description
+
+    // 110XXXXX
+    if (i == 1 && c >> 5 == 0x06) {
+      this.charLength = 2;
+      break;
+    }
+
+    // 1110XXXX
+    if (i <= 2 && c >> 4 == 0x0E) {
+      this.charLength = 3;
+      break;
+    }
+
+    // 11110XXX
+    if (i <= 3 && c >> 3 == 0x1E) {
+      this.charLength = 4;
+      break;
+    }
+  }
+  this.charReceived = i;
+};
+
+StringDecoder.prototype.end = function(buffer) {
+  var res = '';
+  if (buffer && buffer.length)
+    res = this.write(buffer);
+
+  if (this.charReceived) {
+    var cr = this.charReceived;
+    var buf = this.charBuffer;
+    var enc = this.encoding;
+    res += buf.slice(0, cr).toString(enc);
+  }
+
+  return res;
+};
+
+function passThroughWrite(buffer) {
+  return buffer.toString(this.encoding);
+}
+
+function utf16DetectIncompleteChar(buffer) {
+  this.charReceived = buffer.length % 2;
+  this.charLength = this.charReceived ? 2 : 0;
+}
+
+function base64DetectIncompleteChar(buffer) {
+  this.charReceived = buffer.length % 3;
+  this.charLength = this.charReceived ? 3 : 0;
+}
+
+},{"buffer":36}],98:[function(require,module,exports){
 var parseSVG = require('parse-svg-path')
 var getContours = require('svg-path-contours')
 var cdt2d = require('cdt2d')
@@ -14321,7 +16401,7 @@ function denestPolyline (nested) {
   }
 }
 
-},{"bound-points":24,"cdt2d":40,"clean-pslg":45,"normalize-path-scale":61,"object-assign":63,"parse-svg-path":65,"random-float":67,"simplify-path":79,"svg-path-contours":97}],97:[function(require,module,exports){
+},{"bound-points":25,"cdt2d":38,"clean-pslg":43,"normalize-path-scale":59,"object-assign":61,"parse-svg-path":64,"random-float":66,"simplify-path":80,"svg-path-contours":99}],99:[function(require,module,exports){
 var bezier = require('adaptive-bezier-curve')
 var abs = require('abs-svg-path')
 var norm = require('normalize-svg-path')
@@ -14367,7 +16447,11063 @@ module.exports = function contours(svg, scale) {
         paths.push(points)
     return paths
 }
-},{"abs-svg-path":1,"adaptive-bezier-curve":3,"normalize-svg-path":62,"vec2-copy":106}],98:[function(require,module,exports){
+},{"abs-svg-path":2,"adaptive-bezier-curve":4,"normalize-svg-path":60,"vec2-copy":154}],100:[function(require,module,exports){
+'use strict';
+
+/**
+ * SVGO is a Nodejs-based tool for optimizing SVG vector graphics files.
+ *
+ * @see https://github.com/svg/svgo
+ *
+ * @author Kir Belevich <kir@soulshine.in> (https://github.com/deepsweet)
+ * @copyright © 2012 Kir Belevich
+ * @license MIT https://raw.githubusercontent.com/svg/svgo/master/LICENSE
+ */
+
+var CONFIG = require('./svgo/config.js'),
+    SVG2JS = require('./svgo/svg2js.js'),
+    PLUGINS = require('./svgo/plugins.js'),
+    JSAPI = require('./svgo/jsAPI.js'),
+    JS2SVG = require('./svgo/js2svg.js');
+
+var SVGO = module.exports = function(config) {
+
+    this.config = CONFIG(config);
+
+};
+
+SVGO.prototype.optimize = function(svgstr, callback) {
+    if (this.config.error) return callback(this.config);
+
+    var _this = this,
+        config = this.config,
+        maxPassCount = config.multipass ? 10 : 1,
+        counter = 0,
+        prevResultSize = Number.POSITIVE_INFINITY,
+        optimizeOnceCallback = function(svgjs) {
+
+            if (svgjs.error) {
+                callback(svgjs);
+                return;
+            }
+
+            if (++counter < maxPassCount && svgjs.data.length < prevResultSize) {
+                prevResultSize = svgjs.data.length;
+                _this._optimizeOnce(svgjs.data, optimizeOnceCallback);
+            } else {
+                callback(svgjs);
+            }
+
+        };
+
+    _this._optimizeOnce(svgstr, optimizeOnceCallback);
+
+};
+
+SVGO.prototype._optimizeOnce = function(svgstr, callback) {
+    var config = this.config;
+
+    SVG2JS(svgstr, function(svgjs) {
+
+        if (svgjs.error) {
+            callback(svgjs);
+            return;
+        }
+
+        svgjs = PLUGINS(svgjs, config.plugins);
+
+        callback(JS2SVG(svgjs, config.js2svg));
+
+    });
+};
+
+/**
+ * The factory that creates a content item with the helper methods.
+ *
+ * @param {Object} data which passed to jsAPI constructor
+ * @returns {JSAPI} content item
+ */
+SVGO.prototype.createContentItem = function(data) {
+
+    return new JSAPI(data);
+
+};
+
+},{"./svgo/config.js":101,"./svgo/js2svg.js":102,"./svgo/jsAPI.js":103,"./svgo/plugins.js":104,"./svgo/svg2js.js":105}],101:[function(require,module,exports){
+(function (__dirname){
+'use strict';
+
+var FS = require('fs');
+var yaml = require('js-yaml');
+
+var EXTEND = require('whet.extend');
+
+/**
+ * Read and/or extend/replace default config file,
+ * prepare and optimize plugins array.
+ *
+ * @param {Object} [config] input config
+ * @return {Object} output config
+ */
+module.exports = function(config) {
+
+    var defaults;
+    config = typeof config == 'object' && config || {};
+
+    if (config.plugins && !Array.isArray(config.plugins)) {
+        return { error: 'Error: Invalid plugins list. Provided \'plugins\' in config should be an array.' };
+    }
+
+    if (config.full) {
+        defaults = config;
+
+        if (Array.isArray(defaults.plugins)) {
+            defaults.plugins = preparePluginsArray(defaults.plugins);
+        }
+    } else {
+        defaults = EXTEND({}, yaml.safeLoad(FS.readFileSync(__dirname + '/../../.svgo.yml', 'utf8')));
+        defaults.plugins = preparePluginsArray(defaults.plugins);
+        defaults = extendConfig(defaults, config);
+    }
+
+    if ('floatPrecision' in config && Array.isArray(defaults.plugins)) {
+        defaults.plugins.forEach(function(plugin) {
+            if (plugin.params && ('floatPrecision' in plugin.params)) {
+                // Don't touch default plugin params
+                plugin.params = EXTEND({}, plugin.params, { floatPrecision: config.floatPrecision });
+            }
+        });
+    }
+
+    if (Array.isArray(defaults.plugins)) {
+        defaults.plugins = optimizePluginsArray(defaults.plugins);
+    }
+
+    return defaults;
+
+};
+
+/**
+ * Require() all plugins in array.
+ *
+ * @param {Array} plugins input plugins array
+ * @return {Array} input plugins array of arrays
+ */
+function preparePluginsArray(plugins) {
+
+    var plugin,
+        key;
+
+    return plugins.map(function(item) {
+
+        // {}
+        if (typeof item === 'object') {
+
+            key = Object.keys(item)[0];
+
+            // custom
+            if (typeof item[key] === 'object' && item[key].fn && typeof item[key].fn === 'function') {
+                plugin = setupCustomPlugin(key, item[key]);
+
+            } else {
+
+              plugin = EXTEND({}, require('../../plugins/' + key));
+
+              // name: {}
+              if (typeof item[key] === 'object') {
+                  plugin.params = EXTEND({}, plugin.params || {}, item[key]);
+                  plugin.active = true;
+
+              // name: false
+              } else if (item[key] === false) {
+                 plugin.active = false;
+
+              // name: true
+              } else if (item[key] === true) {
+                 plugin.active = true;
+              }
+
+              plugin.name = key;
+            }
+
+        // name
+        } else {
+
+            plugin = EXTEND({}, require('../../plugins/' + item));
+            plugin.name = item;
+
+        }
+
+        return plugin;
+
+    });
+
+}
+
+/**
+ * Extend plugins with the custom config object.
+ *
+ * @param {Array} plugins input plugins
+ * @param {Object} config config
+ * @return {Array} output plugins
+ */
+function extendConfig(defaults, config) {
+
+    var key;
+
+    // plugins
+    if (config.plugins) {
+
+        config.plugins.forEach(function(item) {
+
+            // {}
+            if (typeof item === 'object') {
+
+                key = Object.keys(item)[0];
+
+                // custom
+                if (typeof item[key] === 'object' && item[key].fn && typeof item[key].fn === 'function') {
+                    defaults.plugins.push(setupCustomPlugin(key, item[key]));
+
+                } else {
+                    defaults.plugins.forEach(function(plugin) {
+
+                        if (plugin.name === key) {
+                            // name: {}
+                            if (typeof item[key] === 'object') {
+                                plugin.params = EXTEND({}, plugin.params || {}, item[key]);
+                                plugin.active = true;
+
+                            // name: false
+                            } else if (item[key] === false) {
+                               plugin.active = false;
+
+                            // name: true
+                            } else if (item[key] === true) {
+                               plugin.active = true;
+                            }
+                        }
+                    });
+                }
+
+            }
+
+        });
+
+    }
+
+    defaults.multipass = config.multipass;
+
+    // svg2js
+    if (config.svg2js) {
+        defaults.svg2js = config.svg2js;
+    }
+
+    // js2svg
+    if (config.js2svg) {
+        defaults.js2svg = config.js2svg;
+    }
+
+    return defaults;
+
+}
+
+/**
+ * Setup and enable a custom plugin
+ *
+ * @param {String} plugin name
+ * @param {Object} custom plugin
+ * @return {Array} enabled plugin
+ */
+function setupCustomPlugin(name, plugin) {
+    plugin.active = true;
+    plugin.params = EXTEND({}, plugin.params || {});
+    plugin.name = name;
+
+    return plugin;
+}
+
+/**
+ * Try to group sequential elements of plugins array.
+ *
+ * @param {Object} plugins input plugins
+ * @return {Array} output plugins
+ */
+function optimizePluginsArray(plugins) {
+
+    var prev;
+
+    return plugins.reduce(function(plugins, item) {
+        if (prev && item.type == prev[0].type) {
+            prev.push(item);
+        } else {
+            plugins.push(prev = [item]);
+        }
+        return plugins;
+    }, []);
+
+}
+
+}).call(this,"/node_modules\\svgo\\lib\\svgo")
+},{"fs":34,"js-yaml":107,"whet.extend":155}],102:[function(require,module,exports){
+'use strict';
+
+var EOL = require('os').EOL,
+    EXTEND = require('whet.extend'),
+    textElem = require('../../plugins/_collections.js').elemsGroups.textContent.concat('title');
+
+var defaults = {
+    doctypeStart: '<!DOCTYPE',
+    doctypeEnd: '>',
+    procInstStart: '<?',
+    procInstEnd: '?>',
+    tagOpenStart: '<',
+    tagOpenEnd: '>',
+    tagCloseStart: '</',
+    tagCloseEnd: '>',
+    tagShortStart: '<',
+    tagShortEnd: '/>',
+    attrStart: '="',
+    attrEnd: '"',
+    commentStart: '<!--',
+    commentEnd: '-->',
+    cdataStart: '<![CDATA[',
+    cdataEnd: ']]>',
+    textStart: '',
+    textEnd: '',
+    indent: 4,
+    regEntities: /[&'"<>]/g,
+    regValEntities: /[&"<>]/g,
+    encodeEntity: encodeEntity,
+    pretty: false,
+    useShortTags: true
+};
+
+var entities = {
+      '&': '&amp;',
+      '\'': '&apos;',
+      '"': '&quot;',
+      '>': '&gt;',
+      '<': '&lt;',
+    };
+
+/**
+ * Convert SVG-as-JS object to SVG (XML) string.
+ *
+ * @param {Object} data input data
+ * @param {Object} config config
+ *
+ * @return {Object} output data
+ */
+module.exports = function(data, config) {
+
+    return new JS2SVG(config).convert(data);
+
+};
+
+function JS2SVG(config) {
+
+    if (config) {
+        this.config = EXTEND(true, {}, defaults, config);
+    } else {
+        this.config = defaults;
+    }
+
+    var indent = this.config.indent;
+    if (typeof indent == 'number' && !isNaN(indent)) {
+        this.config.indent = '';
+        for (var i = indent; i-- > 0;) this.config.indent += ' ';
+    } else if (typeof indent != 'string') {
+        this.config.indent = '    ';
+    }
+
+    if (this.config.pretty) {
+        this.config.doctypeEnd += EOL;
+        this.config.procInstEnd += EOL;
+        this.config.commentEnd += EOL;
+        this.config.cdataEnd += EOL;
+        this.config.tagShortEnd += EOL;
+        this.config.tagOpenEnd += EOL;
+        this.config.tagCloseEnd += EOL;
+        this.config.textEnd += EOL;
+    }
+
+    this.indentLevel = 0;
+    this.textContext = null;
+
+}
+
+function encodeEntity(char) {
+    return entities[char];
+}
+
+/**
+ * Start conversion.
+ *
+ * @param {Object} data input data
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.convert = function(data) {
+
+    var svg = '';
+
+    if (data.content) {
+
+        this.indentLevel++;
+
+        data.content.forEach(function(item) {
+
+            if (item.elem) {
+               svg += this.createElem(item);
+            } else if (item.text) {
+               svg += this.createText(item.text);
+            } else if (item.doctype) {
+                svg += this.createDoctype(item.doctype);
+            } else if (item.processinginstruction) {
+                svg += this.createProcInst(item.processinginstruction);
+            } else if (item.comment) {
+                svg += this.createComment(item.comment);
+            } else if (item.cdata) {
+                svg += this.createCDATA(item.cdata);
+            }
+
+        }, this);
+
+    }
+
+    this.indentLevel--;
+
+    return {
+        data: svg,
+        info: {
+            width: this.width,
+            height: this.height
+        }
+    };
+
+};
+
+/**
+ * Create indent string in accordance with the current node level.
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createIndent = function() {
+
+    var indent = '';
+
+    if (this.config.pretty && !this.textContext) {
+        for (var i = 1; i < this.indentLevel; i++) {
+            indent += this.config.indent;
+        }
+    }
+
+    return indent;
+
+};
+
+/**
+ * Create doctype tag.
+ *
+ * @param {String} doctype doctype body string
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createDoctype = function(doctype) {
+
+    return  this.config.doctypeStart +
+            doctype +
+            this.config.doctypeEnd;
+
+};
+
+/**
+ * Create XML Processing Instruction tag.
+ *
+ * @param {Object} instruction instruction object
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createProcInst = function(instruction) {
+
+    return  this.config.procInstStart +
+            instruction.name +
+            ' ' +
+            instruction.body +
+            this.config.procInstEnd;
+
+};
+
+/**
+ * Create comment tag.
+ *
+ * @param {String} comment comment body
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createComment = function(comment) {
+
+    return  this.config.commentStart +
+            comment +
+            this.config.commentEnd;
+
+};
+
+/**
+ * Create CDATA section.
+ *
+ * @param {String} cdata CDATA body
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createCDATA = function(cdata) {
+
+    return  this.createIndent() +
+            this.config.cdataStart +
+            cdata +
+            this.config.cdataEnd;
+
+};
+
+/**
+ * Create element tag.
+ *
+ * @param {Object} data element object
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createElem = function(data) {
+
+    // beautiful injection for obtaining SVG information :)
+    if (
+        data.isElem('svg') &&
+        data.hasAttr('width') &&
+        data.hasAttr('height')
+    ) {
+        this.width = data.attr('width').value;
+        this.height = data.attr('height').value;
+    }
+
+    // empty element and short tag
+    if (data.isEmpty()) {
+        if (this.config.useShortTags) {
+            return this.createIndent() +
+                   this.config.tagShortStart +
+                   data.elem +
+                   this.createAttrs(data) +
+                   this.config.tagShortEnd;
+        } else {
+            return this.createIndent() +
+                   this.config.tagShortStart +
+                   data.elem +
+                   this.createAttrs(data) +
+                   this.config.tagOpenEnd +
+                   this.config.tagCloseStart +
+                   data.elem +
+                   this.config.tagCloseEnd;
+        }
+    // non-empty element
+    } else {
+        var tagOpenStart = this.config.tagOpenStart,
+            tagOpenEnd = this.config.tagOpenEnd,
+            tagCloseStart = this.config.tagCloseStart,
+            tagCloseEnd = this.config.tagCloseEnd,
+            openIndent = this.createIndent(),
+            textIndent = '',
+            processedData = '',
+            dataEnd = '';
+
+        if (this.textContext) {
+            tagOpenStart = defaults.tagOpenStart;
+            tagOpenEnd = defaults.tagOpenEnd;
+            tagCloseStart = defaults.tagCloseStart;
+            tagCloseEnd = defaults.tagCloseEnd;
+            openIndent = '';
+        } else if (data.isElem(textElem)) {
+            if (this.config.pretty) {
+                textIndent += openIndent + this.config.indent;
+            }
+            this.textContext = data;
+        }
+
+        processedData += this.convert(data).data;
+
+        if (this.textContext == data) {
+            this.textContext = null;
+            if (this.config.pretty) dataEnd = EOL;
+        }
+
+        return  openIndent +
+                tagOpenStart +
+                data.elem +
+                this.createAttrs(data) +
+                tagOpenEnd +
+                textIndent +
+                processedData +
+                dataEnd +
+                this.createIndent() +
+                tagCloseStart +
+                data.elem +
+                tagCloseEnd;
+
+    }
+
+};
+
+/**
+ * Create element attributes.
+ *
+ * @param {Object} elem attributes object
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createAttrs = function(elem) {
+
+    var attrs = '';
+
+    elem.eachAttr(function(attr) {
+
+        if (attr.value !== undefined) {
+            attrs +=    ' ' +
+                        attr.name +
+                        this.config.attrStart +
+                        String(attr.value).replace(this.config.regValEntities, this.config.encodeEntity) +
+                        this.config.attrEnd;
+        }
+        else {
+            attrs +=    ' ' +
+                        attr.name;
+        }
+
+
+    }, this);
+
+    return attrs;
+
+};
+
+/**
+ * Create text node.
+ *
+ * @param {String} text text
+ *
+ * @return {String}
+ */
+JS2SVG.prototype.createText = function(text) {
+
+    return  this.createIndent() +
+            this.config.textStart +
+            text.replace(this.config.regEntities, this.config.encodeEntity) +
+            (this.textContext ? '' : this.config.textEnd);
+
+};
+
+},{"../../plugins/_collections.js":137,"os":62,"whet.extend":155}],103:[function(require,module,exports){
+'use strict';
+
+var EXTEND = require('whet.extend');
+
+var JSAPI = module.exports = function(data, parentNode) {
+    EXTEND(this, data);
+    if (parentNode) {
+        Object.defineProperty(this, 'parentNode', {
+            writable: true,
+            value: parentNode
+        });
+    }
+};
+
+/**
+ * Perform a deep clone of this node.
+ *
+ * @return {Object} element
+ */
+JSAPI.prototype.clone = function() {
+    var node = this;
+    var nodeData = {};
+
+    Object.keys(node).forEach(function(key) {
+        if (key !== 'content') {
+            nodeData[key] = node[key];
+        }
+    });
+
+    // Deep-clone node data
+    // This is still faster than using EXTEND(true…)
+    nodeData = JSON.parse(JSON.stringify(nodeData));
+
+    // parentNode gets set to a proper object by the parent clone,
+    // but it needs to be true/false now to do the right thing
+    // in the constructor.
+    var clonedNode = new JSAPI(nodeData, !!node.parentNode);
+
+    if (node.content) {
+        clonedNode.content = node.content.map(function(childNode) {
+            var clonedChild = childNode.clone();
+            clonedChild.parentNode = clonedNode;
+            return clonedChild;
+        });
+    }
+
+    return clonedNode;
+};
+
+/**
+ * Determine if item is an element
+ * (any, with a specific name or in a names array).
+ *
+ * @param {String|Array} [param] element name or names arrays
+ * @return {Boolean}
+ */
+JSAPI.prototype.isElem = function(param) {
+
+    if (!param) return !!this.elem;
+
+    if (Array.isArray(param)) return !!this.elem && (param.indexOf(this.elem) > -1);
+
+    return !!this.elem && this.elem === param;
+
+};
+
+/**
+ * Renames an element
+ *
+ * @param {String} name new element name
+ * @return {Object} element
+ */
+JSAPI.prototype.renameElem = function(name) {
+
+    if (name && typeof name === 'string')
+        this.elem = this.local = name;
+
+    return this;
+
+};
+
+/**
+ * Determine if element is empty.
+ *
+ * @return {Boolean}
+ */
+ JSAPI.prototype.isEmpty = function() {
+
+    return !this.content || !this.content.length;
+
+};
+
+/**
+ * Changes content by removing elements and/or adding new elements.
+ *
+ * @param {Number} start Index at which to start changing the content.
+ * @param {Number} n Number of elements to remove.
+ * @param {Array|Object} [insertion] Elements to add to the content.
+ * @return {Array} Removed elements.
+ */
+ JSAPI.prototype.spliceContent = function(start, n, insertion) {
+
+    if (arguments.length < 2) return [];
+
+    if (!Array.isArray(insertion))
+        insertion = Array.apply(null, arguments).slice(2);
+
+    insertion.forEach(function(inner) { inner.parentNode = this }, this);
+
+    return this.content.splice.apply(this.content, [start, n].concat(insertion));
+
+
+};
+
+/**
+ * Determine if element has an attribute
+ * (any, or by name or by name + value).
+ *
+ * @param {String} [name] attribute name
+ * @param {String} [val] attribute value (will be toString()'ed)
+ * @return {Boolean}
+ */
+ JSAPI.prototype.hasAttr = function(name, val) {
+
+    if (!this.attrs || !Object.keys(this.attrs).length) return false;
+
+    if (!arguments.length) return !!this.attrs;
+
+    if (val !== undefined) return !!this.attrs[name] && this.attrs[name].value === val.toString();
+
+    return !!this.attrs[name];
+
+};
+
+/**
+ * Determine if element has an attribute by local name
+ * (any, or by name or by name + value).
+ *
+ * @param {String} [localName] local attribute name
+ * @param {Number|String|RegExp|Function} [val] attribute value (will be toString()'ed or executed, otherwise ignored)
+ * @return {Boolean}
+ */
+ JSAPI.prototype.hasAttrLocal = function(localName, val) {
+
+    if (!this.attrs || !Object.keys(this.attrs).length) return false;
+
+    if (!arguments.length) return !!this.attrs;
+
+    var callback;
+
+    switch (val != null && val.constructor && val.constructor.name) {
+        case 'Number':   // same as String
+        case 'String':   callback = stringValueTest; break;
+        case 'RegExp':   callback = regexpValueTest; break;
+        case 'Function': callback = funcValueTest; break;
+        default:         callback = nameTest;
+    }
+    return this.someAttr(callback);
+
+    function nameTest(attr) {
+        return attr.local === localName;
+    }
+
+    function stringValueTest(attr) {
+        return attr.local === localName && val == attr.value;
+    }
+
+    function regexpValueTest(attr) {
+        return attr.local === localName && val.test(attr.value);
+    }
+
+    function funcValueTest(attr) {
+        return attr.local === localName && val(attr.value);
+    }
+
+};
+
+/**
+ * Get a specific attribute from an element
+ * (by name or name + value).
+ *
+ * @param {String} name attribute name
+ * @param {String} [val] attribute value (will be toString()'ed)
+ * @return {Object|Undefined}
+ */
+ JSAPI.prototype.attr = function(name, val) {
+
+    if (!this.hasAttr() || !arguments.length) return undefined;
+
+    if (val !== undefined) return this.hasAttr(name, val) ? this.attrs[name] : undefined;
+
+    return this.attrs[name];
+
+};
+
+/**
+ * Get computed attribute value from an element
+ *
+ * @param {String} name attribute name
+ * @return {Object|Undefined}
+ */
+ JSAPI.prototype.computedAttr = function(name, val) {
+    /* jshint eqnull: true */
+    if (!arguments.length) return;
+
+    for (var elem = this; elem && (!elem.hasAttr(name) || !elem.attr(name).value); elem = elem.parentNode);
+
+    if (val != null) {
+        return elem ? elem.hasAttr(name, val) : false;
+    } else if (elem && elem.hasAttr(name)) {
+        return elem.attrs[name].value;
+    }
+
+};
+
+/**
+ * Remove a specific attribute.
+ *
+ * @param {String|Array} name attribute name
+ * @param {String} [val] attribute value
+ * @return {Boolean}
+ */
+ JSAPI.prototype.removeAttr = function(name, val, recursive) {
+
+    if (!arguments.length) return false;
+
+    if (Array.isArray(name)) name.forEach(this.removeAttr, this);
+
+    if (!this.hasAttr(name)) return false;
+
+    if (!recursive && val && this.attrs[name].value !== val) return false;
+
+    delete this.attrs[name];
+
+    if (!Object.keys(this.attrs).length) delete this.attrs;
+
+    return true;
+
+};
+
+/**
+ * Add attribute.
+ *
+ * @param {Object} [attr={}] attribute object
+ * @return {Object|Boolean} created attribute or false if no attr was passed in
+ */
+ JSAPI.prototype.addAttr = function(attr) {
+    attr = attr || {};
+
+    if (attr.name === undefined ||
+        attr.prefix === undefined ||
+        attr.local === undefined
+    ) return false;
+
+    this.attrs = this.attrs || {};
+    this.attrs[attr.name] = attr;
+
+    return this.attrs[attr.name];
+
+};
+
+/**
+ * Iterates over all attributes.
+ *
+ * @param {Function} callback callback
+ * @param {Object} [context] callback context
+ * @return {Boolean} false if there are no any attributes
+ */
+ JSAPI.prototype.eachAttr = function(callback, context) {
+
+    if (!this.hasAttr()) return false;
+
+    for (var name in this.attrs) {
+        callback.call(context, this.attrs[name]);
+    }
+
+    return true;
+
+};
+
+/**
+ * Tests whether some attribute passes the test.
+ *
+ * @param {Function} callback callback
+ * @param {Object} [context] callback context
+ * @return {Boolean} false if there are no any attributes
+ */
+ JSAPI.prototype.someAttr = function(callback, context) {
+
+    if (!this.hasAttr()) return false;
+
+    for (var name in this.attrs) {
+        if (callback.call(context, this.attrs[name])) return true;
+    }
+
+    return false;
+
+};
+
+},{"whet.extend":155}],104:[function(require,module,exports){
+'use strict';
+
+/**
+ * Plugins engine.
+ *
+ * @module plugins
+ *
+ * @param {Object} data input data
+ * @param {Object} plugins plugins object from config
+ * @return {Object} output data
+ */
+module.exports = function(data, plugins) {
+
+    plugins.forEach(function(group) {
+
+        switch(group[0].type) {
+            case 'perItem':
+                data = perItem(data, group);
+                break;
+            case 'perItemReverse':
+                data = perItem(data, group, true);
+                break;
+            case 'full':
+                data = full(data, group);
+                break;
+        }
+
+    });
+
+    return data;
+
+};
+
+/**
+ * Direct or reverse per-item loop.
+ *
+ * @param {Object} data input data
+ * @param {Array} plugins plugins list to process
+ * @param {Boolean} [reverse] reverse pass?
+ * @return {Object} output data
+ */
+function perItem(data, plugins, reverse) {
+
+    function monkeys(items) {
+
+        items.content = items.content.filter(function(item) {
+
+            // reverse pass
+            if (reverse && item.content) {
+                monkeys(item);
+            }
+
+            // main filter
+            var filter = true;
+
+            for (var i = 0; filter && i < plugins.length; i++) {
+                var plugin = plugins[i];
+
+                if (plugin.active && plugin.fn(item, plugin.params) === false) {
+                    filter = false;
+                }
+            }
+
+            // direct pass
+            if (!reverse && item.content) {
+                monkeys(item);
+            }
+
+            return filter;
+
+        });
+
+        return items;
+
+    }
+
+    return monkeys(data);
+
+}
+
+/**
+ * "Full" plugins.
+ *
+ * @param {Object} data input data
+ * @param {Array} plugins plugins list to process
+ * @return {Object} output data
+ */
+function full(data, plugins) {
+
+    plugins.forEach(function(plugin) {
+        if (plugin.active) {
+            data = plugin.fn(data, plugin.params);
+        }
+    });
+
+    return data;
+
+}
+
+},{}],105:[function(require,module,exports){
+'use strict';
+
+var SAX = require('sax'),
+    JSAPI = require('./jsAPI.js'),
+    entityDeclaration = /<!ENTITY\s+(\S+)\s+(?:'([^\']+)'|"([^\"]+)")\s*>/g;
+
+var config = {
+    strict: true,
+    trim: false,
+    normalize: true,
+    lowercase: true,
+    xmlns: true,
+    position: true
+};
+
+/**
+ * Convert SVG (XML) string to SVG-as-JS object.
+ *
+ * @param {String} data input data
+ * @param {Function} callback
+ */
+module.exports = function(data, callback) {
+
+    var sax = SAX.parser(config.strict, config),
+        root = new JSAPI({ elem: '#document' }),
+        current = root,
+        stack = [root],
+        textContext = null,
+        parsingError = false;
+
+    function pushToContent(content) {
+
+        content = new JSAPI(content, current);
+
+        (current.content = current.content || []).push(content);
+
+        return content;
+
+    }
+
+    sax.ondoctype = function(doctype) {
+
+        pushToContent({
+            doctype: doctype
+        });
+
+        var subsetStart = doctype.indexOf('['),
+            entityMatch;
+
+        if (subsetStart >= 0) {
+            entityDeclaration.lastIndex = subsetStart;
+
+            while ((entityMatch = entityDeclaration.exec(data)) != null) {
+                sax.ENTITIES[entityMatch[1]] = entityMatch[2] || entityMatch[3];
+            }
+        }
+    };
+
+    sax.onprocessinginstruction = function(data) {
+
+        pushToContent({
+            processinginstruction: data
+        });
+
+    };
+
+    sax.oncomment = function(comment) {
+
+        pushToContent({
+            comment: comment.trim()
+        });
+
+    };
+
+    sax.oncdata = function(cdata) {
+
+        pushToContent({
+            cdata: cdata
+        });
+
+    };
+
+    sax.onopentag = function(data) {
+
+        var elem = {
+            elem: data.name,
+            prefix: data.prefix,
+            local: data.local
+        };
+
+        if (Object.keys(data.attributes).length) {
+            elem.attrs = {};
+
+            for (var name in data.attributes) {
+                elem.attrs[name] = {
+                    name: name,
+                    value: data.attributes[name].value,
+                    prefix: data.attributes[name].prefix,
+                    local: data.attributes[name].local
+                };
+            }
+        }
+
+        elem = pushToContent(elem);
+        current = elem;
+
+        // Save info about <text> tag to prevent trimming of meaningful whitespace
+        if (data.name == 'text' && !data.prefix) {
+            textContext = current;
+        }
+
+        stack.push(elem);
+
+    };
+
+    sax.ontext = function(text) {
+
+        if (/\S/.test(text) || textContext) {
+
+            if (!textContext)
+                text = text.trim();
+
+            pushToContent({
+                text: text
+            });
+
+        }
+
+    };
+
+    sax.onclosetag = function() {
+
+        var last = stack.pop();
+
+        // Trim text inside <text> tag.
+        if (last == textContext) {
+            trim(textContext);
+            textContext = null;
+        }
+        current = stack[stack.length - 1];
+
+    };
+
+    sax.onerror = function(e) {
+
+        e.message = 'Error in parsing SVG: ' + e.message;
+        if (e.message.indexOf('Unexpected end') < 0) {
+            throw e;
+        }
+
+    };
+
+    sax.onend = function() {
+
+        if (!this.error) {
+            callback(root);
+        } else {
+            callback({ error: this.error.message });
+        }
+
+    };
+
+    try {
+        sax.write(data);
+    } catch (e) {
+        callback({ error: e.message });
+        parsingError = true;
+    }
+    if (!parsingError) sax.close();
+
+    function trim(elem) {
+        if (!elem.content) return elem;
+
+        var start = elem.content[0],
+            end = elem.content[elem.content.length - 1];
+
+        while (start && start.content && !start.text) start = start.content[0];
+        if (start && start.text) start.text = start.text.replace(/^\s+/, '');
+
+        while (end && end.content && !end.text) end = end.content[end.content.length - 1];
+        if (end && end.text) end.text = end.text.replace(/\s+$/, '');
+
+        return elem;
+
+    }
+
+};
+
+},{"./jsAPI.js":103,"sax":78}],106:[function(require,module,exports){
+(function (Buffer){
+'use strict';
+
+/**
+ * Encode plain SVG data string into Data URI string.
+ *
+ * @param {String} str input string
+ * @param {String} type Data URI type
+ * @return {String} output string
+ */
+exports.encodeSVGDatauri = function(str, type) {
+
+    var prefix = 'data:image/svg+xml';
+
+    // base64
+    if (!type || type === 'base64') {
+
+        prefix += ';base64,';
+
+        str = prefix + new Buffer(str).toString('base64');
+
+    // URI encoded
+    } else if (type === 'enc') {
+
+        str = prefix + ',' + encodeURIComponent(str);
+
+    // unencoded
+    } else if (type === 'unenc') {
+
+        str = prefix + ',' + str;
+
+    }
+
+    return str;
+
+};
+
+/**
+ * Decode SVG Data URI string into plain SVG string.
+ *
+ * @param {string} str input string
+ * @return {String} output string
+ */
+exports.decodeSVGDatauri = function(str) {
+    var regexp = /data:image\/svg\+xml(;charset=[^;,]*)?(;base64)?,(.*)/;
+    var match = regexp.exec(str);
+
+    // plain string
+    if (!match) return str;
+
+    var data = match[3];
+
+    // base64
+    if (match[2]) {
+
+        str = new Buffer(data, 'base64').toString('utf8');
+
+    // URI encoded
+    } else if (data.charAt(0) === '%') {
+
+        str = decodeURIComponent(data);
+
+    // unencoded
+    } else if (data.charAt(0) === '<') {
+
+        str = data;
+
+    }
+
+    return str;
+};
+
+exports.intersectArrays = function(a, b) {
+    return a.filter(function(n) {
+        return b.indexOf(n) > -1;
+    });
+};
+
+exports.cleanupOutData = function(data, params) {
+
+    var str = '',
+        delimiter,
+        prev;
+
+    data.forEach(function(item, i) {
+
+        // space delimiter by default
+        delimiter = ' ';
+
+        // no extra space in front of first number
+        if (i === 0) {
+            delimiter = '';
+        }
+
+        // remove floating-point numbers leading zeros
+        // 0.5 → .5
+        // -0.5 → -.5
+        if (params.leadingZero) {
+            item = removeLeadingZero(item);
+        }
+
+        // no extra space in front of negative number or
+        // in front of a floating number if a previous number is floating too
+        if (
+            params.negativeExtraSpace &&
+            (item < 0 ||
+                (String(item).charCodeAt(0) == 46 && prev % 1 !== 0)
+            )
+        ) {
+            delimiter = '';
+        }
+
+        // save prev item value
+        prev = item;
+
+        str += delimiter + item;
+
+    });
+
+    return str;
+
+};
+
+/**
+ * Remove floating-point numbers leading zero.
+ *
+ * @example
+ * 0.5 → .5
+ *
+ * @example
+ * -0.5 → -.5
+ *
+ * @param {Float} num input number
+ *
+ * @return {String} output number as string
+ */
+var removeLeadingZero = exports.removeLeadingZero = function(num) {
+    var strNum = num.toString();
+
+    if (0 < num && num < 1 && strNum.charCodeAt(0) == 48) {
+        strNum = strNum.slice(1);
+    } else if (-1 < num && num < 0 && strNum.charCodeAt(1) == 48) {
+        strNum = strNum.charAt(0) + strNum.slice(2);
+    }
+
+    return strNum;
+
+};
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":36}],107:[function(require,module,exports){
+'use strict';
+
+
+var yaml = require('./lib/js-yaml.js');
+
+
+module.exports = yaml;
+
+},{"./lib/js-yaml.js":108}],108:[function(require,module,exports){
+'use strict';
+
+
+var loader = require('./js-yaml/loader');
+var dumper = require('./js-yaml/dumper');
+
+
+function deprecated(name) {
+  return function () {
+    throw new Error('Function ' + name + ' is deprecated and cannot be used.');
+  };
+}
+
+
+module.exports.Type                = require('./js-yaml/type');
+module.exports.Schema              = require('./js-yaml/schema');
+module.exports.FAILSAFE_SCHEMA     = require('./js-yaml/schema/failsafe');
+module.exports.JSON_SCHEMA         = require('./js-yaml/schema/json');
+module.exports.CORE_SCHEMA         = require('./js-yaml/schema/core');
+module.exports.DEFAULT_SAFE_SCHEMA = require('./js-yaml/schema/default_safe');
+module.exports.DEFAULT_FULL_SCHEMA = require('./js-yaml/schema/default_full');
+module.exports.load                = loader.load;
+module.exports.loadAll             = loader.loadAll;
+module.exports.safeLoad            = loader.safeLoad;
+module.exports.safeLoadAll         = loader.safeLoadAll;
+module.exports.dump                = dumper.dump;
+module.exports.safeDump            = dumper.safeDump;
+module.exports.YAMLException       = require('./js-yaml/exception');
+
+// Deprecated schema names from JS-YAML 2.0.x
+module.exports.MINIMAL_SCHEMA = require('./js-yaml/schema/failsafe');
+module.exports.SAFE_SCHEMA    = require('./js-yaml/schema/default_safe');
+module.exports.DEFAULT_SCHEMA = require('./js-yaml/schema/default_full');
+
+// Deprecated functions from JS-YAML 1.x.x
+module.exports.scan           = deprecated('scan');
+module.exports.parse          = deprecated('parse');
+module.exports.compose        = deprecated('compose');
+module.exports.addConstructor = deprecated('addConstructor');
+
+},{"./js-yaml/dumper":110,"./js-yaml/exception":111,"./js-yaml/loader":112,"./js-yaml/schema":114,"./js-yaml/schema/core":115,"./js-yaml/schema/default_full":116,"./js-yaml/schema/default_safe":117,"./js-yaml/schema/failsafe":118,"./js-yaml/schema/json":119,"./js-yaml/type":120}],109:[function(require,module,exports){
+'use strict';
+
+
+function isNothing(subject) {
+  return (typeof subject === 'undefined') || (subject === null);
+}
+
+
+function isObject(subject) {
+  return (typeof subject === 'object') && (subject !== null);
+}
+
+
+function toArray(sequence) {
+  if (Array.isArray(sequence)) return sequence;
+  else if (isNothing(sequence)) return [];
+
+  return [ sequence ];
+}
+
+
+function extend(target, source) {
+  var index, length, key, sourceKeys;
+
+  if (source) {
+    sourceKeys = Object.keys(source);
+
+    for (index = 0, length = sourceKeys.length; index < length; index += 1) {
+      key = sourceKeys[index];
+      target[key] = source[key];
+    }
+  }
+
+  return target;
+}
+
+
+function repeat(string, count) {
+  var result = '', cycle;
+
+  for (cycle = 0; cycle < count; cycle += 1) {
+    result += string;
+  }
+
+  return result;
+}
+
+
+function isNegativeZero(number) {
+  return (number === 0) && (Number.NEGATIVE_INFINITY === 1 / number);
+}
+
+
+module.exports.isNothing      = isNothing;
+module.exports.isObject       = isObject;
+module.exports.toArray        = toArray;
+module.exports.repeat         = repeat;
+module.exports.isNegativeZero = isNegativeZero;
+module.exports.extend         = extend;
+
+},{}],110:[function(require,module,exports){
+'use strict';
+
+/*eslint-disable no-use-before-define*/
+
+var common              = require('./common');
+var YAMLException       = require('./exception');
+var DEFAULT_FULL_SCHEMA = require('./schema/default_full');
+var DEFAULT_SAFE_SCHEMA = require('./schema/default_safe');
+
+var _toString       = Object.prototype.toString;
+var _hasOwnProperty = Object.prototype.hasOwnProperty;
+
+var CHAR_TAB                  = 0x09; /* Tab */
+var CHAR_LINE_FEED            = 0x0A; /* LF */
+var CHAR_SPACE                = 0x20; /* Space */
+var CHAR_EXCLAMATION          = 0x21; /* ! */
+var CHAR_DOUBLE_QUOTE         = 0x22; /* " */
+var CHAR_SHARP                = 0x23; /* # */
+var CHAR_PERCENT              = 0x25; /* % */
+var CHAR_AMPERSAND            = 0x26; /* & */
+var CHAR_SINGLE_QUOTE         = 0x27; /* ' */
+var CHAR_ASTERISK             = 0x2A; /* * */
+var CHAR_COMMA                = 0x2C; /* , */
+var CHAR_MINUS                = 0x2D; /* - */
+var CHAR_COLON                = 0x3A; /* : */
+var CHAR_GREATER_THAN         = 0x3E; /* > */
+var CHAR_QUESTION             = 0x3F; /* ? */
+var CHAR_COMMERCIAL_AT        = 0x40; /* @ */
+var CHAR_LEFT_SQUARE_BRACKET  = 0x5B; /* [ */
+var CHAR_RIGHT_SQUARE_BRACKET = 0x5D; /* ] */
+var CHAR_GRAVE_ACCENT         = 0x60; /* ` */
+var CHAR_LEFT_CURLY_BRACKET   = 0x7B; /* { */
+var CHAR_VERTICAL_LINE        = 0x7C; /* | */
+var CHAR_RIGHT_CURLY_BRACKET  = 0x7D; /* } */
+
+var ESCAPE_SEQUENCES = {};
+
+ESCAPE_SEQUENCES[0x00]   = '\\0';
+ESCAPE_SEQUENCES[0x07]   = '\\a';
+ESCAPE_SEQUENCES[0x08]   = '\\b';
+ESCAPE_SEQUENCES[0x09]   = '\\t';
+ESCAPE_SEQUENCES[0x0A]   = '\\n';
+ESCAPE_SEQUENCES[0x0B]   = '\\v';
+ESCAPE_SEQUENCES[0x0C]   = '\\f';
+ESCAPE_SEQUENCES[0x0D]   = '\\r';
+ESCAPE_SEQUENCES[0x1B]   = '\\e';
+ESCAPE_SEQUENCES[0x22]   = '\\"';
+ESCAPE_SEQUENCES[0x5C]   = '\\\\';
+ESCAPE_SEQUENCES[0x85]   = '\\N';
+ESCAPE_SEQUENCES[0xA0]   = '\\_';
+ESCAPE_SEQUENCES[0x2028] = '\\L';
+ESCAPE_SEQUENCES[0x2029] = '\\P';
+
+var DEPRECATED_BOOLEANS_SYNTAX = [
+  'y', 'Y', 'yes', 'Yes', 'YES', 'on', 'On', 'ON',
+  'n', 'N', 'no', 'No', 'NO', 'off', 'Off', 'OFF'
+];
+
+function compileStyleMap(schema, map) {
+  var result, keys, index, length, tag, style, type;
+
+  if (map === null) return {};
+
+  result = {};
+  keys = Object.keys(map);
+
+  for (index = 0, length = keys.length; index < length; index += 1) {
+    tag = keys[index];
+    style = String(map[tag]);
+
+    if (tag.slice(0, 2) === '!!') {
+      tag = 'tag:yaml.org,2002:' + tag.slice(2);
+    }
+    type = schema.compiledTypeMap['fallback'][tag];
+
+    if (type && _hasOwnProperty.call(type.styleAliases, style)) {
+      style = type.styleAliases[style];
+    }
+
+    result[tag] = style;
+  }
+
+  return result;
+}
+
+function encodeHex(character) {
+  var string, handle, length;
+
+  string = character.toString(16).toUpperCase();
+
+  if (character <= 0xFF) {
+    handle = 'x';
+    length = 2;
+  } else if (character <= 0xFFFF) {
+    handle = 'u';
+    length = 4;
+  } else if (character <= 0xFFFFFFFF) {
+    handle = 'U';
+    length = 8;
+  } else {
+    throw new YAMLException('code point within a string may not be greater than 0xFFFFFFFF');
+  }
+
+  return '\\' + handle + common.repeat('0', length - string.length) + string;
+}
+
+function State(options) {
+  this.schema       = options['schema'] || DEFAULT_FULL_SCHEMA;
+  this.indent       = Math.max(1, (options['indent'] || 2));
+  this.skipInvalid  = options['skipInvalid'] || false;
+  this.flowLevel    = (common.isNothing(options['flowLevel']) ? -1 : options['flowLevel']);
+  this.styleMap     = compileStyleMap(this.schema, options['styles'] || null);
+  this.sortKeys     = options['sortKeys'] || false;
+  this.lineWidth    = options['lineWidth'] || 80;
+  this.noRefs       = options['noRefs'] || false;
+  this.noCompatMode = options['noCompatMode'] || false;
+
+  this.implicitTypes = this.schema.compiledImplicit;
+  this.explicitTypes = this.schema.compiledExplicit;
+
+  this.tag = null;
+  this.result = '';
+
+  this.duplicates = [];
+  this.usedDuplicates = null;
+}
+
+// Indents every line in a string. Empty lines (\n only) are not indented.
+function indentString(string, spaces) {
+  var ind = common.repeat(' ', spaces),
+      position = 0,
+      next = -1,
+      result = '',
+      line,
+      length = string.length;
+
+  while (position < length) {
+    next = string.indexOf('\n', position);
+    if (next === -1) {
+      line = string.slice(position);
+      position = length;
+    } else {
+      line = string.slice(position, next + 1);
+      position = next + 1;
+    }
+
+    if (line.length && line !== '\n') result += ind;
+
+    result += line;
+  }
+
+  return result;
+}
+
+function generateNextLine(state, level) {
+  return '\n' + common.repeat(' ', state.indent * level);
+}
+
+function testImplicitResolving(state, str) {
+  var index, length, type;
+
+  for (index = 0, length = state.implicitTypes.length; index < length; index += 1) {
+    type = state.implicitTypes[index];
+
+    if (type.resolve(str)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// [33] s-white ::= s-space | s-tab
+function isWhitespace(c) {
+  return c === CHAR_SPACE || c === CHAR_TAB;
+}
+
+// Returns true if the character can be printed without escaping.
+// From YAML 1.2: "any allowed characters known to be non-printable
+// should also be escaped. [However,] This isn’t mandatory"
+// Derived from nb-char - \t - #x85 - #xA0 - #x2028 - #x2029.
+function isPrintable(c) {
+  return  (0x00020 <= c && c <= 0x00007E)
+      || ((0x000A1 <= c && c <= 0x00D7FF) && c !== 0x2028 && c !== 0x2029)
+      || ((0x0E000 <= c && c <= 0x00FFFD) && c !== 0xFEFF /* BOM */)
+      ||  (0x10000 <= c && c <= 0x10FFFF);
+}
+
+// Simplified test for values allowed after the first character in plain style.
+function isPlainSafe(c) {
+  // Uses a subset of nb-char - c-flow-indicator - ":" - "#"
+  // where nb-char ::= c-printable - b-char - c-byte-order-mark.
+  return isPrintable(c) && c !== 0xFEFF
+    // - c-flow-indicator
+    && c !== CHAR_COMMA
+    && c !== CHAR_LEFT_SQUARE_BRACKET
+    && c !== CHAR_RIGHT_SQUARE_BRACKET
+    && c !== CHAR_LEFT_CURLY_BRACKET
+    && c !== CHAR_RIGHT_CURLY_BRACKET
+    // - ":" - "#"
+    && c !== CHAR_COLON
+    && c !== CHAR_SHARP;
+}
+
+// Simplified test for values allowed as the first character in plain style.
+function isPlainSafeFirst(c) {
+  // Uses a subset of ns-char - c-indicator
+  // where ns-char = nb-char - s-white.
+  return isPrintable(c) && c !== 0xFEFF
+    && !isWhitespace(c) // - s-white
+    // - (c-indicator ::=
+    // “-” | “?” | “:” | “,” | “[” | “]” | “{” | “}”
+    && c !== CHAR_MINUS
+    && c !== CHAR_QUESTION
+    && c !== CHAR_COLON
+    && c !== CHAR_COMMA
+    && c !== CHAR_LEFT_SQUARE_BRACKET
+    && c !== CHAR_RIGHT_SQUARE_BRACKET
+    && c !== CHAR_LEFT_CURLY_BRACKET
+    && c !== CHAR_RIGHT_CURLY_BRACKET
+    // | “#” | “&” | “*” | “!” | “|” | “>” | “'” | “"”
+    && c !== CHAR_SHARP
+    && c !== CHAR_AMPERSAND
+    && c !== CHAR_ASTERISK
+    && c !== CHAR_EXCLAMATION
+    && c !== CHAR_VERTICAL_LINE
+    && c !== CHAR_GREATER_THAN
+    && c !== CHAR_SINGLE_QUOTE
+    && c !== CHAR_DOUBLE_QUOTE
+    // | “%” | “@” | “`”)
+    && c !== CHAR_PERCENT
+    && c !== CHAR_COMMERCIAL_AT
+    && c !== CHAR_GRAVE_ACCENT;
+}
+
+var STYLE_PLAIN   = 1,
+    STYLE_SINGLE  = 2,
+    STYLE_LITERAL = 3,
+    STYLE_FOLDED  = 4,
+    STYLE_DOUBLE  = 5;
+
+// Determines which scalar styles are possible and returns the preferred style.
+// lineWidth = -1 => no limit.
+// Pre-conditions: str.length > 0.
+// Post-conditions:
+//    STYLE_PLAIN or STYLE_SINGLE => no \n are in the string.
+//    STYLE_LITERAL => no lines are suitable for folding (or lineWidth is -1).
+//    STYLE_FOLDED => a line > lineWidth and can be folded (and lineWidth != -1).
+function chooseScalarStyle(string, singleLineOnly, indentPerLevel, lineWidth, testAmbiguousType) {
+  var i;
+  var char;
+  var hasLineBreak = false;
+  var hasFoldableLine = false; // only checked if shouldTrackWidth
+  var shouldTrackWidth = lineWidth !== -1;
+  var previousLineBreak = -1; // count the first line correctly
+  var plain = isPlainSafeFirst(string.charCodeAt(0))
+          && !isWhitespace(string.charCodeAt(string.length - 1));
+
+  if (singleLineOnly) {
+    // Case: no block styles.
+    // Check for disallowed characters to rule out plain and single.
+    for (i = 0; i < string.length; i++) {
+      char = string.charCodeAt(i);
+      if (!isPrintable(char)) {
+        return STYLE_DOUBLE;
+      }
+      plain = plain && isPlainSafe(char);
+    }
+  } else {
+    // Case: block styles permitted.
+    for (i = 0; i < string.length; i++) {
+      char = string.charCodeAt(i);
+      if (char === CHAR_LINE_FEED) {
+        hasLineBreak = true;
+        // Check if any line can be folded.
+        if (shouldTrackWidth) {
+          hasFoldableLine = hasFoldableLine ||
+            // Foldable line = too long, and not more-indented.
+            (i - previousLineBreak - 1 > lineWidth &&
+             string[previousLineBreak + 1] !== ' ');
+          previousLineBreak = i;
+        }
+      } else if (!isPrintable(char)) {
+        return STYLE_DOUBLE;
+      }
+      plain = plain && isPlainSafe(char);
+    }
+    // in case the end is missing a \n
+    hasFoldableLine = hasFoldableLine || (shouldTrackWidth &&
+      (i - previousLineBreak - 1 > lineWidth &&
+       string[previousLineBreak + 1] !== ' '));
+  }
+  // Although every style can represent \n without escaping, prefer block styles
+  // for multiline, since they're more readable and they don't add empty lines.
+  // Also prefer folding a super-long line.
+  if (!hasLineBreak && !hasFoldableLine) {
+    // Strings interpretable as another type have to be quoted;
+    // e.g. the string 'true' vs. the boolean true.
+    return plain && !testAmbiguousType(string)
+      ? STYLE_PLAIN : STYLE_SINGLE;
+  }
+  // Edge case: block indentation indicator can only have one digit.
+  if (string[0] === ' ' && indentPerLevel > 9) {
+    return STYLE_DOUBLE;
+  }
+  // At this point we know block styles are valid.
+  // Prefer literal style unless we want to fold.
+  return hasFoldableLine ? STYLE_FOLDED : STYLE_LITERAL;
+}
+
+// Note: line breaking/folding is implemented for only the folded style.
+// NB. We drop the last trailing newline (if any) of a returned block scalar
+//  since the dumper adds its own newline. This always works:
+//    • No ending newline => unaffected; already using strip "-" chomping.
+//    • Ending newline    => removed then restored.
+//  Importantly, this keeps the "+" chomp indicator from gaining an extra line.
+function writeScalar(state, string, level, iskey) {
+  state.dump = (function () {
+    if (string.length === 0) {
+      return "''";
+    }
+    if (!state.noCompatMode &&
+        DEPRECATED_BOOLEANS_SYNTAX.indexOf(string) !== -1) {
+      return "'" + string + "'";
+    }
+
+    var indent = state.indent * Math.max(1, level); // no 0-indent scalars
+    // As indentation gets deeper, let the width decrease monotonically
+    // to the lower bound min(state.lineWidth, 40).
+    // Note that this implies
+    //  state.lineWidth ≤ 40 + state.indent: width is fixed at the lower bound.
+    //  state.lineWidth > 40 + state.indent: width decreases until the lower bound.
+    // This behaves better than a constant minimum width which disallows narrower options,
+    // or an indent threshold which causes the width to suddenly increase.
+    var lineWidth = state.lineWidth === -1
+      ? -1 : Math.max(Math.min(state.lineWidth, 40), state.lineWidth - indent);
+
+    // Without knowing if keys are implicit/explicit, assume implicit for safety.
+    var singleLineOnly = iskey
+      // No block styles in flow mode.
+      || (state.flowLevel > -1 && level >= state.flowLevel);
+    function testAmbiguity(string) {
+      return testImplicitResolving(state, string);
+    }
+
+    switch (chooseScalarStyle(string, singleLineOnly, state.indent, lineWidth, testAmbiguity)) {
+      case STYLE_PLAIN:
+        return string;
+      case STYLE_SINGLE:
+        return "'" + string.replace(/'/g, "''") + "'";
+      case STYLE_LITERAL:
+        return '|' + blockHeader(string, state.indent)
+          + dropEndingNewline(indentString(string, indent));
+      case STYLE_FOLDED:
+        return '>' + blockHeader(string, state.indent)
+          + dropEndingNewline(indentString(foldString(string, lineWidth), indent));
+      case STYLE_DOUBLE:
+        return '"' + escapeString(string, lineWidth) + '"';
+      default:
+        throw new YAMLException('impossible error: invalid scalar style');
+    }
+  }());
+}
+
+// Pre-conditions: string is valid for a block scalar, 1 <= indentPerLevel <= 9.
+function blockHeader(string, indentPerLevel) {
+  var indentIndicator = (string[0] === ' ') ? String(indentPerLevel) : '';
+
+  // note the special case: the string '\n' counts as a "trailing" empty line.
+  var clip =          string[string.length - 1] === '\n';
+  var keep = clip && (string[string.length - 2] === '\n' || string === '\n');
+  var chomp = keep ? '+' : (clip ? '' : '-');
+
+  return indentIndicator + chomp + '\n';
+}
+
+// (See the note for writeScalar.)
+function dropEndingNewline(string) {
+  return string[string.length - 1] === '\n' ? string.slice(0, -1) : string;
+}
+
+// Note: a long line without a suitable break point will exceed the width limit.
+// Pre-conditions: every char in str isPrintable, str.length > 0, width > 0.
+function foldString(string, width) {
+  // In folded style, $k$ consecutive newlines output as $k+1$ newlines—
+  // unless they're before or after a more-indented line, or at the very
+  // beginning or end, in which case $k$ maps to $k$.
+  // Therefore, parse each chunk as newline(s) followed by a content line.
+  var lineRe = /(\n+)([^\n]*)/g;
+
+  // first line (possibly an empty line)
+  var result = (function () {
+    var nextLF = string.indexOf('\n');
+    nextLF = nextLF !== -1 ? nextLF : string.length;
+    lineRe.lastIndex = nextLF;
+    return foldLine(string.slice(0, nextLF), width);
+  }());
+  // If we haven't reached the first content line yet, don't add an extra \n.
+  var prevMoreIndented = string[0] === '\n' || string[0] === ' ';
+  var moreIndented;
+
+  // rest of the lines
+  var match;
+  while ((match = lineRe.exec(string))) {
+    var prefix = match[1], line = match[2];
+    moreIndented = (line[0] === ' ');
+    result += prefix
+      + (!prevMoreIndented && !moreIndented && line !== ''
+        ? '\n' : '')
+      + foldLine(line, width);
+    prevMoreIndented = moreIndented;
+  }
+
+  return result;
+}
+
+// Greedy line breaking.
+// Picks the longest line under the limit each time,
+// otherwise settles for the shortest line over the limit.
+// NB. More-indented lines *cannot* be folded, as that would add an extra \n.
+function foldLine(line, width) {
+  if (line === '' || line[0] === ' ') return line;
+
+  // Since a more-indented line adds a \n, breaks can't be followed by a space.
+  var breakRe = / [^ ]/g; // note: the match index will always be <= length-2.
+  var match;
+  // start is an inclusive index. end, curr, and next are exclusive.
+  var start = 0, end, curr = 0, next = 0;
+  var result = '';
+
+  // Invariants: 0 <= start <= length-1.
+  //   0 <= curr <= next <= max(0, length-2). curr - start <= width.
+  // Inside the loop:
+  //   A match implies length >= 2, so curr and next are <= length-2.
+  while ((match = breakRe.exec(line))) {
+    next = match.index;
+    // maintain invariant: curr - start <= width
+    if (next - start > width) {
+      end = (curr > start) ? curr : next; // derive end <= length-2
+      result += '\n' + line.slice(start, end);
+      // skip the space that was output as \n
+      start = end + 1;                    // derive start <= length-1
+    }
+    curr = next;
+  }
+
+  // By the invariants, start <= length-1, so there is something left over.
+  // It is either the whole string or a part starting from non-whitespace.
+  result += '\n';
+  // Insert a break if the remainder is too long and there is a break available.
+  if (line.length - start > width && curr > start) {
+    result += line.slice(start, curr) + '\n' + line.slice(curr + 1);
+  } else {
+    result += line.slice(start);
+  }
+
+  return result.slice(1); // drop extra \n joiner
+}
+
+// Escapes a double-quoted string.
+function escapeString(string) {
+  var result = '';
+  var char;
+  var escapeSeq;
+
+  for (var i = 0; i < string.length; i++) {
+    char = string.charCodeAt(i);
+    escapeSeq = ESCAPE_SEQUENCES[char];
+    result += !escapeSeq && isPrintable(char)
+      ? string[i]
+      : escapeSeq || encodeHex(char);
+  }
+
+  return result;
+}
+
+function writeFlowSequence(state, level, object) {
+  var _result = '',
+      _tag    = state.tag,
+      index,
+      length;
+
+  for (index = 0, length = object.length; index < length; index += 1) {
+    // Write only valid elements.
+    if (writeNode(state, level, object[index], false, false)) {
+      if (index !== 0) _result += ', ';
+      _result += state.dump;
+    }
+  }
+
+  state.tag = _tag;
+  state.dump = '[' + _result + ']';
+}
+
+function writeBlockSequence(state, level, object, compact) {
+  var _result = '',
+      _tag    = state.tag,
+      index,
+      length;
+
+  for (index = 0, length = object.length; index < length; index += 1) {
+    // Write only valid elements.
+    if (writeNode(state, level + 1, object[index], true, true)) {
+      if (!compact || index !== 0) {
+        _result += generateNextLine(state, level);
+      }
+      _result += '- ' + state.dump;
+    }
+  }
+
+  state.tag = _tag;
+  state.dump = _result || '[]'; // Empty sequence if no valid values.
+}
+
+function writeFlowMapping(state, level, object) {
+  var _result       = '',
+      _tag          = state.tag,
+      objectKeyList = Object.keys(object),
+      index,
+      length,
+      objectKey,
+      objectValue,
+      pairBuffer;
+
+  for (index = 0, length = objectKeyList.length; index < length; index += 1) {
+    pairBuffer = '';
+
+    if (index !== 0) pairBuffer += ', ';
+
+    objectKey = objectKeyList[index];
+    objectValue = object[objectKey];
+
+    if (!writeNode(state, level, objectKey, false, false)) {
+      continue; // Skip this pair because of invalid key;
+    }
+
+    if (state.dump.length > 1024) pairBuffer += '? ';
+
+    pairBuffer += state.dump + ': ';
+
+    if (!writeNode(state, level, objectValue, false, false)) {
+      continue; // Skip this pair because of invalid value.
+    }
+
+    pairBuffer += state.dump;
+
+    // Both key and value are valid.
+    _result += pairBuffer;
+  }
+
+  state.tag = _tag;
+  state.dump = '{' + _result + '}';
+}
+
+function writeBlockMapping(state, level, object, compact) {
+  var _result       = '',
+      _tag          = state.tag,
+      objectKeyList = Object.keys(object),
+      index,
+      length,
+      objectKey,
+      objectValue,
+      explicitPair,
+      pairBuffer;
+
+  // Allow sorting keys so that the output file is deterministic
+  if (state.sortKeys === true) {
+    // Default sorting
+    objectKeyList.sort();
+  } else if (typeof state.sortKeys === 'function') {
+    // Custom sort function
+    objectKeyList.sort(state.sortKeys);
+  } else if (state.sortKeys) {
+    // Something is wrong
+    throw new YAMLException('sortKeys must be a boolean or a function');
+  }
+
+  for (index = 0, length = objectKeyList.length; index < length; index += 1) {
+    pairBuffer = '';
+
+    if (!compact || index !== 0) {
+      pairBuffer += generateNextLine(state, level);
+    }
+
+    objectKey = objectKeyList[index];
+    objectValue = object[objectKey];
+
+    if (!writeNode(state, level + 1, objectKey, true, true, true)) {
+      continue; // Skip this pair because of invalid key.
+    }
+
+    explicitPair = (state.tag !== null && state.tag !== '?') ||
+                   (state.dump && state.dump.length > 1024);
+
+    if (explicitPair) {
+      if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
+        pairBuffer += '?';
+      } else {
+        pairBuffer += '? ';
+      }
+    }
+
+    pairBuffer += state.dump;
+
+    if (explicitPair) {
+      pairBuffer += generateNextLine(state, level);
+    }
+
+    if (!writeNode(state, level + 1, objectValue, true, explicitPair)) {
+      continue; // Skip this pair because of invalid value.
+    }
+
+    if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
+      pairBuffer += ':';
+    } else {
+      pairBuffer += ': ';
+    }
+
+    pairBuffer += state.dump;
+
+    // Both key and value are valid.
+    _result += pairBuffer;
+  }
+
+  state.tag = _tag;
+  state.dump = _result || '{}'; // Empty mapping if no valid pairs.
+}
+
+function detectType(state, object, explicit) {
+  var _result, typeList, index, length, type, style;
+
+  typeList = explicit ? state.explicitTypes : state.implicitTypes;
+
+  for (index = 0, length = typeList.length; index < length; index += 1) {
+    type = typeList[index];
+
+    if ((type.instanceOf  || type.predicate) &&
+        (!type.instanceOf || ((typeof object === 'object') && (object instanceof type.instanceOf))) &&
+        (!type.predicate  || type.predicate(object))) {
+
+      state.tag = explicit ? type.tag : '?';
+
+      if (type.represent) {
+        style = state.styleMap[type.tag] || type.defaultStyle;
+
+        if (_toString.call(type.represent) === '[object Function]') {
+          _result = type.represent(object, style);
+        } else if (_hasOwnProperty.call(type.represent, style)) {
+          _result = type.represent[style](object, style);
+        } else {
+          throw new YAMLException('!<' + type.tag + '> tag resolver accepts not "' + style + '" style');
+        }
+
+        state.dump = _result;
+      }
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Serializes `object` and writes it to global `result`.
+// Returns true on success, or false on invalid object.
+//
+function writeNode(state, level, object, block, compact, iskey) {
+  state.tag = null;
+  state.dump = object;
+
+  if (!detectType(state, object, false)) {
+    detectType(state, object, true);
+  }
+
+  var type = _toString.call(state.dump);
+
+  if (block) {
+    block = (state.flowLevel < 0 || state.flowLevel > level);
+  }
+
+  var objectOrArray = type === '[object Object]' || type === '[object Array]',
+      duplicateIndex,
+      duplicate;
+
+  if (objectOrArray) {
+    duplicateIndex = state.duplicates.indexOf(object);
+    duplicate = duplicateIndex !== -1;
+  }
+
+  if ((state.tag !== null && state.tag !== '?') || duplicate || (state.indent !== 2 && level > 0)) {
+    compact = false;
+  }
+
+  if (duplicate && state.usedDuplicates[duplicateIndex]) {
+    state.dump = '*ref_' + duplicateIndex;
+  } else {
+    if (objectOrArray && duplicate && !state.usedDuplicates[duplicateIndex]) {
+      state.usedDuplicates[duplicateIndex] = true;
+    }
+    if (type === '[object Object]') {
+      if (block && (Object.keys(state.dump).length !== 0)) {
+        writeBlockMapping(state, level, state.dump, compact);
+        if (duplicate) {
+          state.dump = '&ref_' + duplicateIndex + state.dump;
+        }
+      } else {
+        writeFlowMapping(state, level, state.dump);
+        if (duplicate) {
+          state.dump = '&ref_' + duplicateIndex + ' ' + state.dump;
+        }
+      }
+    } else if (type === '[object Array]') {
+      if (block && (state.dump.length !== 0)) {
+        writeBlockSequence(state, level, state.dump, compact);
+        if (duplicate) {
+          state.dump = '&ref_' + duplicateIndex + state.dump;
+        }
+      } else {
+        writeFlowSequence(state, level, state.dump);
+        if (duplicate) {
+          state.dump = '&ref_' + duplicateIndex + ' ' + state.dump;
+        }
+      }
+    } else if (type === '[object String]') {
+      if (state.tag !== '?') {
+        writeScalar(state, state.dump, level, iskey);
+      }
+    } else {
+      if (state.skipInvalid) return false;
+      throw new YAMLException('unacceptable kind of an object to dump ' + type);
+    }
+
+    if (state.tag !== null && state.tag !== '?') {
+      state.dump = '!<' + state.tag + '> ' + state.dump;
+    }
+  }
+
+  return true;
+}
+
+function getDuplicateReferences(object, state) {
+  var objects = [],
+      duplicatesIndexes = [],
+      index,
+      length;
+
+  inspectNode(object, objects, duplicatesIndexes);
+
+  for (index = 0, length = duplicatesIndexes.length; index < length; index += 1) {
+    state.duplicates.push(objects[duplicatesIndexes[index]]);
+  }
+  state.usedDuplicates = new Array(length);
+}
+
+function inspectNode(object, objects, duplicatesIndexes) {
+  var objectKeyList,
+      index,
+      length;
+
+  if (object !== null && typeof object === 'object') {
+    index = objects.indexOf(object);
+    if (index !== -1) {
+      if (duplicatesIndexes.indexOf(index) === -1) {
+        duplicatesIndexes.push(index);
+      }
+    } else {
+      objects.push(object);
+
+      if (Array.isArray(object)) {
+        for (index = 0, length = object.length; index < length; index += 1) {
+          inspectNode(object[index], objects, duplicatesIndexes);
+        }
+      } else {
+        objectKeyList = Object.keys(object);
+
+        for (index = 0, length = objectKeyList.length; index < length; index += 1) {
+          inspectNode(object[objectKeyList[index]], objects, duplicatesIndexes);
+        }
+      }
+    }
+  }
+}
+
+function dump(input, options) {
+  options = options || {};
+
+  var state = new State(options);
+
+  if (!state.noRefs) getDuplicateReferences(input, state);
+
+  if (writeNode(state, 0, input, true, true)) return state.dump + '\n';
+
+  return '';
+}
+
+function safeDump(input, options) {
+  return dump(input, common.extend({ schema: DEFAULT_SAFE_SCHEMA }, options));
+}
+
+module.exports.dump     = dump;
+module.exports.safeDump = safeDump;
+
+},{"./common":109,"./exception":111,"./schema/default_full":116,"./schema/default_safe":117}],111:[function(require,module,exports){
+// YAML error class. http://stackoverflow.com/questions/8458984
+//
+'use strict';
+
+function YAMLException(reason, mark) {
+  // Super constructor
+  Error.call(this);
+
+  // Include stack trace in error object
+  if (Error.captureStackTrace) {
+    // Chrome and NodeJS
+    Error.captureStackTrace(this, this.constructor);
+  } else {
+    // FF, IE 10+ and Safari 6+. Fallback for others
+    this.stack = (new Error()).stack || '';
+  }
+
+  this.name = 'YAMLException';
+  this.reason = reason;
+  this.mark = mark;
+  this.message = (this.reason || '(unknown reason)') + (this.mark ? ' ' + this.mark.toString() : '');
+}
+
+
+// Inherit from Error
+YAMLException.prototype = Object.create(Error.prototype);
+YAMLException.prototype.constructor = YAMLException;
+
+
+YAMLException.prototype.toString = function toString(compact) {
+  var result = this.name + ': ';
+
+  result += this.reason || '(unknown reason)';
+
+  if (!compact && this.mark) {
+    result += ' ' + this.mark.toString();
+  }
+
+  return result;
+};
+
+
+module.exports = YAMLException;
+
+},{}],112:[function(require,module,exports){
+'use strict';
+
+/*eslint-disable max-len,no-use-before-define*/
+
+var common              = require('./common');
+var YAMLException       = require('./exception');
+var Mark                = require('./mark');
+var DEFAULT_SAFE_SCHEMA = require('./schema/default_safe');
+var DEFAULT_FULL_SCHEMA = require('./schema/default_full');
+
+
+var _hasOwnProperty = Object.prototype.hasOwnProperty;
+
+
+var CONTEXT_FLOW_IN   = 1;
+var CONTEXT_FLOW_OUT  = 2;
+var CONTEXT_BLOCK_IN  = 3;
+var CONTEXT_BLOCK_OUT = 4;
+
+
+var CHOMPING_CLIP  = 1;
+var CHOMPING_STRIP = 2;
+var CHOMPING_KEEP  = 3;
+
+
+var PATTERN_NON_PRINTABLE         = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x84\x86-\x9F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
+var PATTERN_NON_ASCII_LINE_BREAKS = /[\x85\u2028\u2029]/;
+var PATTERN_FLOW_INDICATORS       = /[,\[\]\{\}]/;
+var PATTERN_TAG_HANDLE            = /^(?:!|!!|![a-z\-]+!)$/i;
+var PATTERN_TAG_URI               = /^(?:!|[^,\[\]\{\}])(?:%[0-9a-f]{2}|[0-9a-z\-#;\/\?:@&=\+\$,_\.!~\*'\(\)\[\]])*$/i;
+
+
+function is_EOL(c) {
+  return (c === 0x0A/* LF */) || (c === 0x0D/* CR */);
+}
+
+function is_WHITE_SPACE(c) {
+  return (c === 0x09/* Tab */) || (c === 0x20/* Space */);
+}
+
+function is_WS_OR_EOL(c) {
+  return (c === 0x09/* Tab */) ||
+         (c === 0x20/* Space */) ||
+         (c === 0x0A/* LF */) ||
+         (c === 0x0D/* CR */);
+}
+
+function is_FLOW_INDICATOR(c) {
+  return c === 0x2C/* , */ ||
+         c === 0x5B/* [ */ ||
+         c === 0x5D/* ] */ ||
+         c === 0x7B/* { */ ||
+         c === 0x7D/* } */;
+}
+
+function fromHexCode(c) {
+  var lc;
+
+  if ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */)) {
+    return c - 0x30;
+  }
+
+  /*eslint-disable no-bitwise*/
+  lc = c | 0x20;
+
+  if ((0x61/* a */ <= lc) && (lc <= 0x66/* f */)) {
+    return lc - 0x61 + 10;
+  }
+
+  return -1;
+}
+
+function escapedHexLen(c) {
+  if (c === 0x78/* x */) { return 2; }
+  if (c === 0x75/* u */) { return 4; }
+  if (c === 0x55/* U */) { return 8; }
+  return 0;
+}
+
+function fromDecimalCode(c) {
+  if ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */)) {
+    return c - 0x30;
+  }
+
+  return -1;
+}
+
+function simpleEscapeSequence(c) {
+  return (c === 0x30/* 0 */) ? '\x00' :
+        (c === 0x61/* a */) ? '\x07' :
+        (c === 0x62/* b */) ? '\x08' :
+        (c === 0x74/* t */) ? '\x09' :
+        (c === 0x09/* Tab */) ? '\x09' :
+        (c === 0x6E/* n */) ? '\x0A' :
+        (c === 0x76/* v */) ? '\x0B' :
+        (c === 0x66/* f */) ? '\x0C' :
+        (c === 0x72/* r */) ? '\x0D' :
+        (c === 0x65/* e */) ? '\x1B' :
+        (c === 0x20/* Space */) ? ' ' :
+        (c === 0x22/* " */) ? '\x22' :
+        (c === 0x2F/* / */) ? '/' :
+        (c === 0x5C/* \ */) ? '\x5C' :
+        (c === 0x4E/* N */) ? '\x85' :
+        (c === 0x5F/* _ */) ? '\xA0' :
+        (c === 0x4C/* L */) ? '\u2028' :
+        (c === 0x50/* P */) ? '\u2029' : '';
+}
+
+function charFromCodepoint(c) {
+  if (c <= 0xFFFF) {
+    return String.fromCharCode(c);
+  }
+  // Encode UTF-16 surrogate pair
+  // https://en.wikipedia.org/wiki/UTF-16#Code_points_U.2B010000_to_U.2B10FFFF
+  return String.fromCharCode(((c - 0x010000) >> 10) + 0xD800,
+                             ((c - 0x010000) & 0x03FF) + 0xDC00);
+}
+
+var simpleEscapeCheck = new Array(256); // integer, for fast access
+var simpleEscapeMap = new Array(256);
+for (var i = 0; i < 256; i++) {
+  simpleEscapeCheck[i] = simpleEscapeSequence(i) ? 1 : 0;
+  simpleEscapeMap[i] = simpleEscapeSequence(i);
+}
+
+
+function State(input, options) {
+  this.input = input;
+
+  this.filename  = options['filename']  || null;
+  this.schema    = options['schema']    || DEFAULT_FULL_SCHEMA;
+  this.onWarning = options['onWarning'] || null;
+  this.legacy    = options['legacy']    || false;
+  this.json      = options['json']      || false;
+  this.listener  = options['listener']  || null;
+
+  this.implicitTypes = this.schema.compiledImplicit;
+  this.typeMap       = this.schema.compiledTypeMap;
+
+  this.length     = input.length;
+  this.position   = 0;
+  this.line       = 0;
+  this.lineStart  = 0;
+  this.lineIndent = 0;
+
+  this.documents = [];
+
+  /*
+  this.version;
+  this.checkLineBreaks;
+  this.tagMap;
+  this.anchorMap;
+  this.tag;
+  this.anchor;
+  this.kind;
+  this.result;*/
+
+}
+
+
+function generateError(state, message) {
+  return new YAMLException(
+    message,
+    new Mark(state.filename, state.input, state.position, state.line, (state.position - state.lineStart)));
+}
+
+function throwError(state, message) {
+  throw generateError(state, message);
+}
+
+function throwWarning(state, message) {
+  if (state.onWarning) {
+    state.onWarning.call(null, generateError(state, message));
+  }
+}
+
+
+var directiveHandlers = {
+
+  YAML: function handleYamlDirective(state, name, args) {
+
+    var match, major, minor;
+
+    if (state.version !== null) {
+      throwError(state, 'duplication of %YAML directive');
+    }
+
+    if (args.length !== 1) {
+      throwError(state, 'YAML directive accepts exactly one argument');
+    }
+
+    match = /^([0-9]+)\.([0-9]+)$/.exec(args[0]);
+
+    if (match === null) {
+      throwError(state, 'ill-formed argument of the YAML directive');
+    }
+
+    major = parseInt(match[1], 10);
+    minor = parseInt(match[2], 10);
+
+    if (major !== 1) {
+      throwError(state, 'unacceptable YAML version of the document');
+    }
+
+    state.version = args[0];
+    state.checkLineBreaks = (minor < 2);
+
+    if (minor !== 1 && minor !== 2) {
+      throwWarning(state, 'unsupported YAML version of the document');
+    }
+  },
+
+  TAG: function handleTagDirective(state, name, args) {
+
+    var handle, prefix;
+
+    if (args.length !== 2) {
+      throwError(state, 'TAG directive accepts exactly two arguments');
+    }
+
+    handle = args[0];
+    prefix = args[1];
+
+    if (!PATTERN_TAG_HANDLE.test(handle)) {
+      throwError(state, 'ill-formed tag handle (first argument) of the TAG directive');
+    }
+
+    if (_hasOwnProperty.call(state.tagMap, handle)) {
+      throwError(state, 'there is a previously declared suffix for "' + handle + '" tag handle');
+    }
+
+    if (!PATTERN_TAG_URI.test(prefix)) {
+      throwError(state, 'ill-formed tag prefix (second argument) of the TAG directive');
+    }
+
+    state.tagMap[handle] = prefix;
+  }
+};
+
+
+function captureSegment(state, start, end, checkJson) {
+  var _position, _length, _character, _result;
+
+  if (start < end) {
+    _result = state.input.slice(start, end);
+
+    if (checkJson) {
+      for (_position = 0, _length = _result.length;
+           _position < _length;
+           _position += 1) {
+        _character = _result.charCodeAt(_position);
+        if (!(_character === 0x09 ||
+              (0x20 <= _character && _character <= 0x10FFFF))) {
+          throwError(state, 'expected valid JSON character');
+        }
+      }
+    } else if (PATTERN_NON_PRINTABLE.test(_result)) {
+      throwError(state, 'the stream contains non-printable characters');
+    }
+
+    state.result += _result;
+  }
+}
+
+function mergeMappings(state, destination, source, overridableKeys) {
+  var sourceKeys, key, index, quantity;
+
+  if (!common.isObject(source)) {
+    throwError(state, 'cannot merge mappings; the provided source object is unacceptable');
+  }
+
+  sourceKeys = Object.keys(source);
+
+  for (index = 0, quantity = sourceKeys.length; index < quantity; index += 1) {
+    key = sourceKeys[index];
+
+    if (!_hasOwnProperty.call(destination, key)) {
+      destination[key] = source[key];
+      overridableKeys[key] = true;
+    }
+  }
+}
+
+function storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode) {
+  var index, quantity;
+
+  keyNode = String(keyNode);
+
+  if (_result === null) {
+    _result = {};
+  }
+
+  if (keyTag === 'tag:yaml.org,2002:merge') {
+    if (Array.isArray(valueNode)) {
+      for (index = 0, quantity = valueNode.length; index < quantity; index += 1) {
+        mergeMappings(state, _result, valueNode[index], overridableKeys);
+      }
+    } else {
+      mergeMappings(state, _result, valueNode, overridableKeys);
+    }
+  } else {
+    if (!state.json &&
+        !_hasOwnProperty.call(overridableKeys, keyNode) &&
+        _hasOwnProperty.call(_result, keyNode)) {
+      throwError(state, 'duplicated mapping key');
+    }
+    _result[keyNode] = valueNode;
+    delete overridableKeys[keyNode];
+  }
+
+  return _result;
+}
+
+function readLineBreak(state) {
+  var ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch === 0x0A/* LF */) {
+    state.position++;
+  } else if (ch === 0x0D/* CR */) {
+    state.position++;
+    if (state.input.charCodeAt(state.position) === 0x0A/* LF */) {
+      state.position++;
+    }
+  } else {
+    throwError(state, 'a line break is expected');
+  }
+
+  state.line += 1;
+  state.lineStart = state.position;
+}
+
+function skipSeparationSpace(state, allowComments, checkIndent) {
+  var lineBreaks = 0,
+      ch = state.input.charCodeAt(state.position);
+
+  while (ch !== 0) {
+    while (is_WHITE_SPACE(ch)) {
+      ch = state.input.charCodeAt(++state.position);
+    }
+
+    if (allowComments && ch === 0x23/* # */) {
+      do {
+        ch = state.input.charCodeAt(++state.position);
+      } while (ch !== 0x0A/* LF */ && ch !== 0x0D/* CR */ && ch !== 0);
+    }
+
+    if (is_EOL(ch)) {
+      readLineBreak(state);
+
+      ch = state.input.charCodeAt(state.position);
+      lineBreaks++;
+      state.lineIndent = 0;
+
+      while (ch === 0x20/* Space */) {
+        state.lineIndent++;
+        ch = state.input.charCodeAt(++state.position);
+      }
+    } else {
+      break;
+    }
+  }
+
+  if (checkIndent !== -1 && lineBreaks !== 0 && state.lineIndent < checkIndent) {
+    throwWarning(state, 'deficient indentation');
+  }
+
+  return lineBreaks;
+}
+
+function testDocumentSeparator(state) {
+  var _position = state.position,
+      ch;
+
+  ch = state.input.charCodeAt(_position);
+
+  // Condition state.position === state.lineStart is tested
+  // in parent on each call, for efficiency. No needs to test here again.
+  if ((ch === 0x2D/* - */ || ch === 0x2E/* . */) &&
+      ch === state.input.charCodeAt(_position + 1) &&
+      ch === state.input.charCodeAt(_position + 2)) {
+
+    _position += 3;
+
+    ch = state.input.charCodeAt(_position);
+
+    if (ch === 0 || is_WS_OR_EOL(ch)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function writeFoldedLines(state, count) {
+  if (count === 1) {
+    state.result += ' ';
+  } else if (count > 1) {
+    state.result += common.repeat('\n', count - 1);
+  }
+}
+
+
+function readPlainScalar(state, nodeIndent, withinFlowCollection) {
+  var preceding,
+      following,
+      captureStart,
+      captureEnd,
+      hasPendingContent,
+      _line,
+      _lineStart,
+      _lineIndent,
+      _kind = state.kind,
+      _result = state.result,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (is_WS_OR_EOL(ch)      ||
+      is_FLOW_INDICATOR(ch) ||
+      ch === 0x23/* # */    ||
+      ch === 0x26/* & */    ||
+      ch === 0x2A/* * */    ||
+      ch === 0x21/* ! */    ||
+      ch === 0x7C/* | */    ||
+      ch === 0x3E/* > */    ||
+      ch === 0x27/* ' */    ||
+      ch === 0x22/* " */    ||
+      ch === 0x25/* % */    ||
+      ch === 0x40/* @ */    ||
+      ch === 0x60/* ` */) {
+    return false;
+  }
+
+  if (ch === 0x3F/* ? */ || ch === 0x2D/* - */) {
+    following = state.input.charCodeAt(state.position + 1);
+
+    if (is_WS_OR_EOL(following) ||
+        withinFlowCollection && is_FLOW_INDICATOR(following)) {
+      return false;
+    }
+  }
+
+  state.kind = 'scalar';
+  state.result = '';
+  captureStart = captureEnd = state.position;
+  hasPendingContent = false;
+
+  while (ch !== 0) {
+    if (ch === 0x3A/* : */) {
+      following = state.input.charCodeAt(state.position + 1);
+
+      if (is_WS_OR_EOL(following) ||
+          withinFlowCollection && is_FLOW_INDICATOR(following)) {
+        break;
+      }
+
+    } else if (ch === 0x23/* # */) {
+      preceding = state.input.charCodeAt(state.position - 1);
+
+      if (is_WS_OR_EOL(preceding)) {
+        break;
+      }
+
+    } else if ((state.position === state.lineStart && testDocumentSeparator(state)) ||
+               withinFlowCollection && is_FLOW_INDICATOR(ch)) {
+      break;
+
+    } else if (is_EOL(ch)) {
+      _line = state.line;
+      _lineStart = state.lineStart;
+      _lineIndent = state.lineIndent;
+      skipSeparationSpace(state, false, -1);
+
+      if (state.lineIndent >= nodeIndent) {
+        hasPendingContent = true;
+        ch = state.input.charCodeAt(state.position);
+        continue;
+      } else {
+        state.position = captureEnd;
+        state.line = _line;
+        state.lineStart = _lineStart;
+        state.lineIndent = _lineIndent;
+        break;
+      }
+    }
+
+    if (hasPendingContent) {
+      captureSegment(state, captureStart, captureEnd, false);
+      writeFoldedLines(state, state.line - _line);
+      captureStart = captureEnd = state.position;
+      hasPendingContent = false;
+    }
+
+    if (!is_WHITE_SPACE(ch)) {
+      captureEnd = state.position + 1;
+    }
+
+    ch = state.input.charCodeAt(++state.position);
+  }
+
+  captureSegment(state, captureStart, captureEnd, false);
+
+  if (state.result) {
+    return true;
+  }
+
+  state.kind = _kind;
+  state.result = _result;
+  return false;
+}
+
+function readSingleQuotedScalar(state, nodeIndent) {
+  var ch,
+      captureStart, captureEnd;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch !== 0x27/* ' */) {
+    return false;
+  }
+
+  state.kind = 'scalar';
+  state.result = '';
+  state.position++;
+  captureStart = captureEnd = state.position;
+
+  while ((ch = state.input.charCodeAt(state.position)) !== 0) {
+    if (ch === 0x27/* ' */) {
+      captureSegment(state, captureStart, state.position, true);
+      ch = state.input.charCodeAt(++state.position);
+
+      if (ch === 0x27/* ' */) {
+        captureStart = state.position;
+        state.position++;
+        captureEnd = state.position;
+      } else {
+        return true;
+      }
+
+    } else if (is_EOL(ch)) {
+      captureSegment(state, captureStart, captureEnd, true);
+      writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
+      captureStart = captureEnd = state.position;
+
+    } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
+      throwError(state, 'unexpected end of the document within a single quoted scalar');
+
+    } else {
+      state.position++;
+      captureEnd = state.position;
+    }
+  }
+
+  throwError(state, 'unexpected end of the stream within a single quoted scalar');
+}
+
+function readDoubleQuotedScalar(state, nodeIndent) {
+  var captureStart,
+      captureEnd,
+      hexLength,
+      hexResult,
+      tmp,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch !== 0x22/* " */) {
+    return false;
+  }
+
+  state.kind = 'scalar';
+  state.result = '';
+  state.position++;
+  captureStart = captureEnd = state.position;
+
+  while ((ch = state.input.charCodeAt(state.position)) !== 0) {
+    if (ch === 0x22/* " */) {
+      captureSegment(state, captureStart, state.position, true);
+      state.position++;
+      return true;
+
+    } else if (ch === 0x5C/* \ */) {
+      captureSegment(state, captureStart, state.position, true);
+      ch = state.input.charCodeAt(++state.position);
+
+      if (is_EOL(ch)) {
+        skipSeparationSpace(state, false, nodeIndent);
+
+        // TODO: rework to inline fn with no type cast?
+      } else if (ch < 256 && simpleEscapeCheck[ch]) {
+        state.result += simpleEscapeMap[ch];
+        state.position++;
+
+      } else if ((tmp = escapedHexLen(ch)) > 0) {
+        hexLength = tmp;
+        hexResult = 0;
+
+        for (; hexLength > 0; hexLength--) {
+          ch = state.input.charCodeAt(++state.position);
+
+          if ((tmp = fromHexCode(ch)) >= 0) {
+            hexResult = (hexResult << 4) + tmp;
+
+          } else {
+            throwError(state, 'expected hexadecimal character');
+          }
+        }
+
+        state.result += charFromCodepoint(hexResult);
+
+        state.position++;
+
+      } else {
+        throwError(state, 'unknown escape sequence');
+      }
+
+      captureStart = captureEnd = state.position;
+
+    } else if (is_EOL(ch)) {
+      captureSegment(state, captureStart, captureEnd, true);
+      writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
+      captureStart = captureEnd = state.position;
+
+    } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
+      throwError(state, 'unexpected end of the document within a double quoted scalar');
+
+    } else {
+      state.position++;
+      captureEnd = state.position;
+    }
+  }
+
+  throwError(state, 'unexpected end of the stream within a double quoted scalar');
+}
+
+function readFlowCollection(state, nodeIndent) {
+  var readNext = true,
+      _line,
+      _tag     = state.tag,
+      _result,
+      _anchor  = state.anchor,
+      following,
+      terminator,
+      isPair,
+      isExplicitPair,
+      isMapping,
+      overridableKeys = {},
+      keyNode,
+      keyTag,
+      valueNode,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch === 0x5B/* [ */) {
+    terminator = 0x5D;/* ] */
+    isMapping = false;
+    _result = [];
+  } else if (ch === 0x7B/* { */) {
+    terminator = 0x7D;/* } */
+    isMapping = true;
+    _result = {};
+  } else {
+    return false;
+  }
+
+  if (state.anchor !== null) {
+    state.anchorMap[state.anchor] = _result;
+  }
+
+  ch = state.input.charCodeAt(++state.position);
+
+  while (ch !== 0) {
+    skipSeparationSpace(state, true, nodeIndent);
+
+    ch = state.input.charCodeAt(state.position);
+
+    if (ch === terminator) {
+      state.position++;
+      state.tag = _tag;
+      state.anchor = _anchor;
+      state.kind = isMapping ? 'mapping' : 'sequence';
+      state.result = _result;
+      return true;
+    } else if (!readNext) {
+      throwError(state, 'missed comma between flow collection entries');
+    }
+
+    keyTag = keyNode = valueNode = null;
+    isPair = isExplicitPair = false;
+
+    if (ch === 0x3F/* ? */) {
+      following = state.input.charCodeAt(state.position + 1);
+
+      if (is_WS_OR_EOL(following)) {
+        isPair = isExplicitPair = true;
+        state.position++;
+        skipSeparationSpace(state, true, nodeIndent);
+      }
+    }
+
+    _line = state.line;
+    composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
+    keyTag = state.tag;
+    keyNode = state.result;
+    skipSeparationSpace(state, true, nodeIndent);
+
+    ch = state.input.charCodeAt(state.position);
+
+    if ((isExplicitPair || state.line === _line) && ch === 0x3A/* : */) {
+      isPair = true;
+      ch = state.input.charCodeAt(++state.position);
+      skipSeparationSpace(state, true, nodeIndent);
+      composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
+      valueNode = state.result;
+    }
+
+    if (isMapping) {
+      storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode);
+    } else if (isPair) {
+      _result.push(storeMappingPair(state, null, overridableKeys, keyTag, keyNode, valueNode));
+    } else {
+      _result.push(keyNode);
+    }
+
+    skipSeparationSpace(state, true, nodeIndent);
+
+    ch = state.input.charCodeAt(state.position);
+
+    if (ch === 0x2C/* , */) {
+      readNext = true;
+      ch = state.input.charCodeAt(++state.position);
+    } else {
+      readNext = false;
+    }
+  }
+
+  throwError(state, 'unexpected end of the stream within a flow collection');
+}
+
+function readBlockScalar(state, nodeIndent) {
+  var captureStart,
+      folding,
+      chomping       = CHOMPING_CLIP,
+      didReadContent = false,
+      detectedIndent = false,
+      textIndent     = nodeIndent,
+      emptyLines     = 0,
+      atMoreIndented = false,
+      tmp,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch === 0x7C/* | */) {
+    folding = false;
+  } else if (ch === 0x3E/* > */) {
+    folding = true;
+  } else {
+    return false;
+  }
+
+  state.kind = 'scalar';
+  state.result = '';
+
+  while (ch !== 0) {
+    ch = state.input.charCodeAt(++state.position);
+
+    if (ch === 0x2B/* + */ || ch === 0x2D/* - */) {
+      if (CHOMPING_CLIP === chomping) {
+        chomping = (ch === 0x2B/* + */) ? CHOMPING_KEEP : CHOMPING_STRIP;
+      } else {
+        throwError(state, 'repeat of a chomping mode identifier');
+      }
+
+    } else if ((tmp = fromDecimalCode(ch)) >= 0) {
+      if (tmp === 0) {
+        throwError(state, 'bad explicit indentation width of a block scalar; it cannot be less than one');
+      } else if (!detectedIndent) {
+        textIndent = nodeIndent + tmp - 1;
+        detectedIndent = true;
+      } else {
+        throwError(state, 'repeat of an indentation width identifier');
+      }
+
+    } else {
+      break;
+    }
+  }
+
+  if (is_WHITE_SPACE(ch)) {
+    do { ch = state.input.charCodeAt(++state.position); }
+    while (is_WHITE_SPACE(ch));
+
+    if (ch === 0x23/* # */) {
+      do { ch = state.input.charCodeAt(++state.position); }
+      while (!is_EOL(ch) && (ch !== 0));
+    }
+  }
+
+  while (ch !== 0) {
+    readLineBreak(state);
+    state.lineIndent = 0;
+
+    ch = state.input.charCodeAt(state.position);
+
+    while ((!detectedIndent || state.lineIndent < textIndent) &&
+           (ch === 0x20/* Space */)) {
+      state.lineIndent++;
+      ch = state.input.charCodeAt(++state.position);
+    }
+
+    if (!detectedIndent && state.lineIndent > textIndent) {
+      textIndent = state.lineIndent;
+    }
+
+    if (is_EOL(ch)) {
+      emptyLines++;
+      continue;
+    }
+
+    // End of the scalar.
+    if (state.lineIndent < textIndent) {
+
+      // Perform the chomping.
+      if (chomping === CHOMPING_KEEP) {
+        state.result += common.repeat('\n', didReadContent ? 1 + emptyLines : emptyLines);
+      } else if (chomping === CHOMPING_CLIP) {
+        if (didReadContent) { // i.e. only if the scalar is not empty.
+          state.result += '\n';
+        }
+      }
+
+      // Break this `while` cycle and go to the funciton's epilogue.
+      break;
+    }
+
+    // Folded style: use fancy rules to handle line breaks.
+    if (folding) {
+
+      // Lines starting with white space characters (more-indented lines) are not folded.
+      if (is_WHITE_SPACE(ch)) {
+        atMoreIndented = true;
+        // except for the first content line (cf. Example 8.1)
+        state.result += common.repeat('\n', didReadContent ? 1 + emptyLines : emptyLines);
+
+      // End of more-indented block.
+      } else if (atMoreIndented) {
+        atMoreIndented = false;
+        state.result += common.repeat('\n', emptyLines + 1);
+
+      // Just one line break - perceive as the same line.
+      } else if (emptyLines === 0) {
+        if (didReadContent) { // i.e. only if we have already read some scalar content.
+          state.result += ' ';
+        }
+
+      // Several line breaks - perceive as different lines.
+      } else {
+        state.result += common.repeat('\n', emptyLines);
+      }
+
+    // Literal style: just add exact number of line breaks between content lines.
+    } else {
+      // Keep all line breaks except the header line break.
+      state.result += common.repeat('\n', didReadContent ? 1 + emptyLines : emptyLines);
+    }
+
+    didReadContent = true;
+    detectedIndent = true;
+    emptyLines = 0;
+    captureStart = state.position;
+
+    while (!is_EOL(ch) && (ch !== 0)) {
+      ch = state.input.charCodeAt(++state.position);
+    }
+
+    captureSegment(state, captureStart, state.position, false);
+  }
+
+  return true;
+}
+
+function readBlockSequence(state, nodeIndent) {
+  var _line,
+      _tag      = state.tag,
+      _anchor   = state.anchor,
+      _result   = [],
+      following,
+      detected  = false,
+      ch;
+
+  if (state.anchor !== null) {
+    state.anchorMap[state.anchor] = _result;
+  }
+
+  ch = state.input.charCodeAt(state.position);
+
+  while (ch !== 0) {
+
+    if (ch !== 0x2D/* - */) {
+      break;
+    }
+
+    following = state.input.charCodeAt(state.position + 1);
+
+    if (!is_WS_OR_EOL(following)) {
+      break;
+    }
+
+    detected = true;
+    state.position++;
+
+    if (skipSeparationSpace(state, true, -1)) {
+      if (state.lineIndent <= nodeIndent) {
+        _result.push(null);
+        ch = state.input.charCodeAt(state.position);
+        continue;
+      }
+    }
+
+    _line = state.line;
+    composeNode(state, nodeIndent, CONTEXT_BLOCK_IN, false, true);
+    _result.push(state.result);
+    skipSeparationSpace(state, true, -1);
+
+    ch = state.input.charCodeAt(state.position);
+
+    if ((state.line === _line || state.lineIndent > nodeIndent) && (ch !== 0)) {
+      throwError(state, 'bad indentation of a sequence entry');
+    } else if (state.lineIndent < nodeIndent) {
+      break;
+    }
+  }
+
+  if (detected) {
+    state.tag = _tag;
+    state.anchor = _anchor;
+    state.kind = 'sequence';
+    state.result = _result;
+    return true;
+  }
+  return false;
+}
+
+function readBlockMapping(state, nodeIndent, flowIndent) {
+  var following,
+      allowCompact,
+      _line,
+      _tag          = state.tag,
+      _anchor       = state.anchor,
+      _result       = {},
+      overridableKeys = {},
+      keyTag        = null,
+      keyNode       = null,
+      valueNode     = null,
+      atExplicitKey = false,
+      detected      = false,
+      ch;
+
+  if (state.anchor !== null) {
+    state.anchorMap[state.anchor] = _result;
+  }
+
+  ch = state.input.charCodeAt(state.position);
+
+  while (ch !== 0) {
+    following = state.input.charCodeAt(state.position + 1);
+    _line = state.line; // Save the current line.
+
+    //
+    // Explicit notation case. There are two separate blocks:
+    // first for the key (denoted by "?") and second for the value (denoted by ":")
+    //
+    if ((ch === 0x3F/* ? */ || ch === 0x3A/* : */) && is_WS_OR_EOL(following)) {
+
+      if (ch === 0x3F/* ? */) {
+        if (atExplicitKey) {
+          storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null);
+          keyTag = keyNode = valueNode = null;
+        }
+
+        detected = true;
+        atExplicitKey = true;
+        allowCompact = true;
+
+      } else if (atExplicitKey) {
+        // i.e. 0x3A/* : */ === character after the explicit key.
+        atExplicitKey = false;
+        allowCompact = true;
+
+      } else {
+        throwError(state, 'incomplete explicit mapping pair; a key node is missed');
+      }
+
+      state.position += 1;
+      ch = following;
+
+    //
+    // Implicit notation case. Flow-style node as the key first, then ":", and the value.
+    //
+    } else if (composeNode(state, flowIndent, CONTEXT_FLOW_OUT, false, true)) {
+
+      if (state.line === _line) {
+        ch = state.input.charCodeAt(state.position);
+
+        while (is_WHITE_SPACE(ch)) {
+          ch = state.input.charCodeAt(++state.position);
+        }
+
+        if (ch === 0x3A/* : */) {
+          ch = state.input.charCodeAt(++state.position);
+
+          if (!is_WS_OR_EOL(ch)) {
+            throwError(state, 'a whitespace character is expected after the key-value separator within a block mapping');
+          }
+
+          if (atExplicitKey) {
+            storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null);
+            keyTag = keyNode = valueNode = null;
+          }
+
+          detected = true;
+          atExplicitKey = false;
+          allowCompact = false;
+          keyTag = state.tag;
+          keyNode = state.result;
+
+        } else if (detected) {
+          throwError(state, 'can not read an implicit mapping pair; a colon is missed');
+
+        } else {
+          state.tag = _tag;
+          state.anchor = _anchor;
+          return true; // Keep the result of `composeNode`.
+        }
+
+      } else if (detected) {
+        throwError(state, 'can not read a block mapping entry; a multiline key may not be an implicit key');
+
+      } else {
+        state.tag = _tag;
+        state.anchor = _anchor;
+        return true; // Keep the result of `composeNode`.
+      }
+
+    } else {
+      break; // Reading is done. Go to the epilogue.
+    }
+
+    //
+    // Common reading code for both explicit and implicit notations.
+    //
+    if (state.line === _line || state.lineIndent > nodeIndent) {
+      if (composeNode(state, nodeIndent, CONTEXT_BLOCK_OUT, true, allowCompact)) {
+        if (atExplicitKey) {
+          keyNode = state.result;
+        } else {
+          valueNode = state.result;
+        }
+      }
+
+      if (!atExplicitKey) {
+        storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode);
+        keyTag = keyNode = valueNode = null;
+      }
+
+      skipSeparationSpace(state, true, -1);
+      ch = state.input.charCodeAt(state.position);
+    }
+
+    if (state.lineIndent > nodeIndent && (ch !== 0)) {
+      throwError(state, 'bad indentation of a mapping entry');
+    } else if (state.lineIndent < nodeIndent) {
+      break;
+    }
+  }
+
+  //
+  // Epilogue.
+  //
+
+  // Special case: last mapping's node contains only the key in explicit notation.
+  if (atExplicitKey) {
+    storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null);
+  }
+
+  // Expose the resulting mapping.
+  if (detected) {
+    state.tag = _tag;
+    state.anchor = _anchor;
+    state.kind = 'mapping';
+    state.result = _result;
+  }
+
+  return detected;
+}
+
+function readTagProperty(state) {
+  var _position,
+      isVerbatim = false,
+      isNamed    = false,
+      tagHandle,
+      tagName,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch !== 0x21/* ! */) return false;
+
+  if (state.tag !== null) {
+    throwError(state, 'duplication of a tag property');
+  }
+
+  ch = state.input.charCodeAt(++state.position);
+
+  if (ch === 0x3C/* < */) {
+    isVerbatim = true;
+    ch = state.input.charCodeAt(++state.position);
+
+  } else if (ch === 0x21/* ! */) {
+    isNamed = true;
+    tagHandle = '!!';
+    ch = state.input.charCodeAt(++state.position);
+
+  } else {
+    tagHandle = '!';
+  }
+
+  _position = state.position;
+
+  if (isVerbatim) {
+    do { ch = state.input.charCodeAt(++state.position); }
+    while (ch !== 0 && ch !== 0x3E/* > */);
+
+    if (state.position < state.length) {
+      tagName = state.input.slice(_position, state.position);
+      ch = state.input.charCodeAt(++state.position);
+    } else {
+      throwError(state, 'unexpected end of the stream within a verbatim tag');
+    }
+  } else {
+    while (ch !== 0 && !is_WS_OR_EOL(ch)) {
+
+      if (ch === 0x21/* ! */) {
+        if (!isNamed) {
+          tagHandle = state.input.slice(_position - 1, state.position + 1);
+
+          if (!PATTERN_TAG_HANDLE.test(tagHandle)) {
+            throwError(state, 'named tag handle cannot contain such characters');
+          }
+
+          isNamed = true;
+          _position = state.position + 1;
+        } else {
+          throwError(state, 'tag suffix cannot contain exclamation marks');
+        }
+      }
+
+      ch = state.input.charCodeAt(++state.position);
+    }
+
+    tagName = state.input.slice(_position, state.position);
+
+    if (PATTERN_FLOW_INDICATORS.test(tagName)) {
+      throwError(state, 'tag suffix cannot contain flow indicator characters');
+    }
+  }
+
+  if (tagName && !PATTERN_TAG_URI.test(tagName)) {
+    throwError(state, 'tag name cannot contain such characters: ' + tagName);
+  }
+
+  if (isVerbatim) {
+    state.tag = tagName;
+
+  } else if (_hasOwnProperty.call(state.tagMap, tagHandle)) {
+    state.tag = state.tagMap[tagHandle] + tagName;
+
+  } else if (tagHandle === '!') {
+    state.tag = '!' + tagName;
+
+  } else if (tagHandle === '!!') {
+    state.tag = 'tag:yaml.org,2002:' + tagName;
+
+  } else {
+    throwError(state, 'undeclared tag handle "' + tagHandle + '"');
+  }
+
+  return true;
+}
+
+function readAnchorProperty(state) {
+  var _position,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch !== 0x26/* & */) return false;
+
+  if (state.anchor !== null) {
+    throwError(state, 'duplication of an anchor property');
+  }
+
+  ch = state.input.charCodeAt(++state.position);
+  _position = state.position;
+
+  while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
+    ch = state.input.charCodeAt(++state.position);
+  }
+
+  if (state.position === _position) {
+    throwError(state, 'name of an anchor node must contain at least one character');
+  }
+
+  state.anchor = state.input.slice(_position, state.position);
+  return true;
+}
+
+function readAlias(state) {
+  var _position, alias,
+      ch;
+
+  ch = state.input.charCodeAt(state.position);
+
+  if (ch !== 0x2A/* * */) return false;
+
+  ch = state.input.charCodeAt(++state.position);
+  _position = state.position;
+
+  while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
+    ch = state.input.charCodeAt(++state.position);
+  }
+
+  if (state.position === _position) {
+    throwError(state, 'name of an alias node must contain at least one character');
+  }
+
+  alias = state.input.slice(_position, state.position);
+
+  if (!state.anchorMap.hasOwnProperty(alias)) {
+    throwError(state, 'unidentified alias "' + alias + '"');
+  }
+
+  state.result = state.anchorMap[alias];
+  skipSeparationSpace(state, true, -1);
+  return true;
+}
+
+function composeNode(state, parentIndent, nodeContext, allowToSeek, allowCompact) {
+  var allowBlockStyles,
+      allowBlockScalars,
+      allowBlockCollections,
+      indentStatus = 1, // 1: this>parent, 0: this=parent, -1: this<parent
+      atNewLine  = false,
+      hasContent = false,
+      typeIndex,
+      typeQuantity,
+      type,
+      flowIndent,
+      blockIndent;
+
+  if (state.listener !== null) {
+    state.listener('open', state);
+  }
+
+  state.tag    = null;
+  state.anchor = null;
+  state.kind   = null;
+  state.result = null;
+
+  allowBlockStyles = allowBlockScalars = allowBlockCollections =
+    CONTEXT_BLOCK_OUT === nodeContext ||
+    CONTEXT_BLOCK_IN  === nodeContext;
+
+  if (allowToSeek) {
+    if (skipSeparationSpace(state, true, -1)) {
+      atNewLine = true;
+
+      if (state.lineIndent > parentIndent) {
+        indentStatus = 1;
+      } else if (state.lineIndent === parentIndent) {
+        indentStatus = 0;
+      } else if (state.lineIndent < parentIndent) {
+        indentStatus = -1;
+      }
+    }
+  }
+
+  if (indentStatus === 1) {
+    while (readTagProperty(state) || readAnchorProperty(state)) {
+      if (skipSeparationSpace(state, true, -1)) {
+        atNewLine = true;
+        allowBlockCollections = allowBlockStyles;
+
+        if (state.lineIndent > parentIndent) {
+          indentStatus = 1;
+        } else if (state.lineIndent === parentIndent) {
+          indentStatus = 0;
+        } else if (state.lineIndent < parentIndent) {
+          indentStatus = -1;
+        }
+      } else {
+        allowBlockCollections = false;
+      }
+    }
+  }
+
+  if (allowBlockCollections) {
+    allowBlockCollections = atNewLine || allowCompact;
+  }
+
+  if (indentStatus === 1 || CONTEXT_BLOCK_OUT === nodeContext) {
+    if (CONTEXT_FLOW_IN === nodeContext || CONTEXT_FLOW_OUT === nodeContext) {
+      flowIndent = parentIndent;
+    } else {
+      flowIndent = parentIndent + 1;
+    }
+
+    blockIndent = state.position - state.lineStart;
+
+    if (indentStatus === 1) {
+      if (allowBlockCollections &&
+          (readBlockSequence(state, blockIndent) ||
+           readBlockMapping(state, blockIndent, flowIndent)) ||
+          readFlowCollection(state, flowIndent)) {
+        hasContent = true;
+      } else {
+        if ((allowBlockScalars && readBlockScalar(state, flowIndent)) ||
+            readSingleQuotedScalar(state, flowIndent) ||
+            readDoubleQuotedScalar(state, flowIndent)) {
+          hasContent = true;
+
+        } else if (readAlias(state)) {
+          hasContent = true;
+
+          if (state.tag !== null || state.anchor !== null) {
+            throwError(state, 'alias node should not have any properties');
+          }
+
+        } else if (readPlainScalar(state, flowIndent, CONTEXT_FLOW_IN === nodeContext)) {
+          hasContent = true;
+
+          if (state.tag === null) {
+            state.tag = '?';
+          }
+        }
+
+        if (state.anchor !== null) {
+          state.anchorMap[state.anchor] = state.result;
+        }
+      }
+    } else if (indentStatus === 0) {
+      // Special case: block sequences are allowed to have same indentation level as the parent.
+      // http://www.yaml.org/spec/1.2/spec.html#id2799784
+      hasContent = allowBlockCollections && readBlockSequence(state, blockIndent);
+    }
+  }
+
+  if (state.tag !== null && state.tag !== '!') {
+    if (state.tag === '?') {
+      for (typeIndex = 0, typeQuantity = state.implicitTypes.length;
+           typeIndex < typeQuantity;
+           typeIndex += 1) {
+        type = state.implicitTypes[typeIndex];
+
+        // Implicit resolving is not allowed for non-scalar types, and '?'
+        // non-specific tag is only assigned to plain scalars. So, it isn't
+        // needed to check for 'kind' conformity.
+
+        if (type.resolve(state.result)) { // `state.result` updated in resolver if matched
+          state.result = type.construct(state.result);
+          state.tag = type.tag;
+          if (state.anchor !== null) {
+            state.anchorMap[state.anchor] = state.result;
+          }
+          break;
+        }
+      }
+    } else if (_hasOwnProperty.call(state.typeMap[state.kind || 'fallback'], state.tag)) {
+      type = state.typeMap[state.kind || 'fallback'][state.tag];
+
+      if (state.result !== null && type.kind !== state.kind) {
+        throwError(state, 'unacceptable node kind for !<' + state.tag + '> tag; it should be "' + type.kind + '", not "' + state.kind + '"');
+      }
+
+      if (!type.resolve(state.result)) { // `state.result` updated in resolver if matched
+        throwError(state, 'cannot resolve a node with !<' + state.tag + '> explicit tag');
+      } else {
+        state.result = type.construct(state.result);
+        if (state.anchor !== null) {
+          state.anchorMap[state.anchor] = state.result;
+        }
+      }
+    } else {
+      throwError(state, 'unknown tag !<' + state.tag + '>');
+    }
+  }
+
+  if (state.listener !== null) {
+    state.listener('close', state);
+  }
+  return state.tag !== null ||  state.anchor !== null || hasContent;
+}
+
+function readDocument(state) {
+  var documentStart = state.position,
+      _position,
+      directiveName,
+      directiveArgs,
+      hasDirectives = false,
+      ch;
+
+  state.version = null;
+  state.checkLineBreaks = state.legacy;
+  state.tagMap = {};
+  state.anchorMap = {};
+
+  while ((ch = state.input.charCodeAt(state.position)) !== 0) {
+    skipSeparationSpace(state, true, -1);
+
+    ch = state.input.charCodeAt(state.position);
+
+    if (state.lineIndent > 0 || ch !== 0x25/* % */) {
+      break;
+    }
+
+    hasDirectives = true;
+    ch = state.input.charCodeAt(++state.position);
+    _position = state.position;
+
+    while (ch !== 0 && !is_WS_OR_EOL(ch)) {
+      ch = state.input.charCodeAt(++state.position);
+    }
+
+    directiveName = state.input.slice(_position, state.position);
+    directiveArgs = [];
+
+    if (directiveName.length < 1) {
+      throwError(state, 'directive name must not be less than one character in length');
+    }
+
+    while (ch !== 0) {
+      while (is_WHITE_SPACE(ch)) {
+        ch = state.input.charCodeAt(++state.position);
+      }
+
+      if (ch === 0x23/* # */) {
+        do { ch = state.input.charCodeAt(++state.position); }
+        while (ch !== 0 && !is_EOL(ch));
+        break;
+      }
+
+      if (is_EOL(ch)) break;
+
+      _position = state.position;
+
+      while (ch !== 0 && !is_WS_OR_EOL(ch)) {
+        ch = state.input.charCodeAt(++state.position);
+      }
+
+      directiveArgs.push(state.input.slice(_position, state.position));
+    }
+
+    if (ch !== 0) readLineBreak(state);
+
+    if (_hasOwnProperty.call(directiveHandlers, directiveName)) {
+      directiveHandlers[directiveName](state, directiveName, directiveArgs);
+    } else {
+      throwWarning(state, 'unknown document directive "' + directiveName + '"');
+    }
+  }
+
+  skipSeparationSpace(state, true, -1);
+
+  if (state.lineIndent === 0 &&
+      state.input.charCodeAt(state.position)     === 0x2D/* - */ &&
+      state.input.charCodeAt(state.position + 1) === 0x2D/* - */ &&
+      state.input.charCodeAt(state.position + 2) === 0x2D/* - */) {
+    state.position += 3;
+    skipSeparationSpace(state, true, -1);
+
+  } else if (hasDirectives) {
+    throwError(state, 'directives end mark is expected');
+  }
+
+  composeNode(state, state.lineIndent - 1, CONTEXT_BLOCK_OUT, false, true);
+  skipSeparationSpace(state, true, -1);
+
+  if (state.checkLineBreaks &&
+      PATTERN_NON_ASCII_LINE_BREAKS.test(state.input.slice(documentStart, state.position))) {
+    throwWarning(state, 'non-ASCII line breaks are interpreted as content');
+  }
+
+  state.documents.push(state.result);
+
+  if (state.position === state.lineStart && testDocumentSeparator(state)) {
+
+    if (state.input.charCodeAt(state.position) === 0x2E/* . */) {
+      state.position += 3;
+      skipSeparationSpace(state, true, -1);
+    }
+    return;
+  }
+
+  if (state.position < (state.length - 1)) {
+    throwError(state, 'end of the stream or a document separator is expected');
+  } else {
+    return;
+  }
+}
+
+
+function loadDocuments(input, options) {
+  input = String(input);
+  options = options || {};
+
+  if (input.length !== 0) {
+
+    // Add tailing `\n` if not exists
+    if (input.charCodeAt(input.length - 1) !== 0x0A/* LF */ &&
+        input.charCodeAt(input.length - 1) !== 0x0D/* CR */) {
+      input += '\n';
+    }
+
+    // Strip BOM
+    if (input.charCodeAt(0) === 0xFEFF) {
+      input = input.slice(1);
+    }
+  }
+
+  var state = new State(input, options);
+
+  // Use 0 as string terminator. That significantly simplifies bounds check.
+  state.input += '\0';
+
+  while (state.input.charCodeAt(state.position) === 0x20/* Space */) {
+    state.lineIndent += 1;
+    state.position += 1;
+  }
+
+  while (state.position < (state.length - 1)) {
+    readDocument(state);
+  }
+
+  return state.documents;
+}
+
+
+function loadAll(input, iterator, options) {
+  var documents = loadDocuments(input, options), index, length;
+
+  for (index = 0, length = documents.length; index < length; index += 1) {
+    iterator(documents[index]);
+  }
+}
+
+
+function load(input, options) {
+  var documents = loadDocuments(input, options);
+
+  if (documents.length === 0) {
+    /*eslint-disable no-undefined*/
+    return undefined;
+  } else if (documents.length === 1) {
+    return documents[0];
+  }
+  throw new YAMLException('expected a single document in the stream, but found more');
+}
+
+
+function safeLoadAll(input, output, options) {
+  loadAll(input, output, common.extend({ schema: DEFAULT_SAFE_SCHEMA }, options));
+}
+
+
+function safeLoad(input, options) {
+  return load(input, common.extend({ schema: DEFAULT_SAFE_SCHEMA }, options));
+}
+
+
+module.exports.loadAll     = loadAll;
+module.exports.load        = load;
+module.exports.safeLoadAll = safeLoadAll;
+module.exports.safeLoad    = safeLoad;
+
+},{"./common":109,"./exception":111,"./mark":113,"./schema/default_full":116,"./schema/default_safe":117}],113:[function(require,module,exports){
+'use strict';
+
+
+var common = require('./common');
+
+
+function Mark(name, buffer, position, line, column) {
+  this.name     = name;
+  this.buffer   = buffer;
+  this.position = position;
+  this.line     = line;
+  this.column   = column;
+}
+
+
+Mark.prototype.getSnippet = function getSnippet(indent, maxLength) {
+  var head, start, tail, end, snippet;
+
+  if (!this.buffer) return null;
+
+  indent = indent || 4;
+  maxLength = maxLength || 75;
+
+  head = '';
+  start = this.position;
+
+  while (start > 0 && '\x00\r\n\x85\u2028\u2029'.indexOf(this.buffer.charAt(start - 1)) === -1) {
+    start -= 1;
+    if (this.position - start > (maxLength / 2 - 1)) {
+      head = ' ... ';
+      start += 5;
+      break;
+    }
+  }
+
+  tail = '';
+  end = this.position;
+
+  while (end < this.buffer.length && '\x00\r\n\x85\u2028\u2029'.indexOf(this.buffer.charAt(end)) === -1) {
+    end += 1;
+    if (end - this.position > (maxLength / 2 - 1)) {
+      tail = ' ... ';
+      end -= 5;
+      break;
+    }
+  }
+
+  snippet = this.buffer.slice(start, end);
+
+  return common.repeat(' ', indent) + head + snippet + tail + '\n' +
+         common.repeat(' ', indent + this.position - start + head.length) + '^';
+};
+
+
+Mark.prototype.toString = function toString(compact) {
+  var snippet, where = '';
+
+  if (this.name) {
+    where += 'in "' + this.name + '" ';
+  }
+
+  where += 'at line ' + (this.line + 1) + ', column ' + (this.column + 1);
+
+  if (!compact) {
+    snippet = this.getSnippet();
+
+    if (snippet) {
+      where += ':\n' + snippet;
+    }
+  }
+
+  return where;
+};
+
+
+module.exports = Mark;
+
+},{"./common":109}],114:[function(require,module,exports){
+'use strict';
+
+/*eslint-disable max-len*/
+
+var common        = require('./common');
+var YAMLException = require('./exception');
+var Type          = require('./type');
+
+
+function compileList(schema, name, result) {
+  var exclude = [];
+
+  schema.include.forEach(function (includedSchema) {
+    result = compileList(includedSchema, name, result);
+  });
+
+  schema[name].forEach(function (currentType) {
+    result.forEach(function (previousType, previousIndex) {
+      if (previousType.tag === currentType.tag && previousType.kind === currentType.kind) {
+        exclude.push(previousIndex);
+      }
+    });
+
+    result.push(currentType);
+  });
+
+  return result.filter(function (type, index) {
+    return exclude.indexOf(index) === -1;
+  });
+}
+
+
+function compileMap(/* lists... */) {
+  var result = {
+        scalar: {},
+        sequence: {},
+        mapping: {},
+        fallback: {}
+      }, index, length;
+
+  function collectType(type) {
+    result[type.kind][type.tag] = result['fallback'][type.tag] = type;
+  }
+
+  for (index = 0, length = arguments.length; index < length; index += 1) {
+    arguments[index].forEach(collectType);
+  }
+  return result;
+}
+
+
+function Schema(definition) {
+  this.include  = definition.include  || [];
+  this.implicit = definition.implicit || [];
+  this.explicit = definition.explicit || [];
+
+  this.implicit.forEach(function (type) {
+    if (type.loadKind && type.loadKind !== 'scalar') {
+      throw new YAMLException('There is a non-scalar type in the implicit list of a schema. Implicit resolving of such types is not supported.');
+    }
+  });
+
+  this.compiledImplicit = compileList(this, 'implicit', []);
+  this.compiledExplicit = compileList(this, 'explicit', []);
+  this.compiledTypeMap  = compileMap(this.compiledImplicit, this.compiledExplicit);
+}
+
+
+Schema.DEFAULT = null;
+
+
+Schema.create = function createSchema() {
+  var schemas, types;
+
+  switch (arguments.length) {
+    case 1:
+      schemas = Schema.DEFAULT;
+      types = arguments[0];
+      break;
+
+    case 2:
+      schemas = arguments[0];
+      types = arguments[1];
+      break;
+
+    default:
+      throw new YAMLException('Wrong number of arguments for Schema.create function');
+  }
+
+  schemas = common.toArray(schemas);
+  types = common.toArray(types);
+
+  if (!schemas.every(function (schema) { return schema instanceof Schema; })) {
+    throw new YAMLException('Specified list of super schemas (or a single Schema object) contains a non-Schema object.');
+  }
+
+  if (!types.every(function (type) { return type instanceof Type; })) {
+    throw new YAMLException('Specified list of YAML types (or a single Type object) contains a non-Type object.');
+  }
+
+  return new Schema({
+    include: schemas,
+    explicit: types
+  });
+};
+
+
+module.exports = Schema;
+
+},{"./common":109,"./exception":111,"./type":120}],115:[function(require,module,exports){
+// Standard YAML's Core schema.
+// http://www.yaml.org/spec/1.2/spec.html#id2804923
+//
+// NOTE: JS-YAML does not support schema-specific tag resolution restrictions.
+// So, Core schema has no distinctions from JSON schema is JS-YAML.
+
+
+'use strict';
+
+
+var Schema = require('../schema');
+
+
+module.exports = new Schema({
+  include: [
+    require('./json')
+  ]
+});
+
+},{"../schema":114,"./json":119}],116:[function(require,module,exports){
+// JS-YAML's default schema for `load` function.
+// It is not described in the YAML specification.
+//
+// This schema is based on JS-YAML's default safe schema and includes
+// JavaScript-specific types: !!js/undefined, !!js/regexp and !!js/function.
+//
+// Also this schema is used as default base schema at `Schema.create` function.
+
+
+'use strict';
+
+
+var Schema = require('../schema');
+
+
+module.exports = Schema.DEFAULT = new Schema({
+  include: [
+    require('./default_safe')
+  ],
+  explicit: [
+    require('../type/js/undefined'),
+    require('../type/js/regexp'),
+    require('../type/js/function')
+  ]
+});
+
+},{"../schema":114,"../type/js/function":125,"../type/js/regexp":126,"../type/js/undefined":127,"./default_safe":117}],117:[function(require,module,exports){
+// JS-YAML's default schema for `safeLoad` function.
+// It is not described in the YAML specification.
+//
+// This schema is based on standard YAML's Core schema and includes most of
+// extra types described at YAML tag repository. (http://yaml.org/type/)
+
+
+'use strict';
+
+
+var Schema = require('../schema');
+
+
+module.exports = new Schema({
+  include: [
+    require('./core')
+  ],
+  implicit: [
+    require('../type/timestamp'),
+    require('../type/merge')
+  ],
+  explicit: [
+    require('../type/binary'),
+    require('../type/omap'),
+    require('../type/pairs'),
+    require('../type/set')
+  ]
+});
+
+},{"../schema":114,"../type/binary":121,"../type/merge":129,"../type/omap":131,"../type/pairs":132,"../type/set":134,"../type/timestamp":136,"./core":115}],118:[function(require,module,exports){
+// Standard YAML's Failsafe schema.
+// http://www.yaml.org/spec/1.2/spec.html#id2802346
+
+
+'use strict';
+
+
+var Schema = require('../schema');
+
+
+module.exports = new Schema({
+  explicit: [
+    require('../type/str'),
+    require('../type/seq'),
+    require('../type/map')
+  ]
+});
+
+},{"../schema":114,"../type/map":128,"../type/seq":133,"../type/str":135}],119:[function(require,module,exports){
+// Standard YAML's JSON schema.
+// http://www.yaml.org/spec/1.2/spec.html#id2803231
+//
+// NOTE: JS-YAML does not support schema-specific tag resolution restrictions.
+// So, this schema is not such strict as defined in the YAML specification.
+// It allows numbers in binary notaion, use `Null` and `NULL` as `null`, etc.
+
+
+'use strict';
+
+
+var Schema = require('../schema');
+
+
+module.exports = new Schema({
+  include: [
+    require('./failsafe')
+  ],
+  implicit: [
+    require('../type/null'),
+    require('../type/bool'),
+    require('../type/int'),
+    require('../type/float')
+  ]
+});
+
+},{"../schema":114,"../type/bool":122,"../type/float":123,"../type/int":124,"../type/null":130,"./failsafe":118}],120:[function(require,module,exports){
+'use strict';
+
+var YAMLException = require('./exception');
+
+var TYPE_CONSTRUCTOR_OPTIONS = [
+  'kind',
+  'resolve',
+  'construct',
+  'instanceOf',
+  'predicate',
+  'represent',
+  'defaultStyle',
+  'styleAliases'
+];
+
+var YAML_NODE_KINDS = [
+  'scalar',
+  'sequence',
+  'mapping'
+];
+
+function compileStyleAliases(map) {
+  var result = {};
+
+  if (map !== null) {
+    Object.keys(map).forEach(function (style) {
+      map[style].forEach(function (alias) {
+        result[String(alias)] = style;
+      });
+    });
+  }
+
+  return result;
+}
+
+function Type(tag, options) {
+  options = options || {};
+
+  Object.keys(options).forEach(function (name) {
+    if (TYPE_CONSTRUCTOR_OPTIONS.indexOf(name) === -1) {
+      throw new YAMLException('Unknown option "' + name + '" is met in definition of "' + tag + '" YAML type.');
+    }
+  });
+
+  // TODO: Add tag format check.
+  this.tag          = tag;
+  this.kind         = options['kind']         || null;
+  this.resolve      = options['resolve']      || function () { return true; };
+  this.construct    = options['construct']    || function (data) { return data; };
+  this.instanceOf   = options['instanceOf']   || null;
+  this.predicate    = options['predicate']    || null;
+  this.represent    = options['represent']    || null;
+  this.defaultStyle = options['defaultStyle'] || null;
+  this.styleAliases = compileStyleAliases(options['styleAliases'] || null);
+
+  if (YAML_NODE_KINDS.indexOf(this.kind) === -1) {
+    throw new YAMLException('Unknown kind "' + this.kind + '" is specified for "' + tag + '" YAML type.');
+  }
+}
+
+module.exports = Type;
+
+},{"./exception":111}],121:[function(require,module,exports){
+'use strict';
+
+/*eslint-disable no-bitwise*/
+
+var NodeBuffer;
+
+try {
+  // A trick for browserified version, to not include `Buffer` shim
+  var _require = require;
+  NodeBuffer = _require('buffer').Buffer;
+} catch (__) {}
+
+var Type       = require('../type');
+
+
+// [ 64, 65, 66 ] -> [ padding, CR, LF ]
+var BASE64_MAP = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r';
+
+
+function resolveYamlBinary(data) {
+  if (data === null) return false;
+
+  var code, idx, bitlen = 0, max = data.length, map = BASE64_MAP;
+
+  // Convert one by one.
+  for (idx = 0; idx < max; idx++) {
+    code = map.indexOf(data.charAt(idx));
+
+    // Skip CR/LF
+    if (code > 64) continue;
+
+    // Fail on illegal characters
+    if (code < 0) return false;
+
+    bitlen += 6;
+  }
+
+  // If there are any bits left, source was corrupted
+  return (bitlen % 8) === 0;
+}
+
+function constructYamlBinary(data) {
+  var idx, tailbits,
+      input = data.replace(/[\r\n=]/g, ''), // remove CR/LF & padding to simplify scan
+      max = input.length,
+      map = BASE64_MAP,
+      bits = 0,
+      result = [];
+
+  // Collect by 6*4 bits (3 bytes)
+
+  for (idx = 0; idx < max; idx++) {
+    if ((idx % 4 === 0) && idx) {
+      result.push((bits >> 16) & 0xFF);
+      result.push((bits >> 8) & 0xFF);
+      result.push(bits & 0xFF);
+    }
+
+    bits = (bits << 6) | map.indexOf(input.charAt(idx));
+  }
+
+  // Dump tail
+
+  tailbits = (max % 4) * 6;
+
+  if (tailbits === 0) {
+    result.push((bits >> 16) & 0xFF);
+    result.push((bits >> 8) & 0xFF);
+    result.push(bits & 0xFF);
+  } else if (tailbits === 18) {
+    result.push((bits >> 10) & 0xFF);
+    result.push((bits >> 2) & 0xFF);
+  } else if (tailbits === 12) {
+    result.push((bits >> 4) & 0xFF);
+  }
+
+  // Wrap into Buffer for NodeJS and leave Array for browser
+  if (NodeBuffer) return new NodeBuffer(result);
+
+  return result;
+}
+
+function representYamlBinary(object /*, style*/) {
+  var result = '', bits = 0, idx, tail,
+      max = object.length,
+      map = BASE64_MAP;
+
+  // Convert every three bytes to 4 ASCII characters.
+
+  for (idx = 0; idx < max; idx++) {
+    if ((idx % 3 === 0) && idx) {
+      result += map[(bits >> 18) & 0x3F];
+      result += map[(bits >> 12) & 0x3F];
+      result += map[(bits >> 6) & 0x3F];
+      result += map[bits & 0x3F];
+    }
+
+    bits = (bits << 8) + object[idx];
+  }
+
+  // Dump tail
+
+  tail = max % 3;
+
+  if (tail === 0) {
+    result += map[(bits >> 18) & 0x3F];
+    result += map[(bits >> 12) & 0x3F];
+    result += map[(bits >> 6) & 0x3F];
+    result += map[bits & 0x3F];
+  } else if (tail === 2) {
+    result += map[(bits >> 10) & 0x3F];
+    result += map[(bits >> 4) & 0x3F];
+    result += map[(bits << 2) & 0x3F];
+    result += map[64];
+  } else if (tail === 1) {
+    result += map[(bits >> 2) & 0x3F];
+    result += map[(bits << 4) & 0x3F];
+    result += map[64];
+    result += map[64];
+  }
+
+  return result;
+}
+
+function isBinary(object) {
+  return NodeBuffer && NodeBuffer.isBuffer(object);
+}
+
+module.exports = new Type('tag:yaml.org,2002:binary', {
+  kind: 'scalar',
+  resolve: resolveYamlBinary,
+  construct: constructYamlBinary,
+  predicate: isBinary,
+  represent: representYamlBinary
+});
+
+},{"../type":120}],122:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+function resolveYamlBoolean(data) {
+  if (data === null) return false;
+
+  var max = data.length;
+
+  return (max === 4 && (data === 'true' || data === 'True' || data === 'TRUE')) ||
+         (max === 5 && (data === 'false' || data === 'False' || data === 'FALSE'));
+}
+
+function constructYamlBoolean(data) {
+  return data === 'true' ||
+         data === 'True' ||
+         data === 'TRUE';
+}
+
+function isBoolean(object) {
+  return Object.prototype.toString.call(object) === '[object Boolean]';
+}
+
+module.exports = new Type('tag:yaml.org,2002:bool', {
+  kind: 'scalar',
+  resolve: resolveYamlBoolean,
+  construct: constructYamlBoolean,
+  predicate: isBoolean,
+  represent: {
+    lowercase: function (object) { return object ? 'true' : 'false'; },
+    uppercase: function (object) { return object ? 'TRUE' : 'FALSE'; },
+    camelcase: function (object) { return object ? 'True' : 'False'; }
+  },
+  defaultStyle: 'lowercase'
+});
+
+},{"../type":120}],123:[function(require,module,exports){
+'use strict';
+
+var common = require('../common');
+var Type   = require('../type');
+
+var YAML_FLOAT_PATTERN = new RegExp(
+  '^(?:[-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+][0-9]+)?' +
+  '|\\.[0-9_]+(?:[eE][-+][0-9]+)?' +
+  '|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*' +
+  '|[-+]?\\.(?:inf|Inf|INF)' +
+  '|\\.(?:nan|NaN|NAN))$');
+
+function resolveYamlFloat(data) {
+  if (data === null) return false;
+
+  if (!YAML_FLOAT_PATTERN.test(data)) return false;
+
+  return true;
+}
+
+function constructYamlFloat(data) {
+  var value, sign, base, digits;
+
+  value  = data.replace(/_/g, '').toLowerCase();
+  sign   = value[0] === '-' ? -1 : 1;
+  digits = [];
+
+  if ('+-'.indexOf(value[0]) >= 0) {
+    value = value.slice(1);
+  }
+
+  if (value === '.inf') {
+    return (sign === 1) ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+
+  } else if (value === '.nan') {
+    return NaN;
+
+  } else if (value.indexOf(':') >= 0) {
+    value.split(':').forEach(function (v) {
+      digits.unshift(parseFloat(v, 10));
+    });
+
+    value = 0.0;
+    base = 1;
+
+    digits.forEach(function (d) {
+      value += d * base;
+      base *= 60;
+    });
+
+    return sign * value;
+
+  }
+  return sign * parseFloat(value, 10);
+}
+
+
+var SCIENTIFIC_WITHOUT_DOT = /^[-+]?[0-9]+e/;
+
+function representYamlFloat(object, style) {
+  var res;
+
+  if (isNaN(object)) {
+    switch (style) {
+      case 'lowercase': return '.nan';
+      case 'uppercase': return '.NAN';
+      case 'camelcase': return '.NaN';
+    }
+  } else if (Number.POSITIVE_INFINITY === object) {
+    switch (style) {
+      case 'lowercase': return '.inf';
+      case 'uppercase': return '.INF';
+      case 'camelcase': return '.Inf';
+    }
+  } else if (Number.NEGATIVE_INFINITY === object) {
+    switch (style) {
+      case 'lowercase': return '-.inf';
+      case 'uppercase': return '-.INF';
+      case 'camelcase': return '-.Inf';
+    }
+  } else if (common.isNegativeZero(object)) {
+    return '-0.0';
+  }
+
+  res = object.toString(10);
+
+  // JS stringifier can build scientific format without dots: 5e-100,
+  // while YAML requres dot: 5.e-100. Fix it with simple hack
+
+  return SCIENTIFIC_WITHOUT_DOT.test(res) ? res.replace('e', '.e') : res;
+}
+
+function isFloat(object) {
+  return (Object.prototype.toString.call(object) === '[object Number]') &&
+         (object % 1 !== 0 || common.isNegativeZero(object));
+}
+
+module.exports = new Type('tag:yaml.org,2002:float', {
+  kind: 'scalar',
+  resolve: resolveYamlFloat,
+  construct: constructYamlFloat,
+  predicate: isFloat,
+  represent: representYamlFloat,
+  defaultStyle: 'lowercase'
+});
+
+},{"../common":109,"../type":120}],124:[function(require,module,exports){
+'use strict';
+
+var common = require('../common');
+var Type   = require('../type');
+
+function isHexCode(c) {
+  return ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */)) ||
+         ((0x41/* A */ <= c) && (c <= 0x46/* F */)) ||
+         ((0x61/* a */ <= c) && (c <= 0x66/* f */));
+}
+
+function isOctCode(c) {
+  return ((0x30/* 0 */ <= c) && (c <= 0x37/* 7 */));
+}
+
+function isDecCode(c) {
+  return ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */));
+}
+
+function resolveYamlInteger(data) {
+  if (data === null) return false;
+
+  var max = data.length,
+      index = 0,
+      hasDigits = false,
+      ch;
+
+  if (!max) return false;
+
+  ch = data[index];
+
+  // sign
+  if (ch === '-' || ch === '+') {
+    ch = data[++index];
+  }
+
+  if (ch === '0') {
+    // 0
+    if (index + 1 === max) return true;
+    ch = data[++index];
+
+    // base 2, base 8, base 16
+
+    if (ch === 'b') {
+      // base 2
+      index++;
+
+      for (; index < max; index++) {
+        ch = data[index];
+        if (ch === '_') continue;
+        if (ch !== '0' && ch !== '1') return false;
+        hasDigits = true;
+      }
+      return hasDigits;
+    }
+
+
+    if (ch === 'x') {
+      // base 16
+      index++;
+
+      for (; index < max; index++) {
+        ch = data[index];
+        if (ch === '_') continue;
+        if (!isHexCode(data.charCodeAt(index))) return false;
+        hasDigits = true;
+      }
+      return hasDigits;
+    }
+
+    // base 8
+    for (; index < max; index++) {
+      ch = data[index];
+      if (ch === '_') continue;
+      if (!isOctCode(data.charCodeAt(index))) return false;
+      hasDigits = true;
+    }
+    return hasDigits;
+  }
+
+  // base 10 (except 0) or base 60
+
+  for (; index < max; index++) {
+    ch = data[index];
+    if (ch === '_') continue;
+    if (ch === ':') break;
+    if (!isDecCode(data.charCodeAt(index))) {
+      return false;
+    }
+    hasDigits = true;
+  }
+
+  if (!hasDigits) return false;
+
+  // if !base60 - done;
+  if (ch !== ':') return true;
+
+  // base60 almost not used, no needs to optimize
+  return /^(:[0-5]?[0-9])+$/.test(data.slice(index));
+}
+
+function constructYamlInteger(data) {
+  var value = data, sign = 1, ch, base, digits = [];
+
+  if (value.indexOf('_') !== -1) {
+    value = value.replace(/_/g, '');
+  }
+
+  ch = value[0];
+
+  if (ch === '-' || ch === '+') {
+    if (ch === '-') sign = -1;
+    value = value.slice(1);
+    ch = value[0];
+  }
+
+  if (value === '0') return 0;
+
+  if (ch === '0') {
+    if (value[1] === 'b') return sign * parseInt(value.slice(2), 2);
+    if (value[1] === 'x') return sign * parseInt(value, 16);
+    return sign * parseInt(value, 8);
+  }
+
+  if (value.indexOf(':') !== -1) {
+    value.split(':').forEach(function (v) {
+      digits.unshift(parseInt(v, 10));
+    });
+
+    value = 0;
+    base = 1;
+
+    digits.forEach(function (d) {
+      value += (d * base);
+      base *= 60;
+    });
+
+    return sign * value;
+
+  }
+
+  return sign * parseInt(value, 10);
+}
+
+function isInteger(object) {
+  return (Object.prototype.toString.call(object)) === '[object Number]' &&
+         (object % 1 === 0 && !common.isNegativeZero(object));
+}
+
+module.exports = new Type('tag:yaml.org,2002:int', {
+  kind: 'scalar',
+  resolve: resolveYamlInteger,
+  construct: constructYamlInteger,
+  predicate: isInteger,
+  represent: {
+    binary:      function (object) { return '0b' + object.toString(2); },
+    octal:       function (object) { return '0'  + object.toString(8); },
+    decimal:     function (object) { return        object.toString(10); },
+    hexadecimal: function (object) { return '0x' + object.toString(16).toUpperCase(); }
+  },
+  defaultStyle: 'decimal',
+  styleAliases: {
+    binary:      [ 2,  'bin' ],
+    octal:       [ 8,  'oct' ],
+    decimal:     [ 10, 'dec' ],
+    hexadecimal: [ 16, 'hex' ]
+  }
+});
+
+},{"../common":109,"../type":120}],125:[function(require,module,exports){
+'use strict';
+
+var esprima;
+
+// Browserified version does not have esprima
+//
+// 1. For node.js just require module as deps
+// 2. For browser try to require mudule via external AMD system.
+//    If not found - try to fallback to window.esprima. If not
+//    found too - then fail to parse.
+//
+try {
+  // workaround to exclude package from browserify list.
+  var _require = require;
+  esprima = _require('esprima');
+} catch (_) {
+  /*global window */
+  if (typeof window !== 'undefined') esprima = window.esprima;
+}
+
+var Type = require('../../type');
+
+function resolveJavascriptFunction(data) {
+  if (data === null) return false;
+
+  try {
+    var source = '(' + data + ')',
+        ast    = esprima.parse(source, { range: true });
+
+    if (ast.type                    !== 'Program'             ||
+        ast.body.length             !== 1                     ||
+        ast.body[0].type            !== 'ExpressionStatement' ||
+        ast.body[0].expression.type !== 'FunctionExpression') {
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function constructJavascriptFunction(data) {
+  /*jslint evil:true*/
+
+  var source = '(' + data + ')',
+      ast    = esprima.parse(source, { range: true }),
+      params = [],
+      body;
+
+  if (ast.type                    !== 'Program'             ||
+      ast.body.length             !== 1                     ||
+      ast.body[0].type            !== 'ExpressionStatement' ||
+      ast.body[0].expression.type !== 'FunctionExpression') {
+    throw new Error('Failed to resolve function');
+  }
+
+  ast.body[0].expression.params.forEach(function (param) {
+    params.push(param.name);
+  });
+
+  body = ast.body[0].expression.body.range;
+
+  // Esprima's ranges include the first '{' and the last '}' characters on
+  // function expressions. So cut them out.
+  /*eslint-disable no-new-func*/
+  return new Function(params, source.slice(body[0] + 1, body[1] - 1));
+}
+
+function representJavascriptFunction(object /*, style*/) {
+  return object.toString();
+}
+
+function isFunction(object) {
+  return Object.prototype.toString.call(object) === '[object Function]';
+}
+
+module.exports = new Type('tag:yaml.org,2002:js/function', {
+  kind: 'scalar',
+  resolve: resolveJavascriptFunction,
+  construct: constructJavascriptFunction,
+  predicate: isFunction,
+  represent: representJavascriptFunction
+});
+
+},{"../../type":120}],126:[function(require,module,exports){
+'use strict';
+
+var Type = require('../../type');
+
+function resolveJavascriptRegExp(data) {
+  if (data === null) return false;
+  if (data.length === 0) return false;
+
+  var regexp = data,
+      tail   = /\/([gim]*)$/.exec(data),
+      modifiers = '';
+
+  // if regexp starts with '/' it can have modifiers and must be properly closed
+  // `/foo/gim` - modifiers tail can be maximum 3 chars
+  if (regexp[0] === '/') {
+    if (tail) modifiers = tail[1];
+
+    if (modifiers.length > 3) return false;
+    // if expression starts with /, is should be properly terminated
+    if (regexp[regexp.length - modifiers.length - 1] !== '/') return false;
+  }
+
+  return true;
+}
+
+function constructJavascriptRegExp(data) {
+  var regexp = data,
+      tail   = /\/([gim]*)$/.exec(data),
+      modifiers = '';
+
+  // `/foo/gim` - tail can be maximum 4 chars
+  if (regexp[0] === '/') {
+    if (tail) modifiers = tail[1];
+    regexp = regexp.slice(1, regexp.length - modifiers.length - 1);
+  }
+
+  return new RegExp(regexp, modifiers);
+}
+
+function representJavascriptRegExp(object /*, style*/) {
+  var result = '/' + object.source + '/';
+
+  if (object.global) result += 'g';
+  if (object.multiline) result += 'm';
+  if (object.ignoreCase) result += 'i';
+
+  return result;
+}
+
+function isRegExp(object) {
+  return Object.prototype.toString.call(object) === '[object RegExp]';
+}
+
+module.exports = new Type('tag:yaml.org,2002:js/regexp', {
+  kind: 'scalar',
+  resolve: resolveJavascriptRegExp,
+  construct: constructJavascriptRegExp,
+  predicate: isRegExp,
+  represent: representJavascriptRegExp
+});
+
+},{"../../type":120}],127:[function(require,module,exports){
+'use strict';
+
+var Type = require('../../type');
+
+function resolveJavascriptUndefined() {
+  return true;
+}
+
+function constructJavascriptUndefined() {
+  /*eslint-disable no-undefined*/
+  return undefined;
+}
+
+function representJavascriptUndefined() {
+  return '';
+}
+
+function isUndefined(object) {
+  return typeof object === 'undefined';
+}
+
+module.exports = new Type('tag:yaml.org,2002:js/undefined', {
+  kind: 'scalar',
+  resolve: resolveJavascriptUndefined,
+  construct: constructJavascriptUndefined,
+  predicate: isUndefined,
+  represent: representJavascriptUndefined
+});
+
+},{"../../type":120}],128:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+module.exports = new Type('tag:yaml.org,2002:map', {
+  kind: 'mapping',
+  construct: function (data) { return data !== null ? data : {}; }
+});
+
+},{"../type":120}],129:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+function resolveYamlMerge(data) {
+  return data === '<<' || data === null;
+}
+
+module.exports = new Type('tag:yaml.org,2002:merge', {
+  kind: 'scalar',
+  resolve: resolveYamlMerge
+});
+
+},{"../type":120}],130:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+function resolveYamlNull(data) {
+  if (data === null) return true;
+
+  var max = data.length;
+
+  return (max === 1 && data === '~') ||
+         (max === 4 && (data === 'null' || data === 'Null' || data === 'NULL'));
+}
+
+function constructYamlNull() {
+  return null;
+}
+
+function isNull(object) {
+  return object === null;
+}
+
+module.exports = new Type('tag:yaml.org,2002:null', {
+  kind: 'scalar',
+  resolve: resolveYamlNull,
+  construct: constructYamlNull,
+  predicate: isNull,
+  represent: {
+    canonical: function () { return '~';    },
+    lowercase: function () { return 'null'; },
+    uppercase: function () { return 'NULL'; },
+    camelcase: function () { return 'Null'; }
+  },
+  defaultStyle: 'lowercase'
+});
+
+},{"../type":120}],131:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+var _hasOwnProperty = Object.prototype.hasOwnProperty;
+var _toString       = Object.prototype.toString;
+
+function resolveYamlOmap(data) {
+  if (data === null) return true;
+
+  var objectKeys = [], index, length, pair, pairKey, pairHasKey,
+      object = data;
+
+  for (index = 0, length = object.length; index < length; index += 1) {
+    pair = object[index];
+    pairHasKey = false;
+
+    if (_toString.call(pair) !== '[object Object]') return false;
+
+    for (pairKey in pair) {
+      if (_hasOwnProperty.call(pair, pairKey)) {
+        if (!pairHasKey) pairHasKey = true;
+        else return false;
+      }
+    }
+
+    if (!pairHasKey) return false;
+
+    if (objectKeys.indexOf(pairKey) === -1) objectKeys.push(pairKey);
+    else return false;
+  }
+
+  return true;
+}
+
+function constructYamlOmap(data) {
+  return data !== null ? data : [];
+}
+
+module.exports = new Type('tag:yaml.org,2002:omap', {
+  kind: 'sequence',
+  resolve: resolveYamlOmap,
+  construct: constructYamlOmap
+});
+
+},{"../type":120}],132:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+var _toString = Object.prototype.toString;
+
+function resolveYamlPairs(data) {
+  if (data === null) return true;
+
+  var index, length, pair, keys, result,
+      object = data;
+
+  result = new Array(object.length);
+
+  for (index = 0, length = object.length; index < length; index += 1) {
+    pair = object[index];
+
+    if (_toString.call(pair) !== '[object Object]') return false;
+
+    keys = Object.keys(pair);
+
+    if (keys.length !== 1) return false;
+
+    result[index] = [ keys[0], pair[keys[0]] ];
+  }
+
+  return true;
+}
+
+function constructYamlPairs(data) {
+  if (data === null) return [];
+
+  var index, length, pair, keys, result,
+      object = data;
+
+  result = new Array(object.length);
+
+  for (index = 0, length = object.length; index < length; index += 1) {
+    pair = object[index];
+
+    keys = Object.keys(pair);
+
+    result[index] = [ keys[0], pair[keys[0]] ];
+  }
+
+  return result;
+}
+
+module.exports = new Type('tag:yaml.org,2002:pairs', {
+  kind: 'sequence',
+  resolve: resolveYamlPairs,
+  construct: constructYamlPairs
+});
+
+},{"../type":120}],133:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+module.exports = new Type('tag:yaml.org,2002:seq', {
+  kind: 'sequence',
+  construct: function (data) { return data !== null ? data : []; }
+});
+
+},{"../type":120}],134:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+var _hasOwnProperty = Object.prototype.hasOwnProperty;
+
+function resolveYamlSet(data) {
+  if (data === null) return true;
+
+  var key, object = data;
+
+  for (key in object) {
+    if (_hasOwnProperty.call(object, key)) {
+      if (object[key] !== null) return false;
+    }
+  }
+
+  return true;
+}
+
+function constructYamlSet(data) {
+  return data !== null ? data : {};
+}
+
+module.exports = new Type('tag:yaml.org,2002:set', {
+  kind: 'mapping',
+  resolve: resolveYamlSet,
+  construct: constructYamlSet
+});
+
+},{"../type":120}],135:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+module.exports = new Type('tag:yaml.org,2002:str', {
+  kind: 'scalar',
+  construct: function (data) { return data !== null ? data : ''; }
+});
+
+},{"../type":120}],136:[function(require,module,exports){
+'use strict';
+
+var Type = require('../type');
+
+var YAML_DATE_REGEXP = new RegExp(
+  '^([0-9][0-9][0-9][0-9])'          + // [1] year
+  '-([0-9][0-9])'                    + // [2] month
+  '-([0-9][0-9])$');                   // [3] day
+
+var YAML_TIMESTAMP_REGEXP = new RegExp(
+  '^([0-9][0-9][0-9][0-9])'          + // [1] year
+  '-([0-9][0-9]?)'                   + // [2] month
+  '-([0-9][0-9]?)'                   + // [3] day
+  '(?:[Tt]|[ \\t]+)'                 + // ...
+  '([0-9][0-9]?)'                    + // [4] hour
+  ':([0-9][0-9])'                    + // [5] minute
+  ':([0-9][0-9])'                    + // [6] second
+  '(?:\\.([0-9]*))?'                 + // [7] fraction
+  '(?:[ \\t]*(Z|([-+])([0-9][0-9]?)' + // [8] tz [9] tz_sign [10] tz_hour
+  '(?::([0-9][0-9]))?))?$');           // [11] tz_minute
+
+function resolveYamlTimestamp(data) {
+  if (data === null) return false;
+  if (YAML_DATE_REGEXP.exec(data) !== null) return true;
+  if (YAML_TIMESTAMP_REGEXP.exec(data) !== null) return true;
+  return false;
+}
+
+function constructYamlTimestamp(data) {
+  var match, year, month, day, hour, minute, second, fraction = 0,
+      delta = null, tz_hour, tz_minute, date;
+
+  match = YAML_DATE_REGEXP.exec(data);
+  if (match === null) match = YAML_TIMESTAMP_REGEXP.exec(data);
+
+  if (match === null) throw new Error('Date resolve error');
+
+  // match: [1] year [2] month [3] day
+
+  year = +(match[1]);
+  month = +(match[2]) - 1; // JS month starts with 0
+  day = +(match[3]);
+
+  if (!match[4]) { // no hour
+    return new Date(Date.UTC(year, month, day));
+  }
+
+  // match: [4] hour [5] minute [6] second [7] fraction
+
+  hour = +(match[4]);
+  minute = +(match[5]);
+  second = +(match[6]);
+
+  if (match[7]) {
+    fraction = match[7].slice(0, 3);
+    while (fraction.length < 3) { // milli-seconds
+      fraction += '0';
+    }
+    fraction = +fraction;
+  }
+
+  // match: [8] tz [9] tz_sign [10] tz_hour [11] tz_minute
+
+  if (match[9]) {
+    tz_hour = +(match[10]);
+    tz_minute = +(match[11] || 0);
+    delta = (tz_hour * 60 + tz_minute) * 60000; // delta in mili-seconds
+    if (match[9] === '-') delta = -delta;
+  }
+
+  date = new Date(Date.UTC(year, month, day, hour, minute, second, fraction));
+
+  if (delta) date.setTime(date.getTime() - delta);
+
+  return date;
+}
+
+function representYamlTimestamp(object /*, style*/) {
+  return object.toISOString();
+}
+
+module.exports = new Type('tag:yaml.org,2002:timestamp', {
+  kind: 'scalar',
+  resolve: resolveYamlTimestamp,
+  construct: constructYamlTimestamp,
+  instanceOf: Date,
+  represent: representYamlTimestamp
+});
+
+},{"../type":120}],137:[function(require,module,exports){
+'use strict';
+
+// http://www.w3.org/TR/SVG/intro.html#Definitions
+exports.elemsGroups = {
+    animation: ['animate', 'animateColor', 'animateMotion', 'animateTransform', 'set'],
+    descriptive: ['desc', 'metadata', 'title'],
+    shape: ['circle', 'ellipse', 'line', 'path', 'polygon', 'polyline', 'rect'],
+    structural: ['defs', 'g', 'svg', 'symbol', 'use'],
+    paintServer: ['solidColor', 'linearGradient', 'radialGradient', 'meshGradient', 'pattern', 'hatch'],
+    nonRendering: ['linearGradient', 'radialGradient', 'pattern', 'clipPath', 'mask', 'marker', 'symbol', 'filter', 'solidColor'],
+    container: ['a', 'defs', 'g', 'marker', 'mask', 'missing-glyph', 'pattern', 'svg', 'switch', 'symbol', 'foreignObject'],
+    textContent: ['altGlyph', 'altGlyphDef', 'altGlyphItem', 'glyph', 'glyphRef', 'textPath', 'text', 'tref', 'tspan'],
+    textContentChild: ['altGlyph', 'textPath', 'tref', 'tspan'],
+    lightSource: ['feDiffuseLighting', 'feSpecularLighting', 'feDistantLight', 'fePointLight', 'feSpotLight'],
+    filterPrimitive: ['feBlend', 'feColorMatrix', 'feComponentTransfer', 'feComposite', 'feConvolveMatrix', 'feDiffuseLighting', 'feDisplacementMap', 'feFlood', 'feGaussianBlur', 'feImage', 'feMerge', 'feMorphology', 'feOffset', 'feSpecularLighting', 'feTile', 'feTurbulence']
+};
+
+exports.pathElems = ['path', 'glyph', 'missing-glyph'];
+
+// http://www.w3.org/TR/SVG/intro.html#Definitions
+exports.attrsGroups = {
+    animationAddition: ['additive', 'accumulate'],
+    animationAttributeTarget: ['attributeType', 'attributeName'],
+    animationEvent: ['onbegin', 'onend', 'onrepeat', 'onload'],
+    animationTiming: ['begin', 'dur', 'end', 'min', 'max', 'restart', 'repeatCount', 'repeatDur', 'fill'],
+    animationValue: ['calcMode', 'values', 'keyTimes', 'keySplines', 'from', 'to', 'by'],
+    conditionalProcessing: ['requiredFeatures', 'requiredExtensions', 'systemLanguage'],
+    core: ['id', 'tabindex', 'xml:base', 'xml:lang', 'xml:space'],
+    graphicalEvent: ['onfocusin', 'onfocusout', 'onactivate', 'onclick', 'onmousedown', 'onmouseup', 'onmouseover', 'onmousemove', 'onmouseout', 'onload'],
+    presentation: [
+        'alignment-baseline',
+        'baseline-shift',
+        'buffered-rendering',
+        'clip',
+        'clip-path',
+        'clip-rule',
+        'color',
+        'color-interpolation',
+        'color-interpolation-filters',
+        'color-profile',
+        'color-rendering',
+        'cursor',
+        'direction',
+        'display',
+        'dominant-baseline',
+        'enable-background',
+        'fill',
+        'fill-opacity',
+        'fill-rule',
+        'filter',
+        'flood-color',
+        'flood-opacity',
+        'font-family',
+        'font-size',
+        'font-size-adjust',
+        'font-stretch',
+        'font-style',
+        'font-variant',
+        'font-weight',
+        'glyph-orientation-horizontal',
+        'glyph-orientation-vertical',
+        'image-rendering',
+        'kerning',
+        'letter-spacing',
+        'lighting-color',
+        'marker-end',
+        'marker-mid',
+        'marker-start',
+        'mask',
+        'opacity',
+        'overflow',
+        'pointer-events',
+        'shape-rendering',
+        'solid-color',
+        'solid-opacity',
+        'stop-color',
+        'stop-opacity',
+        'stroke',
+        'stroke-dasharray',
+        'stroke-dashoffset',
+        'stroke-linecap',
+        'stroke-linejoin',
+        'stroke-miterlimit',
+        'stroke-opacity',
+        'stroke-width',
+        'paint-order',
+        'text-anchor',
+        'text-decoration',
+        'text-overflow',
+        'white-space',
+        'text-rendering',
+        'unicode-bidi',
+        'vector-effect',
+        'viewport-fill',
+        'viewport-fill-opacity',
+        'visibility',
+        'white-space',
+        'word-spacing',
+        'writing-mode'
+    ],
+    xlink: ['xlink:href', 'xlink:show', 'xlink:actuate', 'xlink:type', 'xlink:role', 'xlink:arcrole', 'xlink:title'],
+    documentEvent: ['onunload', 'onabort', 'onerror', 'onresize', 'onscroll', 'onzoom'],
+    filterPrimitive: ['x', 'y', 'width', 'height', 'result'],
+    transferFunction: ['type', 'tableValues', 'slope', 'intercept', 'amplitude', 'exponent', 'offset']
+};
+
+exports.attrsGroupsDefaults = {
+    core: {'xml:space': 'preserve'},
+    filterPrimitive: {x: '0', y: '0', width: '100%', height: '100%'},
+    presentation: {
+        clip: 'auto',
+        'clip-path': 'none',
+        'clip-rule': 'nonzero',
+        mask: 'none',
+        opacity: '1',
+        'solid-color': '#000',
+        'solid-opacity': '1',
+        'stop-color': '#000',
+        'stop-opacity': '1',
+        'fill-opacity': '1',
+        'fill-rule': 'nonzero',
+        fill: '#000',
+        stroke: 'none',
+        'stroke-width': '1',
+        'stroke-linecap': 'butt',
+        'stroke-linejoin': 'miter',
+        'stroke-miterlimit': '4',
+        'stroke-dasharray': 'none',
+        'stroke-dashoffset': '0',
+        'stroke-opacity': '1',
+        'paint-order': 'normal',
+        'vector-effect': 'none',
+        'viewport-fill': 'none',
+        'viewport-fill-opacity': '1',
+        display: 'inline',
+        visibility: 'visible',
+        'marker-start': 'none',
+        'marker-mid': 'none',
+        'marker-end': 'none',
+        'color-interpolation': 'sRGB',
+        'color-interpolation-filters': 'linearRGB',
+        'color-rendering': 'auto',
+        'shape-rendering': 'auto',
+        'text-rendering': 'auto',
+        'image-rendering': 'auto',
+        'buffered-rendering': 'auto',
+        'font-style': 'normal',
+        'font-variant': 'normal',
+        'font-weight': 'normal',
+        'font-stretch': 'normal',
+        'font-size': 'medium',
+        'font-size-adjust': 'none',
+        kerning: 'auto',
+        'letter-spacing': 'normal',
+        'word-spacing': 'normal',
+        'text-decoration': 'none',
+        'text-anchor': 'start',
+        'text-overflow': 'clip',
+        'writing-mode': 'lr-tb',
+        'glyph-orientation-vertical': 'auto',
+        'glyph-orientation-horizontal': '0deg',
+        direction: 'ltr',
+        'unicode-bidi': 'normal',
+        'dominant-baseline': 'auto',
+        'alignment-baseline': 'baseline',
+        'baseline-shift': 'baseline'
+    },
+    transferFunction: {slope: '1', intercept: '0', amplitude: '1', exponent: '1', offset: '0'}
+};
+
+// http://www.w3.org/TR/SVG/eltindex.html
+exports.elems = {
+    a: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'target'
+        ],
+        defaults: {
+            target: '_self'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    altGlyph: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'x',
+            'y',
+            'dx',
+            'dy',
+            'glyphRef',
+            'format',
+            'rotate'
+        ]
+    },
+    altGlyphDef: {
+        attrsGroups: [
+            'core'
+        ],
+        content: [
+            'glyphRef'
+        ]
+    },
+    altGlyphItem: {
+        attrsGroups: [
+            'core'
+        ],
+        content: [
+            'glyphRef',
+            'altGlyphItem'
+        ]
+    },
+    animate: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'animationAddition',
+            'animationAttributeTarget',
+            'animationEvent',
+            'animationTiming',
+            'animationValue',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'externalResourcesRequired'
+        ],
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    animateColor: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'animationEvent',
+            'xlink',
+            'animationAttributeTarget',
+            'animationTiming',
+            'animationValue',
+            'animationAddition',
+            'presentation'
+        ],
+        attrs: [
+            'externalResourcesRequired'
+        ],
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    animateMotion: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'animationEvent',
+            'xlink',
+            'animationTiming',
+            'animationValue',
+            'animationAddition'
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'path',
+            'keyPoints',
+            'rotate',
+            'origin'
+        ],
+        defaults: {
+            'rotate': '0'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'mpath'
+        ]
+    },
+    animateTransform: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'animationEvent',
+            'xlink',
+            'animationAttributeTarget',
+            'animationTiming',
+            'animationValue',
+            'animationAddition'
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'type'
+        ],
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    circle: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'cx',
+            'cy',
+            'r'
+        ],
+        defaults: {
+            cx: '0',
+            cy: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    clipPath: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'clipPathUnits'
+        ],
+        defaults: {
+            clipPathUnits: 'userSpaceOnUse'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape'
+        ],
+        content: [
+            'text',
+            'use'
+        ]
+    },
+    'color-profile': {
+        attrsGroups: [
+            'core',
+            'xlink'
+        ],
+        attrs: [
+            'local',
+            'name',
+            'rendering-intent'
+        ],
+        defaults: {
+            name: 'sRGB',
+            'rendering-intent': 'auto'
+        },
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    cursor: {
+        attrsGroups: [
+            'core',
+            'conditionalProcessing',
+            'xlink'
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'x',
+            'y'
+        ],
+        defaults: {
+            x: '0',
+            y: '0'
+        },
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    defs: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    desc: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ]
+    },
+    ellipse: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'cx',
+            'cy',
+            'rx',
+            'ry'
+        ],
+        defaults: {
+            cx: '0',
+            cy: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    feBlend: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            // TODO: in - 'If no value is provided and this is the first filter primitive,
+            // then this filter primitive will use SourceGraphic as its input'
+            'in',
+            'in2',
+            'mode'
+        ],
+        defaults: {
+            mode: 'normal'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feColorMatrix: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'type',
+            'values'
+        ],
+        defaults: {
+            type: 'matrix'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feComponentTransfer: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in'
+        ],
+        content: [
+            'feFuncA',
+            'feFuncB',
+            'feFuncG',
+            'feFuncR'
+        ]
+    },
+    feComposite: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'in2',
+            'operator',
+            'k1',
+            'k2',
+            'k3',
+            'k4'
+        ],
+        defaults: {
+            operator: 'over',
+            k1: '0',
+            k2: '0',
+            k3: '0',
+            k4: '0'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feConvolveMatrix: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'order',
+            'kernelMatrix',
+            // TODO: divisor - 'The default value is the sum of all values in kernelMatrix,
+            // with the exception that if the sum is zero, then the divisor is set to 1'
+            'divisor',
+            'bias',
+            // TODO: targetX - 'By default, the convolution matrix is centered in X over each
+            // pixel of the input image (i.e., targetX = floor ( orderX / 2 ))'
+            'targetX',
+            'targetY',
+            'edgeMode',
+            // TODO: kernelUnitLength - 'The first number is the <dx> value. The second number
+            // is the <dy> value. If the <dy> value is not specified, it defaults to the same value as <dx>'
+            'kernelUnitLength',
+            'preserveAlpha'
+        ],
+        defaults: {
+            order: '3',
+            bias: '0',
+            edgeMode: 'duplicate',
+            preserveAlpha: 'false'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feDiffuseLighting: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'surfaceScale',
+            'diffuseConstant',
+            'kernelUnitLength'
+        ],
+        defaults: {
+            surfaceScale: '1',
+            diffuseConstant: '1'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            // TODO: 'exactly one light source element, in any order'
+            'feDistantLight',
+            'fePointLight',
+            'feSpotLight'
+        ]
+    },
+    feDisplacementMap: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'in2',
+            'scale',
+            'xChannelSelector',
+            'yChannelSelector'
+        ],
+        defaults: {
+            scale: '0',
+            xChannelSelector: 'A',
+            yChannelSelector: 'A'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feDistantLight: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'azimuth',
+            'elevation'
+        ],
+        defaults: {
+            azimuth: '0',
+            elevation: '0'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feFlood: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ],
+        content: [
+            'animate',
+            'animateColor',
+            'set'
+        ]
+    },
+    feFuncA: {
+        attrsGroups: [
+            'core',
+            'transferFunction'
+        ],
+        content: [
+            'set',
+            'animate'
+        ]
+    },
+    feFuncB: {
+        attrsGroups: [
+            'core',
+            'transferFunction'
+        ],
+        content: [
+            'set',
+            'animate'
+        ]
+    },
+    feFuncG: {
+        attrsGroups: [
+            'core',
+            'transferFunction'
+        ],
+        content: [
+            'set',
+            'animate'
+        ]
+    },
+    feFuncR: {
+        attrsGroups: [
+            'core',
+            'transferFunction'
+        ],
+        content: [
+            'set',
+            'animate'
+        ]
+    },
+    feGaussianBlur: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'stdDeviation'
+        ],
+        defaults: {
+            stdDeviation: '0'
+        },
+        content: [
+            'set',
+            'animate'
+        ]
+    },
+    feImage: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'preserveAspectRatio',
+            'xlink:href'
+        ],
+        defaults: {
+            preserveAspectRatio: 'xMidYMid meet'
+        },
+        content: [
+            'animate',
+            'animateTransform',
+            'set'
+        ]
+    },
+    feMerge: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ],
+        content: [
+            'feMergeNode'
+        ]
+    },
+    feMergeNode: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'in'
+        ],
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feMorphology: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'operator',
+            'radius'
+        ],
+        defaults: {
+            operator: 'erode',
+            radius: '0'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feOffset: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'dx',
+            'dy'
+        ],
+        defaults: {
+            dx: '0',
+            dy: '0'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    fePointLight: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'x',
+            'y',
+            'z'
+        ],
+        defaults: {
+            x: '0',
+            y: '0',
+            z: '0'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feSpecularLighting: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in',
+            'surfaceScale',
+            'specularConstant',
+            'specularExponent',
+            'kernelUnitLength'
+        ],
+        defaults: {
+            surfaceScale: '1',
+            specularConstant: '1',
+            specularExponent: '1'
+        },
+        contentGroups: [
+            'descriptive',
+            // TODO: exactly one 'light source element'
+            'lightSource'
+        ]
+    },
+    feSpotLight: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'x',
+            'y',
+            'z',
+            'pointsAtX',
+            'pointsAtY',
+            'pointsAtZ',
+            'specularExponent',
+            'limitingConeAngle'
+        ],
+        defaults: {
+            x: '0',
+            y: '0',
+            z: '0',
+            pointsAtX: '0',
+            pointsAtY: '0',
+            pointsAtZ: '0',
+            specularExponent: '1'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feTile: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'in'
+        ],
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    feTurbulence: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'filterPrimitive'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'baseFrequency',
+            'numOctaves',
+            'seed',
+            'stitchTiles',
+            'type'
+        ],
+        defaults: {
+            baseFrequency: '0',
+            numOctaves: '1',
+            seed: '0',
+            stitchTiles: 'noStitch',
+            type: 'turbulence'
+        },
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    filter: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'x',
+            'y',
+            'width',
+            'height',
+            'filterRes',
+            'filterUnits',
+            'primitiveUnits',
+            'xlink:href'
+        ],
+        defaults: {
+            primitiveUnits: 'userSpaceOnUse',
+            x: '-10%',
+            y: '-10%',
+            width: '120%',
+            height: '120%'
+        },
+        contentGroups: [
+            'descriptive',
+            'filterPrimitive'
+        ],
+        content: [
+            'animate',
+            'set'
+        ]
+    },
+    font: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'horiz-origin-x',
+            'horiz-origin-y',
+            'horiz-adv-x',
+            'vert-origin-x',
+            'vert-origin-y',
+            'vert-adv-y'
+        ],
+        defaults: {
+            'horiz-origin-x': '0',
+            'horiz-origin-y': '0'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'font-face',
+            'glyph',
+            'hkern',
+            'missing-glyph',
+            'vkern'
+        ]
+    },
+    'font-face': {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'font-family',
+            'font-style',
+            'font-variant',
+            'font-weight',
+            'font-stretch',
+            'font-size',
+            'unicode-range',
+            'units-per-em',
+            'panose-1',
+            'stemv',
+            'stemh',
+            'slope',
+            'cap-height',
+            'x-height',
+            'accent-height',
+            'ascent',
+            'descent',
+            'widths',
+            'bbox',
+            'ideographic',
+            'alphabetic',
+            'mathematical',
+            'hanging',
+            'v-ideographic',
+            'v-alphabetic',
+            'v-mathematical',
+            'v-hanging',
+            'underline-position',
+            'underline-thickness',
+            'strikethrough-position',
+            'strikethrough-thickness',
+            'overline-position',
+            'overline-thickness'
+        ],
+        defaults: {
+            'font-style': 'all',
+            'font-variant': 'normal',
+            'font-weight': 'all',
+            'font-stretch': 'normal',
+            'unicode-range': 'U+0-10FFFF',
+            'units-per-em': '1000',
+            'panose-1': '0 0 0 0 0 0 0 0 0 0',
+            'slope': '0'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            // TODO: "at most one 'font-face-src' element"
+            'font-face-src'
+        ]
+    },
+    // TODO: empty content
+    'font-face-format': {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'string'
+        ]
+    },
+    'font-face-name': {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'name'
+        ]
+    },
+    'font-face-src': {
+        attrsGroups: [
+            'core'
+        ],
+        content: [
+            'font-face-name',
+            'font-face-uri'
+        ]
+    },
+    'font-face-uri': {
+        attrsGroups: [
+            'core',
+            'xlink'
+        ],
+        attrs: [
+            'xlink:href'
+        ],
+        content: [
+            'font-face-format'
+        ]
+    },
+    foreignObject: {
+        attrsGroups: [
+            'core',
+            'conditionalProcessing',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'x',
+            'y',
+            'width',
+            'height'
+        ],
+        defaults: {
+            x: 0,
+            y: 0
+        }
+    },
+    g: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    glyph: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'd',
+            'horiz-adv-x',
+            'vert-origin-x',
+            'vert-origin-y',
+            'vert-adv-y',
+            'unicode',
+            'glyph-name',
+            'orientation',
+            'arabic-form',
+            'lang'
+        ],
+        defaults: {
+            'arabic-form': 'initial'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ],
+    },
+    glyphRef: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'd',
+            'horiz-adv-x',
+            'vert-origin-x',
+            'vert-origin-y',
+            'vert-adv-y'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    hatch: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'x',
+            'y',
+            'pitch',
+            'rotate',
+            'hatchUnits',
+            'hatchContentUnits',
+            'transform'
+        ],
+        defaults: {
+            hatchUnits: 'objectBoundingBox',
+            hatchContentUnits: 'userSpaceOnUse',
+            x: '0',
+            y: '0',
+            pitch: '0',
+            rotate: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ],
+        content: [
+            'hatchPath'
+        ]
+    },
+    hatchPath: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'd',
+            'offset'
+        ],
+        defaults: {
+            offset: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    hkern: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'u1',
+            'g1',
+            'u2',
+            'g2',
+            'k'
+        ]
+    },
+    image: {
+        attrsGroups: [
+            'core',
+            'conditionalProcessing',
+            'graphicalEvent',
+            'xlink',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'preserveAspectRatio',
+            'transform',
+            'x',
+            'y',
+            'width',
+            'height',
+            'xlink:href'
+        ],
+        defaults: {
+            x: '0',
+            y: '0',
+            preserveAspectRatio: 'xMidYMid meet'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    line: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'x1',
+            'y1',
+            'x2',
+            'y2'
+        ],
+        defaults: {
+            x1: '0',
+            y1: '0',
+            x2: '0',
+            y2: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    linearGradient: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'x1',
+            'y1',
+            'x2',
+            'y2',
+            'gradientUnits',
+            'gradientTransform',
+            'spreadMethod',
+            'xlink:href'
+        ],
+        defaults: {
+            x1: '0',
+            y1: '0',
+            x2: '100%',
+            y2: '0',
+            spreadMethod: 'pad'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'animate',
+            'animateTransform',
+            'set',
+            'stop'
+        ]
+    },
+    marker: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'viewBox',
+            'preserveAspectRatio',
+            'refX',
+            'refY',
+            'markerUnits',
+            'markerWidth',
+            'markerHeight',
+            'orient'
+        ],
+        defaults: {
+            markerUnits: 'strokeWidth',
+            refX: '0',
+            refY: '0',
+            markerWidth: '3',
+            markerHeight: '3'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    mask: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'x',
+            'y',
+            'width',
+            'height',
+            'maskUnits',
+            'maskContentUnits'
+        ],
+        defaults: {
+            maskUnits: 'objectBoundingBox',
+            maskContentUnits: 'userSpaceOnUse',
+            x: '-10%',
+            y: '-10%',
+            width: '120%',
+            height: '120%'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    metadata: {
+        attrsGroups: [
+            'core'
+        ]
+    },
+    'missing-glyph': {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'd',
+            'horiz-adv-x',
+            'vert-origin-x',
+            'vert-origin-y',
+            'vert-adv-y'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    mpath: {
+        attrsGroups: [
+            'core',
+            'xlink'
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'xlink:href'
+        ],
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    path: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'd',
+            'pathLength'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    pattern: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'viewBox',
+            'preserveAspectRatio',
+            'x',
+            'y',
+            'width',
+            'height',
+            'patternUnits',
+            'patternContentUnits',
+            'patternTransform',
+            'xlink:href'
+        ],
+        defaults: {
+            patternUnits: 'objectBoundingBox',
+            patternContentUnits: 'userSpaceOnUse',
+            x: '0',
+            y: '0',
+            width: '0',
+            height: '0',
+            preserveAspectRatio: 'xMidYMid meet'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'paintServer',
+            'shape',
+            'structural'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    polygon: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'points'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    polyline: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'points'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    radialGradient: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'cx',
+            'cy',
+            'r',
+            'fx',
+            'fy',
+            'fr',
+            'gradientUnits',
+            'gradientTransform',
+            'spreadMethod',
+            'xlink:href'
+        ],
+        defaults: {
+            gradientUnits: 'objectBoundingBox',
+            cx: '50%',
+            cy: '50%',
+            r: '50%'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'animate',
+            'animateTransform',
+            'set',
+            'stop'
+        ]
+    },
+    meshGradient: {
+        attrsGroups: [
+            'core',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'x',
+            'y',
+            'gradientUnits',
+            'transform'
+        ],
+        contentGroups: [
+            'descriptive',
+            'paintServer',
+            'animation',
+        ],
+        content: [
+            'meshRow'
+        ]
+    },
+    meshRow: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ],
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'meshPatch'
+        ]
+    },
+    meshPatch: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ],
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'stop'
+        ]
+    },
+    rect: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'x',
+            'y',
+            'width',
+            'height',
+            'rx',
+            'ry'
+        ],
+        defaults: {
+            x: '0',
+            y: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    script: {
+        attrsGroups: [
+            'core',
+            'xlink'
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'type',
+            'xlink:href'
+        ]
+    },
+    set: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'animation',
+            'xlink',
+            'animationAttributeTarget',
+            'animationTiming',
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'to'
+        ],
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    solidColor: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ],
+        contentGroups: [
+            'paintServer'
+        ]
+    },
+    stop: {
+        attrsGroups: [
+            'core',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'offset',
+            'path'
+        ],
+        content: [
+            'animate',
+            'animateColor',
+            'set'
+        ]
+    },
+    style: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'type',
+            'media',
+            'title'
+        ],
+        defaults: {
+            type: 'text/css'
+        }
+    },
+    svg: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'documentEvent',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'x',
+            'y',
+            'width',
+            'height',
+            'viewBox',
+            'preserveAspectRatio',
+            'zoomAndPan',
+            'version',
+            'baseProfile',
+            'contentScriptType',
+            'contentStyleType'
+        ],
+        defaults: {
+            x: '0',
+            y: '0',
+            width: '100%',
+            height: '100%',
+            preserveAspectRatio: 'xMidYMid meet',
+            zoomAndPan: 'magnify',
+            version: '1.1',
+            baseProfile: 'none',
+            contentScriptType: 'application/ecmascript',
+            contentStyleType: 'text/css'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    switch: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform'
+        ],
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape'
+        ],
+        content: [
+            'a',
+            'foreignObject',
+            'g',
+            'image',
+            'svg',
+            'switch',
+            'text',
+            'use'
+        ]
+    },
+    symbol: {
+        attrsGroups: [
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'preserveAspectRatio',
+            'viewBox',
+            'refX',
+            'refY'
+        ],
+        defaults: {
+            refX: 0,
+            refY: 0
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'shape',
+            'structural',
+            'paintServer'
+        ],
+        content: [
+            'a',
+            'altGlyphDef',
+            'clipPath',
+            'color-profile',
+            'cursor',
+            'filter',
+            'font',
+            'font-face',
+            'foreignObject',
+            'image',
+            'marker',
+            'mask',
+            'pattern',
+            'script',
+            'style',
+            'switch',
+            'text',
+            'view'
+        ]
+    },
+    text: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'lengthAdjust',
+            'x',
+            'y',
+            'dx',
+            'dy',
+            'rotate',
+            'textLength'
+        ],
+        defaults: {
+            x: '0',
+            y: '0',
+            lengthAdjust: 'spacing'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive',
+            'textContentChild'
+        ],
+        content: [
+            'a'
+        ]
+    },
+    textPath: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'xlink:href',
+            'startOffset',
+            'method',
+            'spacing',
+            'd'
+        ],
+        defaults: {
+            startOffset: '0',
+            method: 'align',
+            spacing: 'exact'
+        },
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'a',
+            'altGlyph',
+            'animate',
+            'animateColor',
+            'set',
+            'tref',
+            'tspan'
+        ]
+    },
+    title: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'class',
+            'style'
+        ]
+    },
+    tref: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'xlink:href'
+        ],
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'animate',
+            'animateColor',
+            'set'
+        ]
+    },
+    tspan: {
+        attrsGroups: [
+            'conditionalProcessing',
+            'core',
+            'graphicalEvent',
+            'presentation'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'x',
+            'y',
+            'dx',
+            'dy',
+            'rotate',
+            'textLength',
+            'lengthAdjust'
+        ],
+        contentGroups: [
+            'descriptive'
+        ],
+        content: [
+            'a',
+            'altGlyph',
+            'animate',
+            'animateColor',
+            'set',
+            'tref',
+            'tspan'
+        ]
+    },
+    use: {
+        attrsGroups: [
+            'core',
+            'conditionalProcessing',
+            'graphicalEvent',
+            'presentation',
+            'xlink'
+        ],
+        attrs: [
+            'class',
+            'style',
+            'externalResourcesRequired',
+            'transform',
+            'x',
+            'y',
+            'width',
+            'height',
+            'xlink:href'
+        ],
+        defaults: {
+            x: '0',
+            y: '0'
+        },
+        contentGroups: [
+            'animation',
+            'descriptive'
+        ]
+    },
+    view: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'externalResourcesRequired',
+            'viewBox',
+            'preserveAspectRatio',
+            'zoomAndPan',
+            'viewTarget'
+        ],
+        contentGroups: [
+            'descriptive'
+        ]
+    },
+    vkern: {
+        attrsGroups: [
+            'core'
+        ],
+        attrs: [
+            'u1',
+            'g1',
+            'u2',
+            'g2',
+            'k'
+        ]
+    }
+};
+
+// http://wiki.inkscape.org/wiki/index.php/Inkscape-specific_XML_attributes
+exports.editorNamespaces = [
+    'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd',
+    'http://inkscape.sourceforge.net/DTD/sodipodi-0.dtd',
+    'http://www.inkscape.org/namespaces/inkscape',
+    'http://www.bohemiancoding.com/sketch/ns',
+    'http://ns.adobe.com/AdobeIllustrator/10.0/',
+    'http://ns.adobe.com/Graphs/1.0/',
+    'http://ns.adobe.com/AdobeSVGViewerExtensions/3.0/',
+    'http://ns.adobe.com/Variables/1.0/',
+    'http://ns.adobe.com/SaveForWeb/1.0/',
+    'http://ns.adobe.com/Extensibility/1.0/',
+    'http://ns.adobe.com/Flows/1.0/',
+    'http://ns.adobe.com/ImageReplacement/1.0/',
+    'http://ns.adobe.com/GenericCustomNamespace/1.0/',
+    'http://ns.adobe.com/XPath/1.0/'
+];
+
+// http://www.w3.org/TR/SVG/linking.html#processingIRI
+exports.referencesProps = [
+    'clip-path',
+    'color-profile',
+    'fill',
+    'filter',
+    'marker-start',
+    'marker-mid',
+    'marker-end',
+    'mask',
+    'stroke',
+    'style'
+];
+
+// http://www.w3.org/TR/SVG/propidx.html
+exports.inheritableAttrs = [
+    'clip-rule',
+    'color',
+    'color-interpolation',
+    'color-interpolation-filters',
+    'color-profile',
+    'color-rendering',
+    'cursor',
+    'direction',
+    'fill',
+    'fill-opacity',
+    'fill-rule',
+    'font',
+    'font-family',
+    'font-size',
+    'font-size-adjust',
+    'font-stretch',
+    'font-style',
+    'font-variant',
+    'font-weight',
+    'glyph-orientation-horizontal',
+    'glyph-orientation-vertical',
+    'image-rendering',
+    'kerning',
+    'letter-spacing',
+    'marker',
+    'marker-end',
+    'marker-mid',
+    'marker-start',
+    'pointer-events',
+    'shape-rendering',
+    'stroke',
+    'stroke-dasharray',
+    'stroke-dashoffset',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'stroke-miterlimit',
+    'stroke-opacity',
+    'stroke-width',
+    'text-anchor',
+    'text-rendering',
+    'transform',
+    'visibility',
+    'white-space',
+    'word-spacing',
+    'writing-mode'
+];
+
+// http://www.w3.org/TR/SVG/single-page.html#types-ColorKeywords
+exports.colorsNames = {
+    'aliceblue': '#f0f8ff',
+    'antiquewhite': '#faebd7',
+    'aqua': '#0ff',
+    'aquamarine': '#7fffd4',
+    'azure': '#f0ffff',
+    'beige': '#f5f5dc',
+    'bisque': '#ffe4c4',
+    'black': '#000',
+    'blanchedalmond': '#ffebcd',
+    'blue': '#00f',
+    'blueviolet': '#8a2be2',
+    'brown': '#a52a2a',
+    'burlywood': '#deb887',
+    'cadetblue': '#5f9ea0',
+    'chartreuse': '#7fff00',
+    'chocolate': '#d2691e',
+    'coral': '#ff7f50',
+    'cornflowerblue': '#6495ed',
+    'cornsilk': '#fff8dc',
+    'crimson': '#dc143c',
+    'cyan': '#0ff',
+    'darkblue': '#00008b',
+    'darkcyan': '#008b8b',
+    'darkgoldenrod': '#b8860b',
+    'darkgray': '#a9a9a9',
+    'darkgreen': '#006400',
+    'darkkhaki': '#bdb76b',
+    'darkmagenta': '#8b008b',
+    'darkolivegreen': '#556b2f',
+    'darkorange': '#ff8c00',
+    'darkorchid': '#9932cc',
+    'darkred': '#8b0000',
+    'darksalmon': '#e9967a',
+    'darkseagreen': '#8fbc8f',
+    'darkslateblue': '#483d8b',
+    'darkslategray': '#2f4f4f',
+    'darkturquoise': '#00ced1',
+    'darkviolet': '#9400d3',
+    'deeppink': '#ff1493',
+    'deepskyblue': '#00bfff',
+    'dimgray': '#696969',
+    'dodgerblue': '#1e90ff',
+    'firebrick': '#b22222',
+    'floralwhite': '#fffaf0',
+    'forestgreen': '#228b22',
+    'fuchsia': '#f0f',
+    'gainsboro': '#dcdcdc',
+    'ghostwhite': '#f8f8ff',
+    'gold': '#ffd700',
+    'goldenrod': '#daa520',
+    'gray': '#808080',
+    'green': '#008000',
+    'greenyellow': '#adff2f',
+    'honeydew': '#f0fff0',
+    'hotpink': '#ff69b4',
+    'indianred': '#cd5c5c',
+    'indigo': '#4b0082',
+    'ivory': '#fffff0',
+    'khaki': '#f0e68c',
+    'lavender': '#e6e6fa',
+    'lavenderblush': '#fff0f5',
+    'lawngreen': '#7cfc00',
+    'lemonchiffon': '#fffacd',
+    'lightblue': '#add8e6',
+    'lightcoral': '#f08080',
+    'lightcyan': '#e0ffff',
+    'lightgoldenrodyellow': '#fafad2',
+    'lightgreen': '#90ee90',
+    'lightgrey': '#d3d3d3',
+    'lightpink': '#ffb6c1',
+    'lightsalmon': '#ffa07a',
+    'lightseagreen': '#20b2aa',
+    'lightskyblue': '#87cefa',
+    'lightslategray': '#789',
+    'lightsteelblue': '#b0c4de',
+    'lightyellow': '#ffffe0',
+    'lime': '#0f0',
+    'limegreen': '#32cd32',
+    'linen': '#faf0e6',
+    'magenta': '#f0f',
+    'maroon': '#800000',
+    'mediumaquamarine': '#66cdaa',
+    'mediumblue': '#0000cd',
+    'mediumorchid': '#ba55d3',
+    'mediumpurple': '#9370db',
+    'mediumseagreen': '#3cb371',
+    'mediumslateblue': '#7b68ee',
+    'mediumspringgreen': '#00fa9a',
+    'mediumturquoise': '#48d1cc',
+    'mediumvioletred': '#c71585',
+    'midnightblue': '#191970',
+    'mintcream': '#f5fffa',
+    'mistyrose': '#ffe4e1',
+    'moccasin': '#ffe4b5',
+    'navajowhite': '#ffdead',
+    'navy': '#000080',
+    'oldlace': '#fdf5e6',
+    'olive': '#808000',
+    'olivedrab': '#6b8e23',
+    'orange': '#ffa500',
+    'orangered': '#ff4500',
+    'orchid': '#da70d6',
+    'palegoldenrod': '#eee8aa',
+    'palegreen': '#98fb98',
+    'paleturquoise': '#afeeee',
+    'palevioletred': '#db7093',
+    'papayawhip': '#ffefd5',
+    'peachpuff': '#ffdab9',
+    'peru': '#cd853f',
+    'pink': '#ffc0cb',
+    'plum': '#dda0dd',
+    'powderblue': '#b0e0e6',
+    'purple': '#800080',
+    'red': '#f00',
+    'rosybrown': '#bc8f8f',
+    'royalblue': '#4169e1',
+    'saddlebrown': '#8b4513',
+    'salmon': '#fa8072',
+    'sandybrown': '#f4a460',
+    'seagreen': '#2e8b57',
+    'seashell': '#fff5ee',
+    'sienna': '#a0522d',
+    'silver': '#c0c0c0',
+    'skyblue': '#87ceeb',
+    'slateblue': '#6a5acd',
+    'slategray': '#708090',
+    'snow': '#fffafa',
+    'springgreen': '#00ff7f',
+    'steelblue': '#4682b4',
+    'tan': '#d2b48c',
+    'teal': '#008080',
+    'thistle': '#d8bfd8',
+    'tomato': '#ff6347',
+    'turquoise': '#40e0d0',
+    'violet': '#ee82ee',
+    'wheat': '#f5deb3',
+    'white': '#fff',
+    'whitesmoke': '#f5f5f5',
+    'yellow': '#ff0',
+    'yellowgreen': '#9acd32'
+};
+
+exports.colorsShortNames = {
+  '#f0ffff': 'azure',
+  '#f5f5dc': 'beige',
+  '#ffe4c4': 'bisque',
+  '#a52a2a': 'brown',
+  '#ff7f50': 'coral',
+  '#ffd700': 'gold',
+  '#808080': 'gray',
+  '#008000': 'green',
+  '#4b0082': 'indigo',
+  '#fffff0': 'ivory',
+  '#f0e68c': 'khaki',
+  '#faf0e6': 'linen',
+  '#800000': 'maroon',
+  '#000080': 'navy',
+  '#808000': 'olive',
+  '#ffa500': 'orange',
+  '#da70d6': 'orchid',
+  '#cd853f': 'peru',
+  '#ffc0cb': 'pink',
+  '#dda0dd': 'plum',
+  '#800080': 'purple',
+  '#f00': 'red',
+  '#fa8072': 'salmon',
+  '#a0522d': 'sienna',
+  '#c0c0c0': 'silver',
+  '#fffafa': 'snow',
+  '#d2b48c': 'tan',
+  '#008080': 'teal',
+  '#ff6347': 'tomato',
+  '#ee82ee': 'violet',
+  '#f5deb3': 'wheat'
+};
+
+// http://www.w3.org/TR/SVG/single-page.html#types-DataTypeColor
+exports.colorsProps = [
+    'color', 'fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color'
+];
+
+},{}],138:[function(require,module,exports){
+/* global a2c */
+'use strict';
+
+var regPathInstructions = /([MmLlHhVvCcSsQqTtAaZz])\s*/,
+    regPathData = /[-+]?(?:\d*\.\d+|\d+\.?)([eE][-+]?\d+)?/g,
+    regNumericValues = /[-+]?(\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/,
+    transform2js = require('./_transforms').transform2js,
+    transformsMultiply = require('./_transforms').transformsMultiply,
+    transformArc = require('./_transforms').transformArc,
+    collections = require('./_collections.js'),
+    referencesProps = collections.referencesProps,
+    defaultStrokeWidth = collections.attrsGroupsDefaults.presentation['stroke-width'],
+    cleanupOutData = require('../lib/svgo/tools').cleanupOutData,
+    removeLeadingZero = require('../lib/svgo/tools').removeLeadingZero,
+    prevCtrlPoint;
+
+/**
+ * Convert path string to JS representation.
+ *
+ * @param {String} pathString input string
+ * @param {Object} params plugin params
+ * @return {Array} output array
+ */
+exports.path2js = function(path) {
+    if (path.pathJS) return path.pathJS;
+
+    var paramsLength = { // Number of parameters of every path command
+            H: 1, V: 1, M: 2, L: 2, T: 2, Q: 4, S: 4, C: 6, A: 7,
+            h: 1, v: 1, m: 2, l: 2, t: 2, q: 4, s: 4, c: 6, a: 7
+        },
+        pathData = [],   // JS representation of the path data
+        instruction, // current instruction context
+        startMoveto = false;
+
+    // splitting path string into array like ['M', '10 50', 'L', '20 30']
+    path.attr('d').value.split(regPathInstructions).forEach(function(data) {
+        if (!data) return;
+        if (!startMoveto) {
+            if (data == 'M' || data == 'm') {
+                startMoveto = true;
+            } else return;
+        }
+
+        // instruction item
+        if (regPathInstructions.test(data)) {
+            instruction = data;
+
+            // z - instruction w/o data
+            if (instruction == 'Z' || instruction == 'z') {
+                pathData.push({
+                    instruction: 'z'
+                });
+            }
+        // data item
+        } else {
+            data = data.match(regPathData);
+            if (!data) return;
+
+            data = data.map(Number);
+
+            // Subsequent moveto pairs of coordinates are threated as implicit lineto commands
+            // http://www.w3.org/TR/SVG/paths.html#PathDataMovetoCommands
+            if (instruction == 'M' || instruction == 'm') {
+                pathData.push({
+                    instruction: pathData.length == 0 ? 'M' : instruction,
+                    data: data.splice(0, 2)
+                });
+                instruction = instruction == 'M' ? 'L' : 'l';
+            }
+
+            for (var pair = paramsLength[instruction]; data.length;) {
+                pathData.push({
+                    instruction: instruction,
+                    data: data.splice(0, pair)
+                });
+            }
+        }
+    });
+
+    // First moveto is actually absolute. Subsequent coordinates were separated above.
+    if (pathData.length && pathData[0].instruction == 'm') {
+        pathData[0].instruction = 'M';
+    }
+    path.pathJS = pathData;
+
+    return pathData;
+};
+
+/**
+ * Convert relative Path data to absolute.
+ *
+ * @param {Array} data input data
+ * @return {Array} output data
+ */
+var relative2absolute = exports.relative2absolute = function(data) {
+    var currentPoint = [0, 0],
+        subpathPoint = [0, 0],
+        i;
+
+    data = data.map(function(item) {
+
+        var instruction = item.instruction,
+            itemData = item.data && item.data.slice();
+
+        if (instruction == 'M') {
+
+            set(currentPoint, itemData);
+            set(subpathPoint, itemData);
+
+        } else if ('mlcsqt'.indexOf(instruction) > -1) {
+
+            for (i = 0; i < itemData.length; i++) {
+                itemData[i] += currentPoint[i % 2];
+            }
+            set(currentPoint, itemData);
+
+            if (instruction == 'm') {
+                set(subpathPoint, itemData);
+            }
+
+        } else if (instruction == 'a') {
+
+            itemData[5] += currentPoint[0];
+            itemData[6] += currentPoint[1];
+            set(currentPoint, itemData);
+
+        } else if (instruction == 'h') {
+
+            itemData[0] += currentPoint[0];
+            currentPoint[0] = itemData[0];
+
+        } else if (instruction == 'v') {
+
+            itemData[0] += currentPoint[1];
+            currentPoint[1] = itemData[0];
+
+        } else if ('MZLCSQTA'.indexOf(instruction) > -1) {
+
+            set(currentPoint, itemData);
+
+        } else if (instruction == 'H') {
+
+            currentPoint[0] = itemData[0];
+
+        } else if (instruction == 'V') {
+
+            currentPoint[1] = itemData[0];
+
+        } else if (instruction == 'z') {
+
+            set(currentPoint, subpathPoint);
+
+        }
+
+        return instruction == 'z' ?
+            { instruction: 'z' } :
+            {
+                instruction: instruction.toUpperCase(),
+                data: itemData
+            };
+
+    });
+
+    return data;
+};
+
+/**
+ * Apply transformation(s) to the Path data.
+ *
+ * @param {Object} elem current element
+ * @param {Array} path input path data
+ * @param {Object} params whether to apply transforms to stroked lines and transform precision (used for stroke width)
+ * @return {Array} output path data
+ */
+exports.applyTransforms = function(elem, path, params) {
+    // if there are no 'stroke' attr and references to other objects such as
+    // gradiends or clip-path which are also subjects to transform.
+    if (!elem.hasAttr('transform') || !elem.attr('transform').value ||
+        elem.someAttr(function(attr) {
+            return ~referencesProps.indexOf(attr.name) && ~attr.value.indexOf('url(');
+        }))
+        return path;
+
+    var matrix = transformsMultiply(transform2js(elem.attr('transform').value)),
+        stroke = elem.computedAttr('stroke'),
+        id = elem.computedAttr('id'),
+        transformPrecision = params.transformPrecision,
+        newPoint, scale;
+
+    if (stroke && stroke != 'none') {
+        if (!params.applyTransformsStroked ||
+            (matrix.data[0] != matrix.data[3] || matrix.data[1] != -matrix.data[2]) &&
+            (matrix.data[0] != -matrix.data[3] || matrix.data[1] != matrix.data[2]))
+            return path;
+
+        // "stroke-width" should be inside the part with ID, otherwise it can be overrided in <use>
+        if (id) {
+            var idElem = elem,
+                hasStrokeWidth = false;
+
+            do {
+                if (idElem.hasAttr('stroke-width')) hasStrokeWidth = true;
+            } while (!idElem.hasAttr('id', id) && !hasStrokeWidth && (idElem = idElem.parentNode));
+
+            if (!hasStrokeWidth) return path;
+        }
+
+        scale = +Math.sqrt(matrix.data[0] * matrix.data[0] + matrix.data[1] * matrix.data[1]).toFixed(transformPrecision);
+
+        if (scale !== 1) {
+            var strokeWidth = elem.computedAttr('stroke-width') || defaultStrokeWidth;
+
+            if (elem.hasAttr('stroke-width')) {
+                elem.attrs['stroke-width'].value = elem.attrs['stroke-width'].value.trim()
+                    .replace(regNumericValues, function(num) { return removeLeadingZero(num * scale) });
+            } else {
+                elem.addAttr({
+                    name: 'stroke-width',
+                    prefix: '',
+                    local: 'stroke-width',
+                    value: strokeWidth.replace(regNumericValues, function(num) { return removeLeadingZero(num * scale) })
+                });
+            }
+        }
+    } else if (id) { // Stroke and stroke-width can be redefined with <use>
+        return path;
+    }
+
+    path.forEach(function(pathItem) {
+
+        if (pathItem.data) {
+
+            // h -> l
+            if (pathItem.instruction === 'h') {
+
+                pathItem.instruction = 'l';
+                pathItem.data[1] = 0;
+
+            // v -> l
+            } else if (pathItem.instruction === 'v') {
+
+                pathItem.instruction = 'l';
+                pathItem.data[1] = pathItem.data[0];
+                pathItem.data[0] = 0;
+
+            }
+
+            // if there is a translate() transform
+            if (pathItem.instruction === 'M' &&
+                (matrix.data[4] !== 0 ||
+                matrix.data[5] !== 0)
+            ) {
+
+                // then apply it only to the first absoluted M
+                newPoint = transformPoint(matrix.data, pathItem.data[0], pathItem.data[1]);
+                set(pathItem.data, newPoint);
+                set(pathItem.coords, newPoint);
+
+                // clear translate() data from transform matrix
+                matrix.data[4] = 0;
+                matrix.data[5] = 0;
+
+            } else {
+
+                if (pathItem.instruction == 'a') {
+
+                    transformArc(pathItem.data, matrix.data);
+
+                    // reduce number of digits in rotation angle
+                    if (Math.abs(pathItem.data[2]) > 80) {
+                        var a = pathItem.data[0],
+                            rotation = pathItem.data[2];
+                        pathItem.data[0] = pathItem.data[1];
+                        pathItem.data[1] = a;
+                        pathItem.data[2] = rotation + (rotation > 0 ? -90 : 90);
+                    }
+
+                    newPoint = transformPoint(matrix.data, pathItem.data[5], pathItem.data[6]);
+                    pathItem.data[5] = newPoint[0];
+                    pathItem.data[6] = newPoint[1];
+
+                } else {
+
+                    for (var i = 0; i < pathItem.data.length; i += 2) {
+                        newPoint = transformPoint(matrix.data, pathItem.data[i], pathItem.data[i + 1]);
+                        pathItem.data[i] = newPoint[0];
+                        pathItem.data[i + 1] = newPoint[1];
+                    }
+                }
+
+                pathItem.coords[0] = pathItem.base[0] + pathItem.data[pathItem.data.length - 2];
+                pathItem.coords[1] = pathItem.base[1] + pathItem.data[pathItem.data.length - 1];
+
+            }
+
+        }
+
+    });
+
+    // remove transform attr
+    elem.removeAttr('transform');
+
+    return path;
+};
+
+/**
+ * Apply transform 3x3 matrix to x-y point.
+ *
+ * @param {Array} matrix transform 3x3 matrix
+ * @param {Array} point x-y point
+ * @return {Array} point with new coordinates
+ */
+function transformPoint(matrix, x, y) {
+
+    return [
+        matrix[0] * x + matrix[2] * y + matrix[4],
+        matrix[1] * x + matrix[3] * y + matrix[5]
+    ];
+
+}
+
+/**
+ * Compute Cubic Bézie bounding box.
+ *
+ * @see http://processingjs.nihongoresources.com/bezierinfo/
+ *
+ * @param {Float} xa
+ * @param {Float} ya
+ * @param {Float} xb
+ * @param {Float} yb
+ * @param {Float} xc
+ * @param {Float} yc
+ * @param {Float} xd
+ * @param {Float} yd
+ *
+ * @return {Object}
+ */
+exports.computeCubicBoundingBox = function(xa, ya, xb, yb, xc, yc, xd, yd) {
+
+    var minx = Number.POSITIVE_INFINITY,
+        miny = Number.POSITIVE_INFINITY,
+        maxx = Number.NEGATIVE_INFINITY,
+        maxy = Number.NEGATIVE_INFINITY,
+        ts,
+        t,
+        x,
+        y,
+        i;
+
+    // X
+    if (xa < minx) { minx = xa; }
+    if (xa > maxx) { maxx = xa; }
+    if (xd < minx) { minx= xd; }
+    if (xd > maxx) { maxx = xd; }
+
+    ts = computeCubicFirstDerivativeRoots(xa, xb, xc, xd);
+
+    for (i = 0; i < ts.length; i++) {
+
+        t = ts[i];
+
+        if (t >= 0 && t <= 1) {
+            x = computeCubicBaseValue(t, xa, xb, xc, xd);
+            // y = computeCubicBaseValue(t, ya, yb, yc, yd);
+
+            if (x < minx) { minx = x; }
+            if (x > maxx) { maxx = x; }
+        }
+
+    }
+
+    // Y
+    if (ya < miny) { miny = ya; }
+    if (ya > maxy) { maxy = ya; }
+    if (yd < miny) { miny = yd; }
+    if (yd > maxy) { maxy = yd; }
+
+    ts = computeCubicFirstDerivativeRoots(ya, yb, yc, yd);
+
+    for (i = 0; i < ts.length; i++) {
+
+        t = ts[i];
+
+        if (t >= 0 && t <= 1) {
+            // x = computeCubicBaseValue(t, xa, xb, xc, xd);
+            y = computeCubicBaseValue(t, ya, yb, yc, yd);
+
+            if (y < miny) { miny = y; }
+            if (y > maxy) { maxy = y; }
+        }
+
+    }
+
+    return {
+        minx: minx,
+        miny: miny,
+        maxx: maxx,
+        maxy: maxy
+    };
+
+};
+
+// compute the value for the cubic bezier function at time=t
+function computeCubicBaseValue(t, a, b, c, d) {
+
+    var mt = 1 - t;
+
+    return mt * mt * mt * a + 3 * mt * mt * t * b + 3 * mt * t * t * c + t * t * t * d;
+
+}
+
+// compute the value for the first derivative of the cubic bezier function at time=t
+function computeCubicFirstDerivativeRoots(a, b, c, d) {
+
+    var result = [-1, -1],
+        tl = -a + 2 * b - c,
+        tr = -Math.sqrt(-a * (c - d) + b * b - b * (c + d) + c * c),
+        dn = -a + 3 * b - 3 * c + d;
+
+    if (dn !== 0) {
+        result[0] = (tl + tr) / dn;
+        result[1] = (tl - tr) / dn;
+    }
+
+    return result;
+
+}
+
+/**
+ * Compute Quadratic Bézier bounding box.
+ *
+ * @see http://processingjs.nihongoresources.com/bezierinfo/
+ *
+ * @param {Float} xa
+ * @param {Float} ya
+ * @param {Float} xb
+ * @param {Float} yb
+ * @param {Float} xc
+ * @param {Float} yc
+ *
+ * @return {Object}
+ */
+exports.computeQuadraticBoundingBox = function(xa, ya, xb, yb, xc, yc) {
+
+    var minx = Number.POSITIVE_INFINITY,
+        miny = Number.POSITIVE_INFINITY,
+        maxx = Number.NEGATIVE_INFINITY,
+        maxy = Number.NEGATIVE_INFINITY,
+        t,
+        x,
+        y;
+
+    // X
+    if (xa < minx) { minx = xa; }
+    if (xa > maxx) { maxx = xa; }
+    if (xc < minx) { minx = xc; }
+    if (xc > maxx) { maxx = xc; }
+
+    t = computeQuadraticFirstDerivativeRoot(xa, xb, xc);
+
+    if (t >= 0 && t <= 1) {
+        x = computeQuadraticBaseValue(t, xa, xb, xc);
+        // y = computeQuadraticBaseValue(t, ya, yb, yc);
+
+        if (x < minx) { minx = x; }
+        if (x > maxx) { maxx = x; }
+    }
+
+    // Y
+    if (ya < miny) { miny = ya; }
+    if (ya > maxy) { maxy = ya; }
+    if (yc < miny) { miny = yc; }
+    if (yc > maxy) { maxy = yc; }
+
+    t = computeQuadraticFirstDerivativeRoot(ya, yb, yc);
+
+    if (t >= 0 && t <=1 ) {
+        // x = computeQuadraticBaseValue(t, xa, xb, xc);
+        y = computeQuadraticBaseValue(t, ya, yb, yc);
+
+        if (y < miny) { miny = y; }
+        if (y > maxy) { maxy = y ; }
+
+    }
+
+    return {
+        minx: minx,
+        miny: miny,
+        maxx: maxx,
+        maxy: maxy
+    };
+
+};
+
+// compute the value for the quadratic bezier function at time=t
+function computeQuadraticBaseValue(t, a, b, c) {
+
+    var mt = 1 - t;
+
+    return mt * mt * a + 2 * mt * t * b + t * t * c;
+
+}
+
+// compute the value for the first derivative of the quadratic bezier function at time=t
+function computeQuadraticFirstDerivativeRoot(a, b, c) {
+
+    var t = -1,
+        denominator = a - 2 * b + c;
+
+    if (denominator !== 0) {
+        t = (a - b) / denominator;
+    }
+
+    return t;
+
+}
+
+/**
+ * Convert path array to string.
+ *
+ * @param {Array} path input path data
+ * @param {Object} params plugin params
+ * @return {String} output path string
+ */
+exports.js2path = function(path, data, params) {
+
+    path.pathJS = data;
+
+    if (params.collapseRepeated) {
+        data = collapseRepeated(data);
+    }
+
+    path.attr('d').value = data.reduce(function(pathString, item) {
+        return pathString += item.instruction + (item.data ? cleanupOutData(item.data, params) : '');
+    }, '');
+
+};
+
+/**
+ * Collapse repeated instructions data
+ *
+ * @param {Array} path input path data
+ * @return {Array} output path data
+ */
+function collapseRepeated(data) {
+
+    var prev,
+        prevIndex;
+
+    // copy an array and modifieds item to keep original data untouched
+    data = data.reduce(function(newPath, item) {
+        if (
+            prev && item.data &&
+            item.instruction == prev.instruction
+        ) {
+            // concat previous data with current
+            if (item.instruction != 'M') {
+                prev = newPath[prevIndex] = {
+                    instruction: prev.instruction,
+                    data: prev.data.concat(item.data),
+                    coords: item.coords,
+                    base: prev.base
+                };
+            } else {
+                prev.data = item.data;
+                prev.coords = item.coords;
+            }
+        } else {
+            newPath.push(item);
+            prev = item;
+            prevIndex = newPath.length - 1;
+        }
+
+        return newPath;
+    }, []);
+
+    return data;
+
+}
+
+function set(dest, source) {
+    dest[0] = source[source.length - 2];
+    dest[1] = source[source.length - 1];
+    return dest;
+}
+
+/**
+ * Checks if two paths have an intersection by checking convex hulls
+ * collision using Gilbert-Johnson-Keerthi distance algorithm
+ * http://entropyinteractive.com/2011/04/gjk-algorithm/
+ *
+ * @param {Array} path1 JS path representation
+ * @param {Array} path2 JS path representation
+ * @return {Boolean}
+ */
+exports.intersects = function(path1, path2) {
+    if (path1.length < 3 || path2.length < 3) return false; // nothing to fill
+
+    // Collect points of every subpath.
+    var points1 = relative2absolute(path1).reduce(gatherPoints, []),
+        points2 = relative2absolute(path2).reduce(gatherPoints, []);
+
+    // Axis-aligned bounding box check.
+    if (points1.maxX <= points2.minX || points2.maxX <= points1.minX ||
+        points1.maxY <= points2.minY || points2.maxY <= points1.minY ||
+        points1.every(function (set1) {
+            return points2.every(function (set2) {
+                return set1[set1.maxX][0] <= set2[set2.minX][0] ||
+                    set2[set2.maxX][0] <= set1[set1.minX][0] ||
+                    set1[set1.maxY][1] <= set2[set2.minY][1] ||
+                    set2[set2.maxY][1] <= set1[set1.minY][1];
+            });
+        })
+    ) return false;
+
+    // Get a convex hull from points of each subpath. Has the most complexity O(n·log n).
+    var hullNest1 = points1.map(convexHull),
+        hullNest2 = points2.map(convexHull);
+
+    // Check intersection of every subpath of the first path with every subpath of the second.
+    return hullNest1.some(function(hull1) {
+        if (hull1.length < 3) return false;
+
+        return hullNest2.some(function(hull2) {
+            if (hull2.length < 3) return false;
+
+            var simplex = [getSupport(hull1, hull2, [1, 0])], // create the initial simplex
+                direction = minus(simplex[0]); // set the direction to point towards the origin
+
+            var iterations = 1e4; // infinite loop protection, 10 000 iterations is more than enough
+            while (true) {
+                if (iterations-- == 0) {
+                    console.error('Error: infinite loop while processing mergePaths plugin.');
+                    return true; // true is the safe value that means “do nothing with paths”
+                }
+                // add a new point
+                simplex.push(getSupport(hull1, hull2, direction));
+                // see if the new point was on the correct side of the origin
+                if (dot(direction, simplex[simplex.length - 1]) <= 0) return false;
+                // process the simplex
+                if (processSimplex(simplex, direction)) return true;
+            }
+        });
+    });
+
+    function getSupport(a, b, direction) {
+        return sub(supportPoint(a, direction), supportPoint(b, minus(direction)));
+    }
+
+    // Computes farthest polygon point in particular direction.
+    // Thanks to knowledge of min/max x and y coordinates we can choose a quadrant to search in.
+    // Since we're working on convex hull, the dot product is increasing until we find the farthest point.
+    function supportPoint(polygon, direction) {
+        var index = direction[1] >= 0 ?
+                direction[0] < 0 ? polygon.maxY : polygon.maxX :
+                direction[0] < 0 ? polygon.minX : polygon.minY,
+            max = -Infinity,
+            value;
+        while ((value = dot(polygon[index], direction)) > max) {
+            max = value;
+            index = ++index % polygon.length;
+        }
+        return polygon[(index || polygon.length) - 1];
+    }
+};
+
+function processSimplex(simplex, direction) {
+    /* jshint -W004 */
+
+    // we only need to handle to 1-simplex and 2-simplex
+    if (simplex.length == 2) { // 1-simplex
+        var a = simplex[1],
+            b = simplex[0],
+            AO = minus(simplex[1]),
+            AB = sub(b, a);
+        // AO is in the same direction as AB
+        if (dot(AO, AB) > 0) {
+            // get the vector perpendicular to AB facing O
+            set(direction, orth(AB, a));
+        } else {
+            set(direction, AO);
+            // only A remains in the simplex
+            simplex.shift();
+        }
+    } else { // 2-simplex
+        var a = simplex[2], // [a, b, c] = simplex
+            b = simplex[1],
+            c = simplex[0],
+            AB = sub(b, a),
+            AC = sub(c, a),
+            AO = minus(a),
+            ACB = orth(AB, AC), // the vector perpendicular to AB facing away from C
+            ABC = orth(AC, AB); // the vector perpendicular to AC facing away from B
+
+        if (dot(ACB, AO) > 0) {
+            if (dot(AB, AO) > 0) { // region 4
+                set(direction, ACB);
+                simplex.shift(); // simplex = [b, a]
+            } else { // region 5
+                set(direction, AO);
+                simplex.splice(0, 2); // simplex = [a]
+            }
+        } else if (dot(ABC, AO) > 0) {
+            if (dot(AC, AO) > 0) { // region 6
+                set(direction, ABC);
+                simplex.splice(1, 1); // simplex = [c, a]
+            } else { // region 5 (again)
+                set(direction, AO);
+                simplex.splice(0, 2); // simplex = [a]
+            }
+        } else // region 7
+            return true;
+    }
+    return false;
+}
+
+function minus(v) {
+    return [-v[0], -v[1]];
+}
+
+function sub(v1, v2) {
+    return [v1[0] - v2[0], v1[1] - v2[1]];
+}
+
+function dot(v1, v2) {
+    return v1[0] * v2[0] + v1[1] * v2[1];
+}
+
+function orth(v, from) {
+    var o = [-v[1], v[0]];
+    return dot(o, minus(from)) < 0 ? minus(o) : o;
+}
+
+function gatherPoints(points, item, index, path) {
+
+    var subPath = points.length && points[points.length - 1],
+        prev = index && path[index - 1],
+        basePoint = subPath.length && subPath[subPath.length - 1],
+        data = item.data,
+        ctrlPoint = basePoint;
+
+    switch (item.instruction) {
+        case 'M':
+            points.push(subPath = []);
+            break;
+        case 'H':
+            addPoint(subPath, [data[0], basePoint[1]]);
+            break;
+        case 'V':
+            addPoint(subPath, [basePoint[0], data[0]]);
+            break;
+        case 'Q':
+            addPoint(subPath, data.slice(0, 2));
+            prevCtrlPoint = [data[2] - data[0], data[3] - data[1]]; // Save control point for shorthand
+            break;
+        case 'T':
+            if (prev.instruction == 'Q' && prev.instruction == 'T') {
+                ctrlPoint = [basePoint[0] + prevCtrlPoint[0], basePoint[1] + prevCtrlPoint[1]];
+                addPoint(subPath, ctrlPoint);
+                prevCtrlPoint = [data[0] - ctrlPoint[0], data[1] - ctrlPoint[1]];
+            }
+            break;
+        case 'C':
+            // Approximate quibic Bezier curve with middle points between control points
+            addPoint(subPath, [.5 * (basePoint[0] + data[0]), .5 * (basePoint[1] + data[1])]);
+            addPoint(subPath, [.5 * (data[0] + data[2]), .5 * (data[1] + data[3])]);
+            addPoint(subPath, [.5 * (data[2] + data[4]), .5 * (data[3] + data[5])]);
+            prevCtrlPoint = [data[4] - data[2], data[5] - data[3]]; // Save control point for shorthand
+            break;
+        case 'S':
+            if (prev.instruction == 'C' && prev.instruction == 'S') {
+                addPoint(subPath, [basePoint[0] + .5 * prevCtrlPoint[0], basePoint[1] + .5 * prevCtrlPoint[1]]);
+                ctrlPoint = [basePoint[0] + prevCtrlPoint[0], basePoint[1] + prevCtrlPoint[1]];
+            }
+            addPoint(subPath, [.5 * (ctrlPoint[0] + data[0]), .5 * (ctrlPoint[1]+ data[1])]);
+            addPoint(subPath, [.5 * (data[0] + data[2]), .5 * (data[1] + data[3])]);
+            prevCtrlPoint = [data[2] - data[0], data[3] - data[1]];
+            break;
+        case 'A':
+            // Convert the arc to bezier curves and use the same approximation
+            var curves = a2c.apply(0, basePoint.concat(data));
+            for (var cData; (cData = curves.splice(0,6).map(toAbsolute)).length;) {
+                addPoint(subPath, [.5 * (basePoint[0] + cData[0]), .5 * (basePoint[1] + cData[1])]);
+                addPoint(subPath, [.5 * (cData[0] + cData[2]), .5 * (cData[1] + cData[3])]);
+                addPoint(subPath, [.5 * (cData[2] + cData[4]), .5 * (cData[3] + cData[5])]);
+                if (curves.length) addPoint(subPath, basePoint = cData.slice(-2));
+            }
+            break;
+    }
+    // Save final command coordinates
+    if (data && data.length >= 2) addPoint(subPath, data.slice(-2));
+    return points;
+
+    function toAbsolute(n, i) { return n + basePoint[i % 2] }
+
+    // Writes data about the extreme points on each axle
+    function addPoint(path, point) {
+        if (!path.length || point[1] > path[path.maxY][1]) {
+            path.maxY = path.length;
+            points.maxY = points.length ? Math.max(point[1], points.maxY) : point[1];
+        }
+        if (!path.length || point[0] > path[path.maxX][0]) {
+            path.maxX = path.length;
+            points.maxX = points.length ? Math.max(point[0], points.maxX) : point[0];
+        }
+        if (!path.length || point[1] < path[path.minY][1]) {
+            path.minY = path.length;
+            points.minY = points.length ? Math.min(point[1], points.minY) : point[1];
+        }
+        if (!path.length || point[0] < path[path.minX][0]) {
+            path.minX = path.length;
+            points.minX = points.length ? Math.min(point[0], points.minX) : point[0];
+        }
+        path.push(point);
+    }
+}
+
+/**
+ * Forms a convex hull from set of points of every subpath using monotone chain convex hull algorithm.
+ * http://en.wikibooks.org/wiki/Algorithm_Implementation/Geometry/Convex_hull/Monotone_chain
+ *
+ * @param points An array of [X, Y] coordinates
+ */
+function convexHull(points) {
+    /* jshint -W004 */
+
+    points.sort(function(a, b) {
+        return a[0] == b[0] ? a[1] - b[1] : a[0] - b[0];
+    });
+
+    var lower = [],
+        minY = 0,
+        bottom = 0;
+    for (var i = 0; i < points.length; i++) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], points[i]) <= 0) {
+            lower.pop();
+        }
+        if (points[i][1] < points[minY][1]) {
+            minY = i;
+            bottom = lower.length;
+        }
+        lower.push(points[i]);
+    }
+
+    var upper = [],
+        maxY = points.length - 1,
+        top = 0;
+    for (var i = points.length; i--;) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], points[i]) <= 0) {
+            upper.pop();
+        }
+        if (points[i][1] > points[maxY][1]) {
+            maxY = i;
+            top = upper.length;
+        }
+        upper.push(points[i]);
+    }
+
+    // last points are equal to starting points of the other part
+    upper.pop();
+    lower.pop();
+
+    var hull = lower.concat(upper);
+
+    hull.minX = 0; // by sorting
+    hull.maxX = lower.length;
+    hull.minY = bottom;
+    hull.maxY = (lower.length + top) % hull.length;
+
+    return hull;
+}
+
+function cross(o, a, b) {
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+}
+
+/* Based on code from Snap.svg (Apache 2 license). http://snapsvg.io/
+ * Thanks to Dmitry Baranovskiy for his great work!
+ */
+
+// jshint ignore: start
+function a2c(x1, y1, rx, ry, angle, large_arc_flag, sweep_flag, x2, y2, recursive) {
+    // for more information of where this Math came from visit:
+    // http://www.w3.org/TR/SVG11/implnote.html#ArcImplementationNotes
+    var _120 = Math.PI * 120 / 180,
+        rad = Math.PI / 180 * (+angle || 0),
+        res = [],
+        rotateX = function(x, y, rad) { return x * Math.cos(rad) - y * Math.sin(rad) },
+        rotateY = function(x, y, rad) { return x * Math.sin(rad) + y * Math.cos(rad) };
+    if (!recursive) {
+        x1 = rotateX(x1, y1, -rad);
+        y1 = rotateY(x1, y1, -rad);
+        x2 = rotateX(x2, y2, -rad);
+        y2 = rotateY(x2, y2, -rad);
+        var x = (x1 - x2) / 2,
+            y = (y1 - y2) / 2;
+        var h = (x * x) / (rx * rx) + (y * y) / (ry * ry);
+        if (h > 1) {
+            h = Math.sqrt(h);
+            rx = h * rx;
+            ry = h * ry;
+        }
+        var rx2 = rx * rx,
+            ry2 = ry * ry,
+            k = (large_arc_flag == sweep_flag ? -1 : 1) *
+                Math.sqrt(Math.abs((rx2 * ry2 - rx2 * y * y - ry2 * x * x) / (rx2 * y * y + ry2 * x * x))),
+            cx = k * rx * y / ry + (x1 + x2) / 2,
+            cy = k * -ry * x / rx + (y1 + y2) / 2,
+            f1 = Math.asin(((y1 - cy) / ry).toFixed(9)),
+            f2 = Math.asin(((y2 - cy) / ry).toFixed(9));
+
+        f1 = x1 < cx ? Math.PI - f1 : f1;
+        f2 = x2 < cx ? Math.PI - f2 : f2;
+        f1 < 0 && (f1 = Math.PI * 2 + f1);
+        f2 < 0 && (f2 = Math.PI * 2 + f2);
+        if (sweep_flag && f1 > f2) {
+            f1 = f1 - Math.PI * 2;
+        }
+        if (!sweep_flag && f2 > f1) {
+            f2 = f2 - Math.PI * 2;
+        }
+    } else {
+        f1 = recursive[0];
+        f2 = recursive[1];
+        cx = recursive[2];
+        cy = recursive[3];
+    }
+    var df = f2 - f1;
+    if (Math.abs(df) > _120) {
+        var f2old = f2,
+            x2old = x2,
+            y2old = y2;
+        f2 = f1 + _120 * (sweep_flag && f2 > f1 ? 1 : -1);
+        x2 = cx + rx * Math.cos(f2);
+        y2 = cy + ry * Math.sin(f2);
+        res = a2c(x2, y2, rx, ry, angle, 0, sweep_flag, x2old, y2old, [f2, f2old, cx, cy]);
+    }
+    df = f2 - f1;
+    var c1 = Math.cos(f1),
+        s1 = Math.sin(f1),
+        c2 = Math.cos(f2),
+        s2 = Math.sin(f2),
+        t = Math.tan(df / 4),
+        hx = 4 / 3 * rx * t,
+        hy = 4 / 3 * ry * t,
+        m = [
+            - hx * s1, hy * c1,
+            x2 + hx * s2 - x1, y2 - hy * c2 - y1,
+            x2 - x1, y2 - y1
+        ];
+    if (recursive) {
+        return m.concat(res);
+    } else {
+        res = m.concat(res);
+        var newres = [];
+        for (var i = 0, n = res.length; i < n; i++) {
+            newres[i] = i % 2 ? rotateY(res[i - 1], res[i], rad) : rotateX(res[i], res[i + 1], rad);
+        }
+        return newres;
+    }
+}
+// jshint ignore: end
+
+},{"../lib/svgo/tools":106,"./_collections.js":137,"./_transforms":139}],139:[function(require,module,exports){
+'use strict';
+
+var regTransformTypes = /matrix|translate|scale|rotate|skewX|skewY/,
+    regTransformSplit = /\s*(matrix|translate|scale|rotate|skewX|skewY)\s*\(\s*(.+?)\s*\)[\s,]*/,
+    regNumericValues = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
+
+/**
+ * Convert transform string to JS representation.
+ *
+ * @param {String} transformString input string
+ * @param {Object} params plugin params
+ * @return {Array} output array
+ */
+exports.transform2js = function(transformString) {
+
+        // JS representation of the transform data
+    var transforms = [],
+        // current transform context
+        current;
+
+    // split value into ['', 'translate', '10 50', '', 'scale', '2', '', 'rotate', '-45', '']
+    transformString.split(regTransformSplit).forEach(function(item) {
+        /*jshint -W084 */
+        var num;
+
+        if (item) {
+            // if item is a translate function
+            if (regTransformTypes.test(item)) {
+                // then collect it and change current context
+                transforms.push(current = { name: item });
+            // else if item is data
+            } else {
+                // then split it into [10, 50] and collect as context.data
+                while (num = regNumericValues.exec(item)) {
+                    num = Number(num);
+                    if (current.data)
+                        current.data.push(num);
+                    else
+                        current.data = [num];
+                }
+            }
+        }
+    });
+
+    return transforms;
+
+};
+
+/**
+ * Multiply transforms into one.
+ *
+ * @param {Array} input transforms array
+ * @return {Array} output matrix array
+ */
+exports.transformsMultiply = function(transforms) {
+
+    // convert transforms objects to the matrices
+    transforms = transforms.map(function(transform) {
+        if (transform.name === 'matrix') {
+            return transform.data;
+        }
+        return transformToMatrix(transform);
+    });
+
+    // multiply all matrices into one
+    transforms = {
+        name: 'matrix',
+        data: transforms.reduce(function(a, b) {
+            return multiplyTransformMatrices(a, b);
+        })
+    };
+
+    return transforms;
+
+};
+
+/**
+ * Do math like a schoolgirl.
+ *
+ * @type {Object}
+ */
+var mth = exports.mth = {
+
+    rad: function(deg) {
+        return deg * Math.PI / 180;
+    },
+
+    deg: function(rad) {
+        return rad * 180 / Math.PI;
+    },
+
+    cos: function(deg) {
+        return Math.cos(this.rad(deg));
+    },
+
+    acos: function(val, floatPrecision) {
+        return +(this.deg(Math.acos(val)).toFixed(floatPrecision));
+    },
+
+    sin: function(deg) {
+        return Math.sin(this.rad(deg));
+    },
+
+    asin: function(val, floatPrecision) {
+        return +(this.deg(Math.asin(val)).toFixed(floatPrecision));
+    },
+
+    tan: function(deg) {
+        return Math.tan(this.rad(deg));
+    },
+
+    atan: function(val, floatPrecision) {
+        return +(this.deg(Math.atan(val)).toFixed(floatPrecision));
+    }
+
+};
+
+/**
+ * Decompose matrix into simple transforms. See
+ * http://www.maths-informatique-jeux.com/blog/frederic/?post/2013/12/01/Decomposition-of-2D-transform-matrices
+ *
+ * @param {Object} data matrix transform object
+ * @return {Object|Array} transforms array or original transform object
+ */
+exports.matrixToTransform = function(transform, params) {
+    var floatPrecision = params.floatPrecision,
+        data = transform.data,
+        transforms = [],
+        sx = +Math.sqrt(data[0] * data[0] + data[1] * data[1]).toFixed(params.transformPrecision),
+        sy = +((data[0] * data[3] - data[1] * data[2]) / sx).toFixed(params.transformPrecision),
+        colsSum = data[0] * data[2] + data[1] * data[3],
+        rowsSum = data[0] * data[1] + data[2] * data[3],
+        scaleBefore = rowsSum || +(sx == sy);
+
+    // [..., ..., ..., ..., tx, ty] → translate(tx, ty)
+    if (data[4] || data[5]) {
+        transforms.push({ name: 'translate', data: data.slice(4, data[5] ? 6 : 5) });
+    }
+
+    // [sx, 0, tan(a)·sy, sy, 0, 0] → skewX(a)·scale(sx, sy)
+    if (!data[1] && data[2]) {
+        transforms.push({ name: 'skewX', data: [mth.atan(data[2] / sy, floatPrecision)] });
+
+    // [sx, sx·tan(a), 0, sy, 0, 0] → skewY(a)·scale(sx, sy)
+    } else if (data[1] && !data[2]) {
+        transforms.push({ name: 'skewY', data: [mth.atan(data[1] / data[0], floatPrecision)] });
+        sx = data[0];
+        sy = data[3];
+
+    // [sx·cos(a), sx·sin(a), sy·-sin(a), sy·cos(a), x, y] → rotate(a[, cx, cy])·(scale or skewX) or
+    // [sx·cos(a), sy·sin(a), sx·-sin(a), sy·cos(a), x, y] → scale(sx, sy)·rotate(a[, cx, cy]) (if !scaleBefore)
+    } else if (!colsSum || (sx == 1 && sy == 1) || !scaleBefore) {
+        if (!scaleBefore) {
+            sx = (data[0] < 0 ? -1 : 1) * Math.sqrt(data[0] * data[0] + data[2] * data[2]);
+            sy = (data[3] < 0 ? -1 : 1) * Math.sqrt(data[1] * data[1] + data[3] * data[3]);
+            transforms.push({ name: 'scale', data: [sx, sy] });
+        }
+        var rotate = [mth.acos(data[0] / sx, floatPrecision) * (data[1] * sy < 0 ? -1 : 1)];
+
+        if (rotate[0]) transforms.push({ name: 'rotate', data: rotate });
+
+        if (rowsSum && colsSum) transforms.push({
+            name: 'skewX',
+            data: [mth.atan(colsSum / (sx * sx), floatPrecision)]
+        });
+
+        // rotate(a, cx, cy) can consume translate() within optional arguments cx, cy (rotation point)
+        if (rotate[0] && (data[4] || data[5])) {
+            transforms.shift();
+            var cos = data[0] / sx,
+                sin = data[1] / (scaleBefore ? sx : sy),
+                x = data[4] * (scaleBefore || sy),
+                y = data[5] * (scaleBefore || sx),
+                denom = (Math.pow(1 - cos, 2) + Math.pow(sin, 2)) * (scaleBefore || sx * sy);
+            rotate.push(((1 - cos) * x - sin * y) / denom);
+            rotate.push(((1 - cos) * y + sin * x) / denom);
+        }
+
+    // Too many transformations, return original matrix if it isn't just a scale/translate
+    } else if (data[1] || data[2]) {
+        return transform;
+    }
+
+    if (scaleBefore && (sx != 1 || sy != 1) || !transforms.length) transforms.push({
+        name: 'scale',
+        data: sx == sy ? [sx] : [sx, sy]
+    });
+
+    return transforms;
+};
+
+/**
+ * Convert transform to the matrix data.
+ *
+ * @param {Object} transform transform object
+ * @return {Array} matrix data
+ */
+function transformToMatrix(transform) {
+
+    if (transform.name === 'matrix') return transform.data;
+
+    var matrix;
+
+    switch (transform.name) {
+        case 'translate':
+            // [1, 0, 0, 1, tx, ty]
+            matrix = [1, 0, 0, 1, transform.data[0], transform.data[1] || 0];
+            break;
+        case 'scale':
+            // [sx, 0, 0, sy, 0, 0]
+            matrix = [transform.data[0], 0, 0, transform.data[1] || transform.data[0], 0, 0];
+            break;
+        case 'rotate':
+            // [cos(a), sin(a), -sin(a), cos(a), x, y]
+            var cos = mth.cos(transform.data[0]),
+                sin = mth.sin(transform.data[0]),
+                cx = transform.data[1] || 0,
+                cy = transform.data[2] || 0;
+
+            matrix = [cos, sin, -sin, cos, (1 - cos) * cx + sin * cy, (1 - cos) * cy - sin * cx];
+            break;
+        case 'skewX':
+            // [1, 0, tan(a), 1, 0, 0]
+            matrix = [1, 0, mth.tan(transform.data[0]), 1, 0, 0];
+            break;
+        case 'skewY':
+            // [1, tan(a), 0, 1, 0, 0]
+            matrix = [1, mth.tan(transform.data[0]), 0, 1, 0, 0];
+            break;
+    }
+
+    return matrix;
+
+}
+
+/**
+ * Applies transformation to an arc. To do so, we represent ellipse as a matrix, multiply it
+ * by the transformation matrix and use a singular value decomposition to represent in a form
+ * rotate(θ)·scale(a b)·rotate(φ). This gives us new ellipse params a, b and θ.
+ * SVD is being done with the formulae provided by Wolffram|Alpha (svd {{m0, m2}, {m1, m3}})
+ *
+ * @param {Array} arc [a, b, rotation in deg]
+ * @param {Array} transform transformation matrix
+ * @return {Array} arc transformed input arc
+ */
+exports.transformArc = function(arc, transform) {
+
+    var a = arc[0],
+        b = arc[1],
+        rot = arc[2] * Math.PI / 180,
+        cos = Math.cos(rot),
+        sin = Math.sin(rot),
+        h = Math.pow(arc[5] * cos + arc[6] * sin, 2) / (4 * a * a) +
+            Math.pow(arc[6] * cos - arc[5] * sin, 2) / (4 * b * b);
+    if (h > 1) {
+        h = Math.sqrt(h);
+        a *= h;
+        b *= h;
+    }
+    var ellipse = [a * cos, a * sin, -b * sin, b * cos, 0, 0],
+        m = multiplyTransformMatrices(transform, ellipse),
+        // Decompose the new ellipse matrix
+        lastCol = m[2] * m[2] + m[3] * m[3],
+        squareSum = m[0] * m[0] + m[1] * m[1] + lastCol,
+        root = Math.sqrt(
+            (Math.pow(m[0] - m[3], 2) + Math.pow(m[1] + m[2], 2)) *
+            (Math.pow(m[0] + m[3], 2) + Math.pow(m[1] - m[2], 2))
+        );
+
+    if (!root) { // circle
+        arc[0] = arc[1] = Math.sqrt(squareSum / 2);
+        arc[2] = 0;
+    } else {
+        var majorAxisSqr = (squareSum + root) / 2,
+            minorAxisSqr = (squareSum - root) / 2,
+            major = Math.abs(majorAxisSqr - lastCol) > 1e-6,
+            sub = (major ? majorAxisSqr : minorAxisSqr) - lastCol,
+            rowsSum = m[0] * m[2] + m[1] * m[3],
+            term1 = m[0] * sub + m[2] * rowsSum,
+            term2 = m[1] * sub + m[3] * rowsSum;
+        arc[0] = Math.sqrt(majorAxisSqr);
+        arc[1] = Math.sqrt(minorAxisSqr);
+        arc[2] = ((major ? term2 < 0 : term1 > 0) ? -1 : 1) *
+            Math.acos((major ? term1 : term2) / Math.sqrt(term1 * term1 + term2 * term2)) * 180 / Math.PI;
+    }
+    return arc;
+
+};
+
+/**
+ * Multiply transformation matrices.
+ *
+ * @param {Array} a matrix A data
+ * @param {Array} b matrix B data
+ * @return {Array} result
+ */
+function multiplyTransformMatrices(a, b) {
+
+    return [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5]
+    ];
+
+}
+
+},{}],140:[function(require,module,exports){
+'use strict';
+
+exports.type = 'perItem';
+
+exports.active = true;
+
+exports.description = 'optimizes path data: writes in shorter form, applies transformations';
+
+exports.params = {
+    applyTransforms: true,
+    applyTransformsStroked: true,
+    makeArcs: {
+        threshold: 2.5, // coefficient of rounding error
+        tolerance: 0.5  // percentage of radius
+    },
+    straightCurves: true,
+    lineShorthands: true,
+    curveSmoothShorthands: true,
+    floatPrecision: 3,
+    transformPrecision: 5,
+    removeUseless: true,
+    collapseRepeated: true,
+    utilizeAbsolute: true,
+    leadingZero: true,
+    negativeExtraSpace: true
+};
+
+var pathElems = require('./_collections.js').pathElems,
+    path2js = require('./_path.js').path2js,
+    js2path = require('./_path.js').js2path,
+    applyTransforms = require('./_path.js').applyTransforms,
+    cleanupOutData = require('../lib/svgo/tools').cleanupOutData,
+    roundData,
+    precision,
+    error,
+    arcThreshold,
+    arcTolerance,
+    hasMarkerMid;
+
+/**
+ * Convert absolute Path to relative,
+ * collapse repeated instructions,
+ * detect and convert Lineto shorthands,
+ * remove useless instructions like "l0,0",
+ * trim useless delimiters and leading zeros,
+ * decrease accuracy of floating-point numbers.
+ *
+ * @see http://www.w3.org/TR/SVG/paths.html#PathData
+ *
+ * @param {Object} item current iteration item
+ * @param {Object} params plugin params
+ * @return {Boolean} if false, item will be filtered out
+ *
+ * @author Kir Belevich
+ */
+exports.fn = function(item, params) {
+
+    if (item.isElem(pathElems) && item.hasAttr('d')) {
+
+        precision = params.floatPrecision;
+        error = precision !== false ? +Math.pow(.1, precision).toFixed(precision) : 1e-2;
+        roundData = precision > 0 && precision < 20 ? strongRound : round;
+        if (params.makeArcs) {
+            arcThreshold = params.makeArcs.threshold;
+            arcTolerance = params.makeArcs.tolerance;
+        }
+        hasMarkerMid = item.hasAttr('marker-mid');
+
+        var data = path2js(item);
+
+        // TODO: get rid of functions returns
+        if (data.length) {
+            convertToRelative(data);
+
+            if (params.applyTransforms) {
+                data = applyTransforms(item, data, params);
+            }
+
+            data = filters(data, params);
+
+            if (params.utilizeAbsolute) {
+                data = convertToMixed(data, params);
+            }
+
+            js2path(item, data, params);
+        }
+
+    }
+
+};
+
+/**
+ * Convert absolute path data coordinates to relative.
+ *
+ * @param {Array} path input path data
+ * @param {Object} params plugin params
+ * @return {Array} output path data
+ */
+function convertToRelative(path) {
+
+    var point = [0, 0],
+        subpathPoint = [0, 0],
+        baseItem;
+
+    path.forEach(function(item, index) {
+
+        var instruction = item.instruction,
+            data = item.data;
+
+        // data !== !z
+        if (data) {
+
+            // already relative
+            // recalculate current point
+            if ('mcslqta'.indexOf(instruction) > -1) {
+
+                point[0] += data[data.length - 2];
+                point[1] += data[data.length - 1];
+
+                if (instruction === 'm') {
+                    subpathPoint[0] = point[0];
+                    subpathPoint[1] = point[1];
+                    baseItem = item;
+                }
+
+            } else if (instruction === 'h') {
+
+                point[0] += data[0];
+
+            } else if (instruction === 'v') {
+
+                point[1] += data[0];
+
+            }
+
+            // convert absolute path data coordinates to relative
+            // if "M" was not transformed from "m"
+            // M → m
+            if (instruction === 'M') {
+
+                if (index > 0) instruction = 'm';
+
+                data[0] -= point[0];
+                data[1] -= point[1];
+
+                subpathPoint[0] = point[0] += data[0];
+                subpathPoint[1] = point[1] += data[1];
+
+                baseItem = item;
+
+            }
+
+            // L → l
+            // T → t
+            else if ('LT'.indexOf(instruction) > -1) {
+
+                instruction = instruction.toLowerCase();
+
+                // x y
+                // 0 1
+                data[0] -= point[0];
+                data[1] -= point[1];
+
+                point[0] += data[0];
+                point[1] += data[1];
+
+            // C → c
+            } else if (instruction === 'C') {
+
+                instruction = 'c';
+
+                // x1 y1 x2 y2 x y
+                // 0  1  2  3  4 5
+                data[0] -= point[0];
+                data[1] -= point[1];
+                data[2] -= point[0];
+                data[3] -= point[1];
+                data[4] -= point[0];
+                data[5] -= point[1];
+
+                point[0] += data[4];
+                point[1] += data[5];
+
+            // S → s
+            // Q → q
+            } else if ('SQ'.indexOf(instruction) > -1) {
+
+                instruction = instruction.toLowerCase();
+
+                // x1 y1 x y
+                // 0  1  2 3
+                data[0] -= point[0];
+                data[1] -= point[1];
+                data[2] -= point[0];
+                data[3] -= point[1];
+
+                point[0] += data[2];
+                point[1] += data[3];
+
+            // A → a
+            } else if (instruction === 'A') {
+
+                instruction = 'a';
+
+                // rx ry x-axis-rotation large-arc-flag sweep-flag x y
+                // 0  1  2               3              4          5 6
+                data[5] -= point[0];
+                data[6] -= point[1];
+
+                point[0] += data[5];
+                point[1] += data[6];
+
+            // H → h
+            } else if (instruction === 'H') {
+
+                instruction = 'h';
+
+                data[0] -= point[0];
+
+                point[0] += data[0];
+
+            // V → v
+            } else if (instruction === 'V') {
+
+                instruction = 'v';
+
+                data[0] -= point[1];
+
+                point[1] += data[0];
+
+            }
+
+            item.instruction = instruction;
+            item.data = data;
+
+            // store absolute coordinates for later use
+            item.coords = point.slice(-2);
+
+        }
+
+        // !data === z, reset current point
+        else if (instruction == 'z') {
+            if (baseItem) {
+                item.coords = baseItem.coords;
+            }
+            point[0] = subpathPoint[0];
+            point[1] = subpathPoint[1];
+        }
+
+        item.base = index > 0 ? path[index - 1].coords : [0, 0];
+
+    });
+
+    return path;
+
+}
+
+/**
+ * Main filters loop.
+ *
+ * @param {Array} path input path data
+ * @param {Object} params plugin params
+ * @return {Array} output path data
+ */
+function filters(path, params) {
+
+    var stringify = data2Path.bind(null, params),
+        relSubpoint = [0, 0],
+        pathBase = [0, 0],
+        prev = {};
+
+    path = path.filter(function(item, index, path) {
+
+        var instruction = item.instruction,
+            data = item.data,
+            next = path[index + 1];
+
+        if (data) {
+
+            var sdata = data,
+                circle;
+
+            if (instruction === 's') {
+                sdata = [0, 0].concat(data);
+
+                if ('cs'.indexOf(prev.instruction) > -1) {
+                    var pdata = prev.data,
+                        n = pdata.length;
+
+                    // (-x, -y) of the prev tangent point relative to the current point
+                    sdata[0] = pdata[n - 2] - pdata[n - 4];
+                    sdata[1] = pdata[n - 1] - pdata[n - 3];
+                }
+
+            }
+
+            // convert curves to arcs if possible
+            if (
+                params.makeArcs &&
+                (instruction == 'c' || instruction == 's') &&
+                isConvex(sdata) &&
+                (circle = findCircle(sdata))
+            ) {
+                var r = roundData([circle.radius])[0],
+                    angle = findArcAngle(sdata, circle),
+                    sweep = sdata[5] * sdata[0] - sdata[4] * sdata[1] > 0 ? 1 : 0,
+                    arc = {
+                        instruction: 'a',
+                        data: [r, r, 0, 0, sweep, sdata[4], sdata[5]],
+                        coords: item.coords.slice(),
+                        base: item.base
+                    },
+                    output = [arc],
+                    // relative coordinates to adjust the found circle
+                    relCenter = [circle.center[0] - sdata[4], circle.center[1] - sdata[5]],
+                    relCircle = { center: relCenter, radius: circle.radius },
+                    arcCurves = [item],
+                    hasPrev = 0,
+                    suffix = '',
+                    nextLonghand;
+
+                if (
+                    prev.instruction == 'c' && isConvex(prev.data) && isArcPrev(prev.data, circle) ||
+                    prev.instruction == 'a' && prev.sdata && isArcPrev(prev.sdata, circle)
+                ) {
+                    arcCurves.unshift(prev);
+                    arc.base = prev.base;
+                    arc.data[5] = arc.coords[0] - arc.base[0];
+                    arc.data[6] = arc.coords[1] - arc.base[1];
+                    var prevData = prev.instruction == 'a' ? prev.sdata : prev.data;
+                    angle += findArcAngle(prevData,
+                        {
+                            center: [prevData[4] + relCenter[0], prevData[5] + relCenter[1]],
+                            radius: circle.radius
+                        }
+                    );
+                    if (angle > Math.PI) arc.data[3] = 1;
+                    hasPrev = 1;
+                }
+
+                // check if next curves are fitting the arc
+                for (var j = index; (next = path[++j]) && ~'cs'.indexOf(next.instruction);) {
+                    var nextData = next.data;
+                    if (next.instruction == 's') {
+                        nextLonghand = makeLonghand({instruction: 's', data: next.data.slice() },
+                            path[j - 1].data);
+                        nextData = nextLonghand.data;
+                        nextLonghand.data = nextData.slice(0, 2);
+                        suffix = stringify([nextLonghand]);
+                    }
+                    if (isConvex(nextData) && isArc(nextData, relCircle)) {
+                        angle += findArcAngle(nextData, relCircle);
+                        if (angle - 2 * Math.PI > 1e-3) break; // more than 360°
+                        if (angle > Math.PI) arc.data[3] = 1;
+                        arcCurves.push(next);
+                        if (2 * Math.PI - angle > 1e-3) { // less than 360°
+                            arc.coords = next.coords;
+                            arc.data[5] = arc.coords[0] - arc.base[0];
+                            arc.data[6] = arc.coords[1] - arc.base[1];
+                        } else {
+                            // full circle, make a half-circle arc and add a second one
+                            arc.data[5] = 2 * (relCircle.center[0] - nextData[4]);
+                            arc.data[6] = 2 * (relCircle.center[1] - nextData[5]);
+                            arc.coords = [arc.base[0] + arc.data[5], arc.base[1] + arc.data[6]];
+                            arc = {
+                                instruction: 'a',
+                                data: [r, r, 0, 0, sweep,
+                                    next.coords[0] - arc.coords[0], next.coords[1] - arc.coords[1]],
+                                coords: next.coords,
+                                base: arc.coords
+                            };
+                            output.push(arc);
+                            j++;
+                            break;
+                        }
+                        relCenter[0] -= nextData[4];
+                        relCenter[1] -= nextData[5];
+                    } else break;
+                }
+
+                if ((stringify(output) + suffix).length < stringify(arcCurves).length) {
+                    if (path[j] && path[j].instruction == 's') {
+                        makeLonghand(path[j], path[j - 1].data);
+                    }
+                    if (hasPrev) {
+                        var prevArc = output.shift();
+                        roundData(prevArc.data);
+                        relSubpoint[0] += prevArc.data[5] - prev.data[prev.data.length - 2];
+                        relSubpoint[1] += prevArc.data[6] - prev.data[prev.data.length - 1];
+                        prev.instruction = 'a';
+                        prev.data = prevArc.data;
+                        item.base = prev.coords = prevArc.coords;
+                    }
+                    arc = output.shift();
+                    if (arcCurves.length == 1) {
+                        item.sdata = sdata.slice(); // preserve curve data for future checks
+                    } else if (arcCurves.length - 1 - hasPrev > 0) {
+                        // filter out consumed next items
+                        path.splice.apply(path, [index + 1, arcCurves.length - 1 - hasPrev].concat(output));
+                    }
+                    if (!arc) return false;
+                    instruction = 'a';
+                    data = arc.data;
+                    item.coords = arc.coords;
+                }
+            }
+
+            // Rounding relative coordinates, taking in account accummulating error
+            // to get closer to absolute coordinates. Sum of rounded value remains same:
+            // l .25 3 .25 2 .25 3 .25 2 -> l .3 3 .2 2 .3 3 .2 2
+            if (precision !== false) {
+                if ('mltqsc'.indexOf(instruction) > -1) {
+                    for (var i = data.length; i--;) {
+                        data[i] += item.base[i % 2] - relSubpoint[i % 2];
+                    }
+                } else if (instruction == 'h') {
+                    data[0] += item.base[0] - relSubpoint[0];
+                } else if (instruction == 'v') {
+                    data[0] += item.base[1] - relSubpoint[1];
+                } else if (instruction == 'a') {
+                    data[5] += item.base[0] - relSubpoint[0];
+                    data[6] += item.base[1] - relSubpoint[1];
+                }
+                roundData(data);
+
+                if      (instruction == 'h') relSubpoint[0] += data[0];
+                else if (instruction == 'v') relSubpoint[1] += data[0];
+                else {
+                    relSubpoint[0] += data[data.length - 2];
+                    relSubpoint[1] += data[data.length - 1];
+                }
+                roundData(relSubpoint);
+
+                if (instruction.toLowerCase() == 'm') {
+                    pathBase[0] = relSubpoint[0];
+                    pathBase[1] = relSubpoint[1];
+                }
+            }
+
+            // convert straight curves into lines segments
+            if (params.straightCurves) {
+
+                if (
+                    instruction === 'c' &&
+                    isCurveStraightLine(data) ||
+                    instruction === 's' &&
+                    isCurveStraightLine(sdata)
+                ) {
+                    if (next && next.instruction == 's')
+                        makeLonghand(next, data); // fix up next curve
+                    instruction = 'l';
+                    data = data.slice(-2);
+                }
+
+                else if (
+                    instruction === 'q' &&
+                    isCurveStraightLine(data)
+                ) {
+                    if (next && next.instruction == 't')
+                        makeLonghand(next, data); // fix up next curve
+                    instruction = 'l';
+                    data = data.slice(-2);
+                }
+
+                else if (
+                    instruction === 't' &&
+                    prev.instruction !== 'q' &&
+                    prev.instruction !== 't'
+                ) {
+                    instruction = 'l';
+                    data = data.slice(-2);
+                }
+
+                else if (
+                    instruction === 'a' &&
+                    (data[0] === 0 || data[1] === 0)
+                ) {
+                    instruction = 'l';
+                    data = data.slice(-2);
+                }
+            }
+
+            // horizontal and vertical line shorthands
+            // l 50 0 → h 50
+            // l 0 50 → v 50
+            if (
+                params.lineShorthands &&
+                instruction === 'l'
+            ) {
+                if (data[1] === 0) {
+                    instruction = 'h';
+                    data.pop();
+                } else if (data[0] === 0) {
+                    instruction = 'v';
+                    data.shift();
+                }
+            }
+
+            // collapse repeated commands
+            // h 20 h 30 -> h 50
+            if (
+                params.collapseRepeated &&
+                !hasMarkerMid &&
+                ('mhv'.indexOf(instruction) > -1) &&
+                prev.instruction &&
+                instruction == prev.instruction.toLowerCase() &&
+                (
+                    (instruction != 'h' && instruction != 'v') ||
+                    (prev.data[0] >= 0) == (item.data[0] >= 0)
+            )) {
+                prev.data[0] += data[0];
+                if (instruction != 'h' && instruction != 'v') {
+                    prev.data[1] += data[1];
+                }
+                prev.coords = item.coords;
+                path[index] = prev;
+                return false;
+            }
+
+            // convert curves into smooth shorthands
+            if (params.curveSmoothShorthands && prev.instruction) {
+
+                // curveto
+                if (instruction === 'c') {
+
+                    // c + c → c + s
+                    if (
+                        prev.instruction === 'c' &&
+                        data[0] === -(prev.data[2] - prev.data[4]) &&
+                        data[1] === -(prev.data[3] - prev.data[5])
+                    ) {
+                        instruction = 's';
+                        data = data.slice(2);
+                    }
+
+                    // s + c → s + s
+                    else if (
+                        prev.instruction === 's' &&
+                        data[0] === -(prev.data[0] - prev.data[2]) &&
+                        data[1] === -(prev.data[1] - prev.data[3])
+                    ) {
+                        instruction = 's';
+                        data = data.slice(2);
+                    }
+
+                    // [^cs] + c → [^cs] + s
+                    else if (
+                        'cs'.indexOf(prev.instruction) === -1 &&
+                        data[0] === 0 &&
+                        data[1] === 0
+                    ) {
+                        instruction = 's';
+                        data = data.slice(2);
+                    }
+
+                }
+
+                // quadratic Bézier curveto
+                else if (instruction === 'q') {
+
+                    // q + q → q + t
+                    if (
+                        prev.instruction === 'q' &&
+                        data[0] === (prev.data[2] - prev.data[0]) &&
+                        data[1] === (prev.data[3] - prev.data[1])
+                    ) {
+                        instruction = 't';
+                        data = data.slice(2);
+                    }
+
+                    // t + q → t + t
+                    else if (
+                        prev.instruction === 't' &&
+                        data[2] === prev.data[0] &&
+                        data[3] === prev.data[1]
+                    ) {
+                        instruction = 't';
+                        data = data.slice(2);
+                    }
+
+                }
+
+            }
+
+            // remove useless non-first path segments
+            if (params.removeUseless) {
+
+                // l 0,0 / h 0 / v 0 / q 0,0 0,0 / t 0,0 / c 0,0 0,0 0,0 / s 0,0 0,0
+                if (
+                    (
+                     'lhvqtcs'.indexOf(instruction) > -1
+                    ) &&
+                    data.every(function(i) { return i === 0; })
+                ) {
+                    path[index] = prev;
+                    return false;
+                }
+
+                // a 25,25 -30 0,1 0,0
+                if (
+                    instruction === 'a' &&
+                    data[5] === 0 &&
+                    data[6] === 0
+                ) {
+                    path[index] = prev;
+                    return false;
+                }
+
+            }
+
+            item.instruction = instruction;
+            item.data = data;
+
+            prev = item;
+
+        } else {
+
+            // z resets coordinates
+            relSubpoint[0] = pathBase[0];
+            relSubpoint[1] = pathBase[1];
+            if (prev.instruction == 'z') return false;
+            prev = item;
+
+        }
+
+        return true;
+
+    });
+
+    return path;
+
+}
+
+/**
+ * Writes data in shortest form using absolute or relative coordinates.
+ *
+ * @param {Array} data input path data
+ * @return {Boolean} output
+ */
+function convertToMixed(path, params) {
+
+    var prev = path[0];
+
+    path = path.filter(function(item, index) {
+
+        if (index == 0) return true;
+        if (!item.data) {
+            prev = item;
+            return true;
+        }
+
+        var instruction = item.instruction,
+            data = item.data,
+            adata = data && data.slice(0);
+
+        if ('mltqsc'.indexOf(instruction) > -1) {
+            for (var i = adata.length; i--;) {
+                adata[i] += item.base[i % 2];
+            }
+        } else if (instruction == 'h') {
+                adata[0] += item.base[0];
+        } else if (instruction == 'v') {
+                adata[0] += item.base[1];
+        } else if (instruction == 'a') {
+                adata[5] += item.base[0];
+                adata[6] += item.base[1];
+        }
+
+        roundData(adata);
+
+        var absoluteDataStr = cleanupOutData(adata, params),
+            relativeDataStr = cleanupOutData(data, params);
+
+        // Convert to absolute coordinates if it's shorter.
+        // v-20 -> V0
+        // Don't convert if it fits following previous instruction.
+        // l20 30-10-50 instead of l20 30L20 30
+        if (
+            absoluteDataStr.length < relativeDataStr.length &&
+            !(
+                params.negativeExtraSpace &&
+                instruction == prev.instruction &&
+                prev.instruction.charCodeAt(0) > 96 &&
+                absoluteDataStr.length == relativeDataStr.length - 1 &&
+                (data[0] < 0 || /^0\./.test(data[0]) && prev.data[prev.data.length - 1] % 1)
+            )
+        ) {
+            item.instruction = instruction.toUpperCase();
+            item.data = adata;
+        }
+
+        prev = item;
+
+        return true;
+
+    });
+
+    return path;
+
+}
+
+/**
+ * Checks if curve is convex. Control points of such a curve must form
+ * a convex quadrilateral with diagonals crosspoint inside of it.
+ *
+ * @param {Array} data input path data
+ * @return {Boolean} output
+ */
+function isConvex(data) {
+
+    var center = getIntersection([0, 0, data[2], data[3], data[0], data[1], data[4], data[5]]);
+
+    return center &&
+        (data[2] < center[0] == center[0] < 0) &&
+        (data[3] < center[1] == center[1] < 0) &&
+        (data[4] < center[0] == center[0] < data[0]) &&
+        (data[5] < center[1] == center[1] < data[1]);
+
+}
+
+/**
+ * Computes lines equations by two points and returns their intersection point.
+ *
+ * @param {Array} coords 8 numbers for 4 pairs of coordinates (x,y)
+ * @return {Array|undefined} output coordinate of lines' crosspoint
+ */
+function getIntersection(coords) {
+
+        // Prev line equation parameters.
+    var a1 = coords[1] - coords[3], // y1 - y2
+        b1 = coords[2] - coords[0], // x2 - x1
+        c1 = coords[0] * coords[3] - coords[2] * coords[1], // x1 * y2 - x2 * y1
+
+        // Next line equation parameters
+        a2 = coords[5] - coords[7], // y1 - y2
+        b2 = coords[6] - coords[4], // x2 - x1
+        c2 = coords[4] * coords[7] - coords[5] * coords[6], // x1 * y2 - x2 * y1
+        denom = (a1 * b2 - a2 * b1);
+
+    if (!denom) return; // parallel lines havn't an intersection
+
+    var cross = [
+            (b1 * c2 - b2 * c1) / denom,
+            (a1 * c2 - a2 * c1) / -denom
+        ];
+    if (
+        !isNaN(cross[0]) && !isNaN(cross[1]) &&
+        isFinite(cross[0]) && isFinite(cross[1])
+    ) {
+        return cross;
+    }
+
+}
+
+/**
+ * Decrease accuracy of floating-point numbers
+ * in path data keeping a specified number of decimals.
+ * Smart rounds values like 2.3491 to 2.35 instead of 2.349.
+ * Doesn't apply "smartness" if the number precision fits already.
+ *
+ * @param {Array} data input data array
+ * @return {Array} output data array
+ */
+function strongRound(data) {
+    for (var i = data.length; i-- > 0;) {
+        if (data[i].toFixed(precision) != data[i]) {
+            var rounded = +data[i].toFixed(precision - 1);
+            data[i] = +Math.abs(rounded - data[i]).toFixed(precision + 1) >= error ?
+                +data[i].toFixed(precision) :
+                rounded;
+        }
+    }
+    return data;
+}
+
+/**
+ * Simple rounding function if precision is 0.
+ *
+ * @param {Array} data input data array
+ * @return {Array} output data array
+ */
+function round(data) {
+    for (var i = data.length; i-- > 0;) {
+        data[i] = Math.round(data[i]);
+    }
+    return data;
+}
+
+/**
+ * Checks if a curve is a straight line by measuring distance
+ * from middle points to the line formed by end points.
+ *
+ * @param {Array} xs array of curve points x-coordinates
+ * @param {Array} ys array of curve points y-coordinates
+ * @return {Boolean}
+ */
+
+function isCurveStraightLine(data) {
+
+    // Get line equation a·x + b·y + c = 0 coefficients a, b (c = 0) by start and end points.
+    var i = data.length - 2,
+        a = -data[i + 1], // y1 − y2 (y1 = 0)
+        b = data[i],      // x2 − x1 (x1 = 0)
+        d = 1 / (a * a + b * b); // same part for all points
+
+    if (i <= 1 || !isFinite(d)) return false; // curve that ends at start point isn't the case
+
+    // Distance from point (x0, y0) to the line is sqrt((c − a·x0 − b·y0)² / (a² + b²))
+    while ((i -= 2) >= 0) {
+        if (Math.sqrt(Math.pow(a * data[i] + b * data[i + 1], 2) * d) > error)
+            return false;
+    }
+
+    return true;
+
+}
+
+/**
+ * Converts next curve from shorthand to full form using the current curve data.
+ *
+ * @param {Object} item curve to convert
+ * @param {Array} data current curve data
+ */
+
+function makeLonghand(item, data) {
+    switch (item.instruction) {
+        case 's': item.instruction = 'c'; break;
+        case 't': item.instruction = 'q'; break;
+    }
+    item.data.unshift(data[data.length - 2] - data[data.length - 4], data[data.length - 1] - data[data.length - 3]);
+    return item;
+}
+
+/**
+ * Returns distance between two points
+ *
+ * @param {Array} point1 first point coordinates
+ * @param {Array} point2 second point coordinates
+ * @return {Number} distance
+ */
+
+function getDistance(point1, point2) {
+    return Math.sqrt(Math.pow(point1[0] - point2[0], 2) + Math.pow(point1[1] - point2[1], 2));
+}
+
+/**
+ * Returns coordinates of the curve point corresponding to the certain t
+ * a·(1 - t)³·p1 + b·(1 - t)²·t·p2 + c·(1 - t)·t²·p3 + d·t³·p4,
+ * where pN are control points and p1 is zero due to relative coordinates.
+ *
+ * @param {Array} curve array of curve points coordinates
+ * @param {Number} t parametric position from 0 to 1
+ * @return {Array} Point coordinates
+ */
+
+function getCubicBezierPoint(curve, t) {
+    var sqrT = t * t,
+        cubT = sqrT * t,
+        mt = 1 - t,
+        sqrMt = mt * mt;
+
+    return [
+        3 * sqrMt * t * curve[0] + 3 * mt * sqrT * curve[2] + cubT * curve[4],
+        3 * sqrMt * t * curve[1] + 3 * mt * sqrT * curve[3] + cubT * curve[5]
+    ];
+}
+
+/**
+ * Finds circle by 3 points of the curve and checks if the curve fits the found circle.
+ *
+ * @param {Array} curve
+ * @return {Object|undefined} circle
+ */
+
+function findCircle(curve) {
+    var midPoint = getCubicBezierPoint(curve, 1/2),
+        m1 = [midPoint[0] / 2, midPoint[1] / 2],
+        m2 = [(midPoint[0] + curve[4]) / 2, (midPoint[1] + curve[5]) / 2],
+        center = getIntersection([
+            m1[0], m1[1],
+            m1[0] + m1[1], m1[1] - m1[0],
+            m2[0], m2[1],
+            m2[0] + (m2[1] - midPoint[1]), m2[1] - (m2[0] - midPoint[0])
+        ]),
+        radius = center && getDistance([0, 0], center),
+        tolerance = Math.min(arcThreshold * error, arcTolerance * radius / 100);
+
+    if (center && [1/4, 3/4].every(function(point) {
+        return Math.abs(getDistance(getCubicBezierPoint(curve, point), center) - radius) <= tolerance;
+    }))
+        return { center: center, radius: radius};
+}
+
+/**
+ * Checks if a curve fits the given circe.
+ *
+ * @param {Object} circle
+ * @param {Array} curve
+ * @return {Boolean}
+ */
+
+function isArc(curve,  circle) {
+    var tolerance = Math.min(arcThreshold * error, arcTolerance * circle.radius / 100);
+
+    return [0, 1/4, 1/2, 3/4, 1].every(function(point) {
+        return Math.abs(getDistance(getCubicBezierPoint(curve, point), circle.center) - circle.radius) <= tolerance;
+    });
+}
+
+/**
+ * Checks if a previos curve fits the given circe.
+ *
+ * @param {Object} circle
+ * @param {Array} curve
+ * @return {Boolean}
+ */
+
+function isArcPrev(curve,  circle) {
+    return isArc(curve, {
+        center: [circle.center[0] + curve[4], circle.center[1] + curve[5]],
+        radius: circle.radius
+    });
+}
+
+/**
+ * Finds angle of a curve fitting the given arc.
+
+ * @param {Array} curve
+ * @param {Object} relCircle
+ * @return {Number} angle
+ */
+
+function findArcAngle(curve, relCircle) {
+    var x1 = -relCircle.center[0],
+        y1 = -relCircle.center[1],
+        x2 = curve[4] - relCircle.center[0],
+        y2 = curve[5] - relCircle.center[1];
+
+    return Math.acos(
+            (x1 * x2 + y1 * y2) /
+            Math.sqrt((x1 * x1 + y1 * y1) * (x2 * x2 + y2 * y2))
+        );
+}
+
+/**
+ * Converts given path data to string.
+ *
+ * @param {Object} params
+ * @param {Array} pathData
+ * @return {String}
+ */
+
+function data2Path(params, pathData) {
+    return pathData.reduce(function(pathString, item) {
+        return pathString += item.instruction + (item.data ? cleanupOutData(roundData(item.data.slice()), params) : '');
+    }, '');
+}
+
+},{"../lib/svgo/tools":106,"./_collections.js":137,"./_path.js":138}],141:[function(require,module,exports){
+/* jshint quotmark: false */
+'use strict';
+
+exports.type = 'perItem';
+
+exports.active = true;
+
+exports.description = 'converts style to attributes';
+
+var EXTEND = require('whet.extend'),
+    stylingProps = require('./_collections').attrsGroups.presentation,
+    rEscape = '\\\\(?:[0-9a-f]{1,6}\\s?|\\r\\n|.)',                 // Like \" or \2051. Code points consume one space.
+    rAttr = '\\s*(' + g('[^:;\\\\]', rEscape) + '*?)\\s*',          // attribute name like ‘fill’
+    rSingleQuotes = "'(?:[^'\\n\\r\\\\]|" + rEscape + ")*?(?:'|$)", // string in single quotes: 'smth'
+    rQuotes = '"(?:[^"\\n\\r\\\\]|' + rEscape + ')*?(?:"|$)',       // string in double quotes: "smth"
+    rQuotedString = new RegExp('^' + g(rSingleQuotes, rQuotes) + '$'),
+
+    // Parentheses, E.g.: url(data:image/png;base64,iVBO...).
+    // ':' and ';' inside of it should be threated as is. (Just like in strings.)
+    rParenthesis = '\\(' + g('[^\'"()\\\\]+', rEscape, rSingleQuotes, rQuotes) + '*?' + '\\)',
+
+    // The value. It can have strings and parentheses (see above). Fallbacks to anything in case of unexpected input.
+    rValue = '\\s*(' + g('[^\'"();\\\\]+?', rEscape, rSingleQuotes, rQuotes, rParenthesis, '[^;]*?') + '*?' + ')',
+
+    // End of declaration. Spaces outside of capturing groups help to do natural trimming.
+    rDeclEnd = '\\s*(?:;\\s*|$)',
+
+    // Final RegExp to parse CSS declarations.
+    regDeclarationBlock = new RegExp(rAttr + ':' + rValue + rDeclEnd, 'ig'),
+
+    // Comments expression. Honors escape sequences and strings.
+    regStripComments = new RegExp(g(rEscape, rSingleQuotes, rQuotes, '/\\*[^]*?\\*/'), 'ig');
+
+/**
+ * Convert style in attributes. Cleanups comments and illegal declarations (without colon) as a side effect.
+ *
+ * @example
+ * <g style="fill:#000; color: #fff;">
+ *             ⬇
+ * <g fill="#000" color="#fff">
+ *
+ * @example
+ * <g style="fill:#000; color: #fff; -webkit-blah: blah">
+ *             ⬇
+ * <g fill="#000" color="#fff" style="-webkit-blah: blah">
+ *
+ * @param {Object} item current iteration item
+ * @return {Boolean} if false, item will be filtered out
+ *
+ * @author Kir Belevich
+ */
+exports.fn = function(item) {
+    /* jshint boss: true */
+
+    if (item.elem && item.hasAttr('style')) {
+            // ['opacity: 1', 'color: #000']
+        var styleValue = item.attr('style').value,
+            styles = [],
+            attrs = {};
+
+        // Strip CSS comments preserving escape sequences and strings.
+        styleValue = styleValue.replace(regStripComments, function(match) {
+            return match[0] == '/' ? '' :
+                match[0] == '\\' && /[-g-z]/i.test(match[1]) ? match[1] : match;
+        });
+
+        regDeclarationBlock.lastIndex = 0;
+        for (var rule; rule = regDeclarationBlock.exec(styleValue);) {
+            styles.push([rule[1], rule[2]]);
+        }
+
+        if (styles.length) {
+
+            styles = styles.filter(function(style) {
+                if (style[0]) {
+                    var prop = style[0].toLowerCase(),
+                        val = style[1];
+
+                    if (rQuotedString.test(val)) {
+                        val = val.slice(1, -1);
+                    }
+
+                    if (stylingProps.indexOf(prop) > -1) {
+
+                        attrs[prop] = {
+                            name: prop,
+                            value: val,
+                            local: prop,
+                            prefix: ''
+                        };
+
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+
+            EXTEND(item.attrs, attrs);
+
+            if (styles.length) {
+                item.attr('style').value = styles
+                    .map(function(declaration) { return declaration.join(':') })
+                    .join(';');
+            } else {
+                item.removeAttr('style');
+            }
+
+        }
+
+    }
+
+};
+
+function g() {
+    return '(?:' + Array.prototype.join.call(arguments, '|') + ')';
+}
+
+},{"./_collections":137,"whet.extend":155}],142:[function(require,module,exports){
+'use strict';
+
+exports.type = 'perItem';
+
+exports.active = true;
+
+exports.description = 'collapses multiple transformations and optimizes it';
+
+exports.params = {
+    convertToShorts: true,
+    // degPrecision: 3, // transformPrecision (or matrix precision) - 2 by default
+    floatPrecision: 3,
+    transformPrecision: 5,
+    matrixToTransform: true,
+    shortTranslate: true,
+    shortScale: true,
+    shortRotate: true,
+    removeUseless: true,
+    collapseIntoOne: true,
+    leadingZero: true,
+    negativeExtraSpace: false
+};
+
+var cleanupOutData = require('../lib/svgo/tools').cleanupOutData,
+    EXTEND = require('whet.extend'),
+    transform2js = require('./_transforms.js').transform2js,
+    transformsMultiply = require('./_transforms.js').transformsMultiply,
+    matrixToTransform = require('./_transforms.js').matrixToTransform,
+    degRound,
+    floatRound,
+    transformRound;
+
+/**
+ * Convert matrices to the short aliases,
+ * convert long translate, scale or rotate transform notations to the shorts ones,
+ * convert transforms to the matrices and multiply them all into one,
+ * remove useless transforms.
+ *
+ * @see http://www.w3.org/TR/SVG/coords.html#TransformMatrixDefined
+ *
+ * @param {Object} item current iteration item
+ * @param {Object} params plugin params
+ * @return {Boolean} if false, item will be filtered out
+ *
+ * @author Kir Belevich
+ */
+exports.fn = function(item, params) {
+
+    if (item.elem) {
+
+        // transform
+        if (item.hasAttr('transform')) {
+            convertTransform(item, 'transform', params);
+        }
+
+        // gradientTransform
+        if (item.hasAttr('gradientTransform')) {
+            convertTransform(item, 'gradientTransform', params);
+        }
+
+        // patternTransform
+        if (item.hasAttr('patternTransform')) {
+            convertTransform(item, 'patternTransform', params);
+        }
+
+    }
+
+};
+
+/**
+ * Main function.
+ *
+ * @param {Object} item input item
+ * @param {String} attrName attribute name
+ * @param {Object} params plugin params
+ */
+function convertTransform(item, attrName, params) {
+    var data = transform2js(item.attr(attrName).value);
+    params = definePrecision(data, params);
+
+    if (params.collapseIntoOne && data.length > 1) {
+        data = [transformsMultiply(data)];
+    }
+
+    if (params.convertToShorts) {
+        data = convertToShorts(data, params);
+    } else {
+        data.forEach(roundTransform);
+    }
+
+    if (params.removeUseless) {
+        data = removeUseless(data);
+    }
+
+    if (data.length) {
+        item.attr(attrName).value = js2transform(data, params);
+    } else {
+        item.removeAttr(attrName);
+    }
+}
+
+/**
+ * Defines precision to work with certain parts.
+ * transformPrecision - for scale and four first matrix parameters (needs a better precision due to multiplying),
+ * floatPrecision - for translate including two last matrix and rotate parameters,
+ * degPrecision - for rotate and skew. By default it's equal to (rougly)
+ * transformPrecision - 2 or floatPrecision whichever is lower. Can be set in params.
+ *
+ * @param {Array} transforms input array
+ * @param {Object} params plugin params
+ * @return {Array} output array
+ */
+function definePrecision(data, params) {
+    /* jshint validthis: true */
+    var matrixData = data.reduce(getMatrixData, []),
+        significantDigits = params.transformPrecision;
+
+    // Clone params so it don't affect other elements transformations.
+    params = EXTEND({}, params);
+
+    // Limit transform precision with matrix one. Calculating with larger precision doesn't add any value.
+    if (matrixData.length) {
+        params.transformPrecision = Math.min(params.transformPrecision,
+            Math.max.apply(Math, matrixData.map(floatDigits)) || params.transformPrecision);
+
+        significantDigits = Math.max.apply(Math, matrixData.map(function(n) {
+            return String(n).replace(/\D+/g, '').length; // Number of digits in a number. 123.45 → 5
+        }));
+    }
+    // No sense in angle precision more then number of significant digits in matrix.
+    if (!('degPrecision' in params)) {
+        params.degPrecision = Math.max(0, Math.min(params.floatPrecision, significantDigits - 2));
+    }
+
+    floatRound = params.floatPrecision >= 1 && params.floatPrecision < 20 ?
+        smartRound.bind(this, params.floatPrecision) :
+        round;
+    degRound = params.degPrecision >= 1 && params.floatPrecision < 20 ?
+        smartRound.bind(this, params.degPrecision) :
+        round;
+    transformRound = params.transformPrecision >= 1 && params.floatPrecision < 20 ?
+        smartRound.bind(this, params.transformPrecision) :
+        round;
+
+    return params;
+}
+
+/**
+ * Gathers four first matrix parameters.
+ *
+ * @param {Array} a array of data
+ * @param {Object} transform
+ * @return {Array} output array
+ */
+function getMatrixData(a, b) {
+    return b.name == 'matrix' ? a.concat(b.data.slice(0, 4)) : a;
+}
+
+/**
+ * Returns number of digits after the point. 0.125 → 3
+ */
+function floatDigits(n) {
+    return (n = String(n)).slice(n.indexOf('.')).length - 1;
+}
+
+/**
+ * Convert transforms to the shorthand alternatives.
+ *
+ * @param {Array} transforms input array
+ * @param {Object} params plugin params
+ * @return {Array} output array
+ */
+function convertToShorts(transforms, params) {
+
+    for(var i = 0; i < transforms.length; i++) {
+
+        var transform = transforms[i];
+
+        // convert matrix to the short aliases
+        if (
+            params.matrixToTransform &&
+            transform.name === 'matrix'
+        ) {
+            var decomposed = matrixToTransform(transform, params);
+            if (decomposed != transform &&
+                js2transform(decomposed, params).length <= js2transform([transform], params).length) {
+
+                transforms.splice.apply(transforms, [i, 1].concat(decomposed));
+            }
+            transform = transforms[i];
+        }
+
+        // fixed-point numbers
+        // 12.754997 → 12.755
+        roundTransform(transform);
+
+        // convert long translate transform notation to the shorts one
+        // translate(10 0) → translate(10)
+        if (
+            params.shortTranslate &&
+            transform.name === 'translate' &&
+            transform.data.length === 2 &&
+            !transform.data[1]
+        ) {
+            transform.data.pop();
+        }
+
+        // convert long scale transform notation to the shorts one
+        // scale(2 2) → scale(2)
+        if (
+            params.shortScale &&
+            transform.name === 'scale' &&
+            transform.data.length === 2 &&
+            transform.data[0] === transform.data[1]
+        ) {
+            transform.data.pop();
+        }
+
+        // convert long rotate transform notation to the short one
+        // translate(cx cy) rotate(a) translate(-cx -cy) → rotate(a cx cy)
+        if (
+            params.shortRotate &&
+            transforms[i - 2] &&
+            transforms[i - 2].name === 'translate' &&
+            transforms[i - 1].name === 'rotate' &&
+            transforms[i].name === 'translate' &&
+            transforms[i - 2].data[0] === -transforms[i].data[0] &&
+            transforms[i - 2].data[1] === -transforms[i].data[1]
+        ) {
+            transforms.splice(i - 2, 3, {
+                name: 'rotate',
+                data: [
+                    transforms[i - 1].data[0],
+                    transforms[i - 2].data[0],
+                    transforms[i - 2].data[1]
+                ]
+            });
+
+            // splice compensation
+            i -= 2;
+
+            transform = transforms[i];
+        }
+
+    }
+
+    return transforms;
+
+}
+
+/**
+ * Remove useless transforms.
+ *
+ * @param {Array} transforms input array
+ * @return {Array} output array
+ */
+function removeUseless(transforms) {
+
+    return transforms.filter(function(transform) {
+
+        // translate(0), rotate(0[, cx, cy]), skewX(0), skewY(0)
+        if (
+            ['translate', 'rotate', 'skewX', 'skewY'].indexOf(transform.name) > -1 &&
+            (transform.data.length == 1 || transform.name == 'rotate') &&
+            !transform.data[0] ||
+
+            // translate(0, 0)
+            transform.name == 'translate' &&
+            !transform.data[0] &&
+            !transform.data[1] ||
+
+            // scale(1)
+            transform.name == 'scale' &&
+            transform.data[0] == 1 &&
+            (transform.data.length < 2 || transform.data[1] == 1) ||
+
+            // matrix(1 0 0 1 0 0)
+            transform.name == 'matrix' &&
+            transform.data[0] == 1 &&
+            transform.data[3] == 1 &&
+            !(transform.data[1] || transform.data[2] || transform.data[4] || transform.data[5])
+        ) {
+            return false;
+        }
+
+        return true;
+
+    });
+
+}
+
+/**
+ * Convert transforms JS representation to string.
+ *
+ * @param {Array} transformJS JS representation array
+ * @param {Object} params plugin params
+ * @return {String} output string
+ */
+function js2transform(transformJS, params) {
+
+    var transformString = '';
+
+    // collect output value string
+    transformJS.forEach(function(transform) {
+        roundTransform(transform);
+        transformString += (transformString && ' ') + transform.name + '(' + cleanupOutData(transform.data, params) + ')';
+    });
+
+    return transformString;
+
+}
+
+function roundTransform(transform) {
+    switch (transform.name) {
+        case 'translate':
+            transform.data = floatRound(transform.data);
+            break;
+        case 'rotate':
+            transform.data = degRound(transform.data.slice(0, 1)).concat(floatRound(transform.data.slice(1)));
+            break;
+        case 'skewX':
+        case 'skewY':
+            transform.data = degRound(transform.data);
+            break;
+        case 'scale':
+            transform.data = transformRound(transform.data);
+            break;
+        case 'matrix':
+            transform.data = transformRound(transform.data.slice(0, 4)).concat(floatRound(transform.data.slice(4)));
+            break;
+    }
+    return transform;
+}
+
+/**
+ * Rounds numbers in array.
+ *
+ * @param {Array} data input data array
+ * @return {Array} output data array
+ */
+function round(data) {
+    return data.map(Math.round);
+}
+
+/**
+ * Decrease accuracy of floating-point numbers
+ * in transforms keeping a specified number of decimals.
+ * Smart rounds values like 2.349 to 2.35.
+ *
+ * @param {Number} fixed number of decimals
+ * @param {Array} data input data array
+ * @return {Array} output data array
+ */
+function smartRound(precision, data) {
+    for (var i = data.length, tolerance = +Math.pow(.1, precision).toFixed(precision); i--;) {
+        if (data[i].toFixed(precision) != data[i]) {
+            var rounded = +data[i].toFixed(precision - 1);
+            data[i] = +Math.abs(rounded - data[i]).toFixed(precision + 1) >= tolerance ?
+                +data[i].toFixed(precision) :
+                rounded;
+        }
+    }
+    return data;
+}
+
+},{"../lib/svgo/tools":106,"./_transforms.js":139,"whet.extend":155}],143:[function(require,module,exports){
+'use strict';
+
+exports.type = 'perItem';
+
+exports.active = true;
+
+exports.description = 'removes comments';
+
+/**
+ * Remove comments.
+ *
+ * @example
+ * <!-- Generator: Adobe Illustrator 15.0.0, SVG Export
+ * Plug-In . SVG Version: 6.00 Build 0)  -->
+ *
+ * @param {Object} item current iteration item
+ * @return {Boolean} if false, item will be filtered out
+ *
+ * @author Kir Belevich
+ */
+exports.fn = function(item) {
+
+    if (item.comment && item.comment.charAt(0) !== '!') {
+        return false;
+    }
+
+};
+
+},{}],144:[function(require,module,exports){
+var inherits = require('inherits')
+
+module.exports = function(THREE) {
+
+    function Complex(mesh) {
+        if (!(this instanceof Complex))
+            return new Complex(mesh)
+        THREE.Geometry.call(this)
+        this.dynamic = true
+
+        if (mesh)
+            this.update(mesh)
+    }
+
+    inherits(Complex, THREE.Geometry)
+
+    //may expose these in next version
+    Complex.prototype._updatePositions = function(positions) {
+        for (var i=0; i<positions.length; i++) {
+            var pos = positions[i]
+            if (i > this.vertices.length-1)
+                this.vertices.push(new THREE.Vector3().fromArray(pos))
+            else 
+                this.vertices[i].fromArray(pos)
+        }
+        this.vertices.length = positions.length
+        this.verticesNeedUpdate = true
+    }
+
+    Complex.prototype._updateCells = function(cells) {
+        for (var i=0; i<cells.length; i++) {
+            var face = cells[i]
+            if (i > this.faces.length-1)
+                this.faces.push(new THREE.Face3(face[0], face[1], face[2]))
+            else {
+                var tf = this.faces[i]
+                tf.a = face[0]
+                tf.b = face[1]
+                tf.c = face[2]
+            }
+        }
+
+        this.faces.length = cells.length
+        this.elementsNeedUpdate = true
+    }
+
+    Complex.prototype.update = function(mesh) {
+        this._updatePositions(mesh.positions)
+        this._updateCells(mesh.cells)
+    }
+
+    return Complex
+}
+},{"inherits":52}],145:[function(require,module,exports){
+;(function() {
+
+"use strict";
+
+var root = this
+
+var has_require = typeof require !== 'undefined'
+
+var THREE = root.THREE || has_require && require('three')
+if( !THREE )
+	throw new Error( 'EquirectangularToCubemap requires three.js' )
+
+function MeshLine() {
+
+	this.positions = [];
+
+	this.previous = [];
+	this.next = [];
+	this.side = [];
+	this.width = [];
+	this.indices_array = [];
+	this.uvs = [];
+	this.counters = [];
+	this.geometry = new THREE.BufferGeometry();
+
+	this.widthCallback = null;
+
+}
+
+MeshLine.prototype.setGeometry = function( g, c ) {
+
+	this.widthCallback = c;
+
+	this.positions = [];
+	this.counters = [];
+
+	if( g instanceof THREE.Geometry ) {
+		for( var j = 0; j < g.vertices.length; j++ ) {
+			var v = g.vertices[ j ];
+			var c = j/g.vertices.length;
+			this.positions.push( v.x, v.y, v.z );
+			this.positions.push( v.x, v.y, v.z );
+			this.counters.push(c);
+			this.counters.push(c);
+		}
+	}
+
+	if( g instanceof THREE.BufferGeometry ) {
+		// read attribute positions ?
+	}
+
+	if( g instanceof Float32Array || g instanceof Array ) {
+		for( var j = 0; j < g.length; j += 3 ) {
+			var c = j/g.length;
+			this.positions.push( g[ j ], g[ j + 1 ], g[ j + 2 ] );
+			this.positions.push( g[ j ], g[ j + 1 ], g[ j + 2 ] );
+			this.counters.push(c);
+			this.counters.push(c);
+		}
+	}
+
+	this.process();
+
+}
+
+MeshLine.prototype.compareV3 = function( a, b ) {
+
+	var aa = a * 6;
+	var ab = b * 6;
+	return ( this.positions[ aa ] === this.positions[ ab ] ) && ( this.positions[ aa + 1 ] === this.positions[ ab + 1 ] ) && ( this.positions[ aa + 2 ] === this.positions[ ab + 2 ] );
+
+}
+
+MeshLine.prototype.copyV3 = function( a ) {
+
+	var aa = a * 6;
+	return [ this.positions[ aa ], this.positions[ aa + 1 ], this.positions[ aa + 2 ] ];
+
+}
+
+MeshLine.prototype.process = function() {
+
+	var l = this.positions.length / 6;
+
+	this.previous = [];
+	this.next = [];
+	this.side = [];
+	this.width = [];
+	this.indices_array = [];
+	this.uvs = [];
+
+	for( var j = 0; j < l; j++ ) {
+		this.side.push( 1 );
+		this.side.push( -1 );
+	}
+
+	var w;
+	for( var j = 0; j < l; j++ ) {
+		if( this.widthCallback ) w = this.widthCallback( j / ( l -1 ) );
+		else w = 1;
+		this.width.push( w );
+		this.width.push( w );
+	}
+
+	for( var j = 0; j < l; j++ ) {
+		this.uvs.push( j / ( l - 1 ), 0 );
+		this.uvs.push( j / ( l - 1 ), 1 );
+	}
+
+	var v;
+
+	if( this.compareV3( 0, l - 1 ) ){
+		v = this.copyV3( l - 2 );
+	} else {
+		v = this.copyV3( 0 );
+	}
+	this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+	this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+	for( var j = 0; j < l - 1; j++ ) {
+		v = this.copyV3( j );
+		this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+		this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+	}
+
+	for( var j = 1; j < l; j++ ) {
+		v = this.copyV3( j );
+		this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+		this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+	}
+
+	if( this.compareV3( l - 1, 0 ) ){
+		v = this.copyV3( 1 );
+	} else {
+		v = this.copyV3( l - 1 );
+	}
+	this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+	this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
+
+	for( var j = 0; j < l - 1; j++ ) {
+		var n = j * 2;
+		this.indices_array.push( n, n + 1, n + 2 );
+		this.indices_array.push( n + 2, n + 1, n + 3 );
+	}
+
+	if (!this.attributes) {
+		this.attributes = {
+			position: new THREE.BufferAttribute( new Float32Array( this.positions ), 3 ),
+			previous: new THREE.BufferAttribute( new Float32Array( this.previous ), 3 ),
+			next: new THREE.BufferAttribute( new Float32Array( this.next ), 3 ),
+			side: new THREE.BufferAttribute( new Float32Array( this.side ), 1 ),
+			width: new THREE.BufferAttribute( new Float32Array( this.width ), 1 ),
+			uv: new THREE.BufferAttribute( new Float32Array( this.uvs ), 2 ),
+			index: new THREE.BufferAttribute( new Uint16Array( this.indices_array ), 1 ),
+			counters: new THREE.BufferAttribute( new Float32Array( this.counters ), 1 )
+		}
+	} else {
+		this.attributes.position.copyArray(new Float32Array(this.positions));
+		this.attributes.position.needsUpdate = true;
+		this.attributes.previous.copyArray(new Float32Array(this.previous));
+		this.attributes.previous.needsUpdate = true;
+		this.attributes.next.copyArray(new Float32Array(this.next));
+		this.attributes.next.needsUpdate = true;
+		this.attributes.side.copyArray(new Float32Array(this.side));
+		this.attributes.side.needsUpdate = true;
+		this.attributes.width.copyArray(new Float32Array(this.width));
+		this.attributes.width.needsUpdate = true;
+		this.attributes.uv.copyArray(new Float32Array(this.uvs));
+		this.attributes.uv.needsUpdate = true;
+		this.attributes.index.copyArray(new Uint16Array(this.indices_array));
+		this.attributes.index.needsUpdate = true;
+    }
+
+	this.geometry.addAttribute( 'position', this.attributes.position );
+	this.geometry.addAttribute( 'previous', this.attributes.previous );
+	this.geometry.addAttribute( 'next', this.attributes.next );
+	this.geometry.addAttribute( 'side', this.attributes.side );
+	this.geometry.addAttribute( 'width', this.attributes.width );
+	this.geometry.addAttribute( 'uv', this.attributes.uv );
+	this.geometry.addAttribute( 'counters', this.attributes.counters );
+
+	this.geometry.setIndex( this.attributes.index );
+
+}
+
+function memcpy (src, srcOffset, dst, dstOffset, length) {
+	var i
+
+	src = src.subarray || src.slice ? src : src.buffer
+	dst = dst.subarray || dst.slice ? dst : dst.buffer
+
+	src = srcOffset ? src.subarray ?
+	src.subarray(srcOffset, length && srcOffset + length) :
+	src.slice(srcOffset, length && srcOffset + length) : src
+
+	if (dst.set) {
+		dst.set(src, dstOffset)
+	} else {
+		for (i=0; i<src.length; i++) {
+			dst[i + dstOffset] = src[i]
+		}
+	}
+
+	return dst
+}
+
+/**
+ * Fast method to advance the line by one position.  The oldest position is removed.
+ * @param position
+ */
+MeshLine.prototype.advance = function(position) {
+
+	var positions = this.attributes.position.array;
+	var previous = this.attributes.previous.array;
+	var next = this.attributes.next.array;
+	var l = positions.length;
+
+	// PREVIOUS
+	memcpy( positions, 0, previous, 0, l );
+
+	// POSITIONS
+	memcpy( positions, 6, positions, 0, l - 6 );
+
+	positions[l - 6] = position.x;
+	positions[l - 5] = position.y;
+	positions[l - 4] = position.z;
+	positions[l - 3] = position.x;
+	positions[l - 2] = position.y;
+	positions[l - 1] = position.z;
+
+    // NEXT
+	memcpy( positions, 6, next, 0, l - 6 );
+
+	next[l - 6]  = position.x;
+	next[l - 5]  = position.y;
+	next[l - 4]  = position.z;
+	next[l - 3]  = position.x;
+	next[l - 2]  = position.y;
+	next[l - 1]  = position.z;
+
+	this.attributes.position.needsUpdate = true;
+	this.attributes.previous.needsUpdate = true;
+	this.attributes.next.needsUpdate = true;
+
+};
+
+function MeshLineMaterial( parameters ) {
+
+	var vertexShaderSource = [
+'precision highp float;',
+'',
+'attribute vec3 position;',
+'attribute vec3 previous;',
+'attribute vec3 next;',
+'attribute float side;',
+'attribute float width;',
+'attribute vec2 uv;',
+'attribute float counters;',
+'',
+'uniform mat4 projectionMatrix;',
+'uniform mat4 modelViewMatrix;',
+'uniform vec2 resolution;',
+'uniform float lineWidth;',
+'uniform vec3 color;',
+'uniform float opacity;',
+'uniform float near;',
+'uniform float far;',
+'uniform float sizeAttenuation;',
+'',
+'varying vec2 vUV;',
+'varying vec4 vColor;',
+'varying float vCounters;',
+'',
+'vec2 fix( vec4 i, float aspect ) {',
+'',
+'    vec2 res = i.xy / i.w;',
+'    res.x *= aspect;',
+'	 vCounters = counters;',
+'    return res;',
+'',
+'}',
+'',
+'void main() {',
+'',
+'    float aspect = resolution.x / resolution.y;',
+'	 float pixelWidthRatio = 1. / (resolution.x * projectionMatrix[0][0]);',
+'',
+'    vColor = vec4( color, opacity );',
+'    vUV = uv;',
+'',
+'    mat4 m = projectionMatrix * modelViewMatrix;',
+'    vec4 finalPosition = m * vec4( position, 1.0 );',
+'    vec4 prevPos = m * vec4( previous, 1.0 );',
+'    vec4 nextPos = m * vec4( next, 1.0 );',
+'',
+'    vec2 currentP = fix( finalPosition, aspect );',
+'    vec2 prevP = fix( prevPos, aspect );',
+'    vec2 nextP = fix( nextPos, aspect );',
+'',
+'	 float pixelWidth = finalPosition.w * pixelWidthRatio;',
+'    float w = 1.8 * pixelWidth * lineWidth * width;',
+'',
+'    if( sizeAttenuation == 1. ) {',
+'        w = 1.8 * lineWidth * width;',
+'    }',
+'',
+'    vec2 dir;',
+'    if( nextP == currentP ) dir = normalize( currentP - prevP );',
+'    else if( prevP == currentP ) dir = normalize( nextP - currentP );',
+'    else {',
+'        vec2 dir1 = normalize( currentP - prevP );',
+'        vec2 dir2 = normalize( nextP - currentP );',
+'        dir = normalize( dir1 + dir2 );',
+'',
+'        vec2 perp = vec2( -dir1.y, dir1.x );',
+'        vec2 miter = vec2( -dir.y, dir.x );',
+'        //w = clamp( w / dot( miter, perp ), 0., 4. * lineWidth * width );',
+'',
+'    }',
+'',
+'    //vec2 normal = ( cross( vec3( dir, 0. ), vec3( 0., 0., 1. ) ) ).xy;',
+'    vec2 normal = vec2( -dir.y, dir.x );',
+'    normal.x /= aspect;',
+'    normal *= .5 * w;',
+'',
+'    vec4 offset = vec4( normal * side, 0.0, 1.0 );',
+'    finalPosition.xy += offset.xy;',
+'',
+'    gl_Position = finalPosition;',
+'',
+'}' ];
+
+	var fragmentShaderSource = [
+		'#extension GL_OES_standard_derivatives : enable',
+'precision mediump float;',
+'',
+'uniform sampler2D map;',
+'uniform sampler2D alphaMap;',
+'uniform float useMap;',
+'uniform float useAlphaMap;',
+'uniform float useDash;',
+'uniform vec2 dashArray;',
+'uniform float visibility;',
+'uniform float alphaTest;',
+'uniform vec2 repeat;',
+'',
+'varying vec2 vUV;',
+'varying vec4 vColor;',
+'varying float vCounters;',
+'',
+'void main() {',
+'',
+'    vec4 c = vColor;',
+'    if( useMap == 1. ) c *= texture2D( map, vUV * repeat );',
+'    if( useAlphaMap == 1. ) c.a *= texture2D( alphaMap, vUV * repeat ).a;',
+'	 if( c.a < alphaTest ) discard;',
+'	 if( useDash == 1. ){',
+'	 	 ',
+'	 }',
+'    gl_FragColor = c;',
+'	 gl_FragColor.a *= step(vCounters,visibility);',
+'}' ];
+
+	function check( v, d ) {
+		if( v === undefined ) return d;
+		return v;
+	}
+
+	THREE.Material.call( this );
+
+	parameters = parameters || {};
+
+	this.lineWidth = check( parameters.lineWidth, 1 );
+	this.map = check( parameters.map, null );
+	this.useMap = check( parameters.useMap, 0 );
+	this.alphaMap = check( parameters.alphaMap, null );
+	this.useAlphaMap = check( parameters.useAlphaMap, 0 );
+	this.color = check( parameters.color, new THREE.Color( 0xffffff ) );
+	this.opacity = check( parameters.opacity, 1 );
+	this.resolution = check( parameters.resolution, new THREE.Vector2( 1, 1 ) );
+	this.sizeAttenuation = check( parameters.sizeAttenuation, 1 );
+	this.near = check( parameters.near, 1 );
+	this.far = check( parameters.far, 1 );
+	this.dashArray = check( parameters.dashArray, [] );
+	this.useDash = ( this.dashArray !== [] ) ? 1 : 0;
+	this.visibility = check( parameters.visibility, 1 );
+	this.alphaTest = check( parameters.alphaTest, 0 );
+	this.repeat = check( parameters.repeat, new THREE.Vector2( 1, 1 ) );
+
+	var material = new THREE.RawShaderMaterial( {
+		uniforms:{
+			lineWidth: { type: 'f', value: this.lineWidth },
+			map: { type: 't', value: this.map },
+			useMap: { type: 'f', value: this.useMap },
+			alphaMap: { type: 't', value: this.alphaMap },
+			useAlphaMap: { type: 'f', value: this.useAlphaMap },
+			color: { type: 'c', value: this.color },
+			opacity: { type: 'f', value: this.opacity },
+			resolution: { type: 'v2', value: this.resolution },
+			sizeAttenuation: { type: 'f', value: this.sizeAttenuation },
+			near: { type: 'f', value: this.near },
+			far: { type: 'f', value: this.far },
+			dashArray: { type: 'v2', value: new THREE.Vector2( this.dashArray[ 0 ], this.dashArray[ 1 ] ) },
+			useDash: { type: 'f', value: this.useDash },
+			visibility: {type: 'f', value: this.visibility},
+			alphaTest: {type: 'f', value: this.alphaTest},
+			repeat: { type: 'v2', value: this.repeat }
+		},
+		vertexShader: vertexShaderSource.join( '\r\n' ),
+		fragmentShader: fragmentShaderSource.join( '\r\n' )
+	});
+
+	delete parameters.lineWidth;
+	delete parameters.map;
+	delete parameters.useMap;
+	delete parameters.alphaMap;
+	delete parameters.useAlphaMap;
+	delete parameters.color;
+	delete parameters.opacity;
+	delete parameters.resolution;
+	delete parameters.sizeAttenuation;
+	delete parameters.near;
+	delete parameters.far;
+	delete parameters.dashArray;
+	delete parameters.visibility;
+	delete parameters.alphaTest;
+	delete parameters.repeat;
+
+	material.type = 'MeshLineMaterial';
+
+	material.setValues( parameters );
+
+	return material;
+
+};
+
+MeshLineMaterial.prototype = Object.create( THREE.Material.prototype );
+MeshLineMaterial.prototype.constructor = MeshLineMaterial;
+
+MeshLineMaterial.prototype.copy = function ( source ) {
+
+	THREE.Material.prototype.copy.call( this, source );
+
+	this.lineWidth = source.lineWidth;
+	this.map = source.map;
+	this.useMap = source.useMap;
+	this.alphaMap = source.alphaMap;
+	this.useAlphaMap = source.useAlphaMap;
+	this.color.copy( source.color );
+	this.opacity = source.opacity;
+	this.resolution.copy( source.resolution );
+	this.sizeAttenuation = source.sizeAttenuation;
+	this.near = source.near;
+	this.far = source.far;
+	this.dashArray.copy( source.dashArray );
+	this.useDash = source.useDash;
+	this.visibility = source.visibility;
+	this.alphaTest = source.alphaTest;
+	this.repeat.copy( source.repeat );
+
+	return this;
+
+};
+
+if( typeof exports !== 'undefined' ) {
+	if( typeof module !== 'undefined' && module.exports ) {
+		exports = module.exports = { MeshLine: MeshLine, MeshLineMaterial: MeshLineMaterial };
+	}
+	exports.MeshLine = MeshLine;
+	exports.MeshLineMaterial = MeshLineMaterial;
+}
+else {
+	root.MeshLine = MeshLine;
+	root.MeshLineMaterial = MeshLineMaterial;
+}
+
+}).call(this);
+
+
+},{"three":146}],146:[function(require,module,exports){
 (function (global, factory) {
 	typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
 	typeof define === 'function' && define.amd ? define(['exports'], factory) :
@@ -57713,7 +70849,7 @@ module.exports = function contours(svg, scale) {
 
 })));
 
-},{}],99:[function(require,module,exports){
+},{}],147:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -57729,7 +70865,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],100:[function(require,module,exports){
+},{}],148:[function(require,module,exports){
 "use strict"
 
 module.exports = twoProduct
@@ -57763,7 +70899,7 @@ function twoProduct(a, b, result) {
 
   return [ y, x ]
 }
-},{}],101:[function(require,module,exports){
+},{}],149:[function(require,module,exports){
 "use strict"
 
 module.exports = fastTwoSum
@@ -57781,7 +70917,7 @@ function fastTwoSum(a, b, result) {
 	}
 	return [ar+br, x]
 }
-},{}],102:[function(require,module,exports){
+},{}],150:[function(require,module,exports){
 (function (global,Buffer){
 'use strict'
 
@@ -57998,7 +71134,7 @@ exports.clearCache = function clearCache() {
   }
 }
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"bit-twiddle":22,"buffer":34,"dup":49}],103:[function(require,module,exports){
+},{"bit-twiddle":23,"buffer":36,"dup":47}],151:[function(require,module,exports){
 "use strict"; "use restrict";
 
 module.exports = UnionFind;
@@ -58061,11 +71197,11 @@ proto.link = function(x, y) {
     ++ranks[xr];
   }
 }
-},{}],104:[function(require,module,exports){
+},{}],152:[function(require,module,exports){
 module.exports = function range(min, max, value) {
   return (value - min) / (max - min)
 }
-},{}],105:[function(require,module,exports){
+},{}],153:[function(require,module,exports){
 (function (global){
 
 /**
@@ -58136,13242 +71272,15 @@ function config (name) {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],106:[function(require,module,exports){
+},{}],154:[function(require,module,exports){
 module.exports = function vec2Copy(out, a) {
     out[0] = a[0]
     out[1] = a[1]
     return out
 }
-},{}],107:[function(require,module,exports){
-// js import vs require
-/*jshint esversion: 6 */
-
-var load = require('load-svg');
-
-var svgMesh3d = require('svg-mesh-3d');
-var MeshLine = require('three.meshline');
-var SVGO = require('svgo');
-var normalizeSVGPath = require('normalize-svg-path');
-require('./path-data-polyfill.es5.js');
-
-/* global AFRAME */
-
-if (typeof AFRAME === 'undefined') {
-  throw new Error('Component attempted to register before AFRAME was available.');
-}
-
-/**
- * Svgpath component for A-Frame.
- */
-AFRAME.registerComponent('svgfile', {
-  schema: {
-    color: {type: 'color', default: '#c23d3e'},
-    svgFile: {type: 'asset', default: ''},
-    width: { type: 'number', default: NaN},
-    height: { type: 'number', default: NaN},
-    opacity: {type: 'number', default: NaN},
-    curveQuality: {type: 'number', default:20},
-    strokeWidthToAFrameUnits: { type:'number', default: 0.01},
-    debug: {type: 'boolean', default: false} // Set to True to see wireframe
-  },
-
-  /**
-   * Set if component needs multiple instancing.
-   */
-  multiple: true,
-
-  
-  addlisteners: function () {
-    // canvas does not fire resize events, need window
-    window.addEventListener( 'resize', this.do_update.bind (this) );
-  },
-  do_update: function () {
-  
-    var canvas = this.el.sceneEl.canvas;
-    this.resolution.set( canvas.width,  canvas.height );
-    //console.log( this.resolution );
-    this.update();
-
-  },
-
-  /**
-   * Called once when component is attached. Generally for initial setup.
-   */
-  init: function () { },
-
-  update: function(oldData){
-
-    oldData = oldData || {};
-
-
-    var data = this.data;
-    var svgfileComponent = this;
-    var el = this.el;
-    var myself = this;
-    var meshData;
-    this.resolution = new THREE.Vector2 ( window.innerWidth, window.innerHeight ) ;
-    var sceneEl = this.el.sceneEl;
-    sceneEl.addEventListener( 'render-target-loaded', this.do_update.bind(this) );
-    sceneEl.addEventListener( 'render-target-loaded', this.addlisteners.bind(this) );
-    var convertTransform = require('svgo/plugins/convertTransform.js');
-    var convertStyleToAttrs = require('svgo/plugins/convertStyleToAttrs.js');
-    var convertShapeToPath = require('./plugins/convertShapeToPath.js'); 
-    var convertPathData = require('svgo/plugins/convertPathData.js'); // This generates nearly unparsable compact numbers, like "-1.4.03"
-    var removeComments = require('svgo/plugins/removeComments.js');
-    var svgo = new SVGO({
-      full    : true,
-      quiet:false,
-      multipass:true,
-      plugins : [ 
-        {convertStyleToAttrs:convertStyleToAttrs},
-        {convertShapeToPath:convertShapeToPath},
-        {convertTransform:convertTransform},
-        //{convertPathData: convertPathData},
-        {removeComments: removeComments} ],
-      js2svg  : { pretty: true }
-    });
-
-
-
-    // Run init() as a callback after we load the SVG content from the file URL
-    if (this.svgDOM === undefined) {
-      load(data.svgFile, function (err, svgDOM) {
-        svgfileComponent.svgDOM = svgDOM;
-        svgfileComponent.update();
-      });
-      return;
-    }
-
-    // Run init() again as a callback after we run the SVG through SVGO (to convert polygons to path, clean up)
-    if (this.svgDOMcleaned === undefined) {
-      svgo.optimize(svgfileComponent.svgDOM.outerHTML, function(result) {
-        var parser = new DOMParser();
-        console.log(result.data);
-        svgfileComponent.svgDOMcleaned = parser.parseFromString(result.data, "image/svg+xml");
-        svgfileComponent.update({ready: true});
-      });
-      return;
-    }
-
-    /// We should have a {ready:true} object at this point if we should continue further
-    if (Object.keys(oldData).length === 0 && oldData.constructor === Object) return;
-
-
-    function hasNoFill(el){
-      var fill = el.getAttribute("fill") || "yes";
-      fill=fill.toLowerCase();
-      return (fill == "transparent" || fill=="none");
-    }
-
-    function calcColor(el){
-      // Should look up CSS Class too...
-      var f= el.getAttribute("fill") || data.color;
-      if (f=="transparent" || f=="none") f = null;
-      return f;
-    }
-    function calcSColor(el){
-      return el.getAttribute("stroke") || data.color;
-    }
-
-    function pathDataToString(dat){
-      return dat.reduce(function (acc, val){
-        return acc + ' ' + val.type + ' ' + val.values.join(' ');
-      },'');
-    }
-    function getStrokeWidth(path){
-      if (!path) return 1; 
-      var z = path.getAttribute("stroke-width");
-      if (z==null || z===undefined ) return 1;
-      if (typeof z == "string") z=z.replace("px","")*1;
-      return z;
-    }
-    // Reference: https://developer.mozilla.org/en/docs/Web/API/SVGTransform
-    function getScaleTransform(path){
-      var ret = {x:1, y:1};
-      for (var i=0; i<path.transform.baseVal.length; i++) {
-        if (path.transform.baseVal[i].type==3) {ret.x += path.transform.baseVal[i].matrix.a; ret.y += path.transform.baseVal[i].matrix.d;}
-      }
-      return ret;
-    }
-    function getTranslateTransform(path){
-      var ret = {x:0, y:0};
-      for (var i=0; i<path.transform.baseVal.length; i++) {
-        if (path.transform.baseVal[i].type==2) {ret.x += path.transform.baseVal[i].matrix.e; ret.y += path.transform.baseVal[i].matrix.f;}
-      }
-      return ret;
-    }
-
-    function extractSVGPaths(svgDoc) {
-
-        var ret = [];
-        // rect, polygon should've been converted to <path> by SVGO at this point
-        if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
-        if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
-        if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
-
-        // These elements are not supported:
-        if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
-        if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
-
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).forEach(function (path) {
-          var d = pathDataToString(path.getPathData());
-          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
-          n.closed =  d.search(/Z/i)>0;
-          if (hasNoFill(path)) n.closed=false;
-          ret.push(n);
-        });
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('circle')).forEach(function (path) {
-          //https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path
-          //var cx=path.cx.baseVal.value; var cy=path.cy.baseVal.value; var r=path.r.baseVal.value; var nr=-r; var dr=r*2; var ndr=-dr;
-          //var d = `M ${cx}, ${cy}    m ${nr}, 0     a ${r},${r} 0 1,0 ${dr},0    a ${r},${r} 0 1,0 ${ndr},0`;
-          var cirlceAttrsToPath = function(r,cx,cy) { return `M ${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;};
-          var d = cirlceAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value); 
-          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('ellipse')).forEach(function (path) {
-          // https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path/10477334#10477334
-          function ellipseAttrsToPath (rx,cx,ry,cy) {
-            return `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
-          }
-          var d = ellipseAttrsToPath( path.rx.baseVal.value, path.cx.baseVal.value, path.ry.baseVal.value, path.cy.baseVal.value);
-          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-
-
-        return ret;
-    } // function extractSVGPaths()
-
-
-
-
-
-
-    var allPaths = extractSVGPaths(svgfileComponent.svgDOMcleaned);
-
-    // Get the SVG image size, in SVG coordinates
-    var viewBox = AFRAME.utils.coordinates.parse(svgfileComponent.svgDOMcleaned.documentElement.getAttribute('viewBox'));
-    if (!viewBox){
-      console.error('No viewBox attribute found in SVG file. This is required. Note that this property is case sensitive.');
-      console.log('Info: https://www.w3.org/TR/SVG/styling.html#CaseSensitivity');
-    }
-    var width = viewBox.z - viewBox.x;
-    var height = viewBox.w - viewBox.y;
-    var aspectRatio = width/height;
-    if (isNaN(data.width) && isNaN(data.height)) { // Neither is specified; use SVG native size
-      data.width=width; data.height = height;
-    } else if (!isNaN(data.width) ) { // Width is specified, force height to match according to aspectRatio
-      data.height = data.width/aspectRatio;
-    } else if (!isNaN(data.height)) { // Height is specified, force width to match according to aspectRatio
-      data.width = data.height*aspectRatio;
-    }
-
-
-
-    for (var ii=0; ii<allPaths.length; ii++){
-        var n = allPaths[ii];
-        var mesh;
-
-        n.fillColor = n.fillColor || data.color;
-        // n.closed=false;
-
-        if (n.closed) {
-              if (data.debug){
-                console.log('MeshPolygon for ');
-                console.log(n);
-              }
-              var __private_meshData = svgMesh3d(n.d, { // TODO: change from n.d to using n.path.getPathData() SVG2 interface
-                delaunay: true,
-                clean: true,
-                exterior: false,
-                randomization: 1,
-                normalize:false,
-                simplify: 1,
-                scale: data.curveQuality*10 //a positive number, the scale at which to approximate the curves from the SVG paths
-              });
-
-              var __private_material = new THREE.MeshStandardMaterial({
-                wireframe: data.debug,
-                color: n.fillColor,
-                side: THREE.DoubleSide,
-                opacity: isNaN(data.opacity) ? 1 : data.opacity,
-                transparent: isNaN(data.opacity) || data.opacity==1 ? false : true
-              });
-
-            var createGeometry = require('three-simplicial-complex')(THREE);
-            var __private_geometry = createGeometry(__private_meshData);
-              __private_geometry.scale(data.width/width, data.height/height, 1); // Convert from SVG to AFrame units
-              __private_geometry.scale(n.scale.x, n.scale.y, 1); // Apply the transforms while the geometry is still in SVG units
-              __private_geometry.translate(data.width/width * n.translate.x, - data.height/height * n.translate.y, 0);
-              __private_geometry.translate( -data.width/2, data.height/2, 0); // Center at 0,0
-
-              this.el.object3D.add(new THREE.Mesh(__private_geometry, __private_material.clone()));// Set mesh on entity.
-
-        } else { // !n.closed -- draw as MeshLine
-
-
-              if (data.debug){
-                console.log('MeshLine for ');
-                console.log(n);
-              }
-
-              var __private_material = new MeshLine.MeshLineMaterial({
-                color: new THREE.Color(n.strokeColor),
-                resolution: this.resolution,
-                sizeAttenuation: 1,
-                wireframe:false,
-                lineWidth: n.strokeWidth * data.strokeWidthToAFrameUnits,
-                side: THREE.DoubleSide,
-                opacity: isNaN(data.opacity) ? 1 : data.opacity,
-                transparent:  isNaN(data.opacity) ? false : true, // Default opaccity=null so this will be false
-                depthTest: isNaN(data.opacity) ? true : false 
-
-                //near: 0.1,
-                //far: 1000
-              });
-              var debug_material = new THREE.MeshStandardMaterial({ wireframe:true, color:0x00ff00});
-              if (n.strokeColor == "blue")
-                2
-              //var tok = tokenizeSVGPathString(n.d);
-              //geometry = svgPathToGeometry(tok, {curveQuality: data.curveQuality});
-              var svgPathData = n.path.getPathData(); // Uses the SVG2 polyfill. Gives us an array of PathSeg objects; must easier to parse 
-
-              var __private_geometry = svgPathDataToGeometry(svgPathData, {curveQuality: data.curveQuality, height: height});
-              __private_geometry.scale(data.width/width, data.height/height, 1); // Convert from SVG to AFrame units
-              __private_geometry.scale(n.scale.x, n.scale.y, 1); // Apply the transforms while the geometry is still in SVG units
-              __private_geometry.translate(data.width/width * n.translate.x, (- data.height/height * n.translate.y) - (data.height/height * height), 0);
-              __private_geometry.translate( -data.width/2, data.height/2, 0); // Center at 0,0
-
-              var geometryAsArray = [];  // For some inexplicable reason, my THREE.Geometry here is *not* an instanceof THREE.Geometry inside MeshLine. Whatevs.
-              for (var v=0; v<__private_geometry.vertices.length; v++) {
-                geometryAsArray.push(__private_geometry.vertices[v].x);
-                geometryAsArray.push(__private_geometry.vertices[v].y);
-                geometryAsArray.push(__private_geometry.vertices[v].z);
-              }
-              var line = new MeshLine.MeshLine();
-              line.setGeometry( geometryAsArray);
-              //mesh = new THREE.Mesh(line.geometry,  __private_material);
-              //console.log(n.d)
-              //console.log(mesh.geometry.attributes.position.array);
-              if (this.el.object3D.children.length==9) {
-
-                line.geometry = line.geometry.clone();
-/*                var junk = new MeshLine.MeshLine();
-                junk.setGeometry( geometryAsArray);
-                this.el.object3D.add(new THREE.Mesh(junk.geometry,  new THREE.MeshBasicMaterial({visible:true, wireframe:true, color: 0xff00ff })));
-                line.geometry = line.geometry.clone();
-                __private_material = debug_material;
-*/              }  
-              this.el.object3D.add(new THREE.Mesh(line.geometry,  __private_material));
-
-        } // Draw as polygon or as line?
-
-    } // foreach path
-
-  },
-
-
-
-
-  /**
-   * Called when a component is removed (e.g., via removeAttribute).
-   * Generally undoes all modifications to the entity.
-   */
-  remove: function () { },
-
-  /**
-   * Called on each scene tick.
-   */
-  // tick: function (t) { },
-
-  /**
-   * Called when entity pauses.
-   * Use to stop or remove any dynamic or background behavior such as events.
-   */
-  pause: function () { },
-
-  /**
-   * Called when entity resumes.
-   * Use to continue or add any dynamic or background behavior such as events.
-   */
-  play: function () { },
-
-
-  calcBoundingBox: function(meshData){
-    var ret = {
-      x: {min:Infinity, max: -Infinity},
-      y: {min:Infinity, max: -Infinity},
-      z: {min:Infinity, max: -Infinity}};
-    for (var p in meshData.positions) {
-      ret.x.min = Math.min(ret.x.min, meshData.positions[p][0]);
-      ret.x.max = Math.max(ret.x.max, meshData.positions[p][0]);
-      ret.y.min = Math.min(ret.y.min, meshData.positions[p][1]);
-      ret.y.max = Math.max(ret.y.max, meshData.positions[p][1]);
-      ret.z.min = Math.min(ret.z.min, meshData.positions[p][2]);
-      ret.z.max = Math.max(ret.z.max, meshData.positions[p][2]);
-    }
-    return ret;
-  },
-
-
-
-
-}); // end AFRame component
-
-
-
-
-
-
-function svgPathDataToGeometry(svgPathData, opts){
-    var geometry = new THREE.Geometry();
-    var v = new THREE.Vector3(0,0,0);
-    var c = null;
-    var howManyCurves=0;
-    var x, tmp;
-    var p1, p2, c1, c2;
-    var values;
-    var basisVector;
-    var lastPenDown;
-
-    for (var k=0; k<svgPathData.length; k++) {
-      var svgCommand = svgPathData[k];
-      values = svgCommand.values;
-
-      switch (svgCommand.type) {
-        case "M":
-          tmp = xyListToVertices(values);
-          v = tmp.endpoint;
-          lastPenDown = v.clone();
-          geometry.vertices = geometry.vertices.concat(tmp.vertices.map(function(v){return v.clone();}));
-          //if (i>0) console.warn('SVG path contains M commands after the first command. This is not yet supported and these M commands will be drawn as lines.');
-          break;
-        case "H":
-          console.assert(svgCommand.values.length==1);
-          v = new THREE.Vector3(values[0], v.y, 0);
-          geometry.vertices.push(v);
-          break;
-        case "V":
-          console.assert(values.length==1);
-          v = new THREE.Vector3(v.x, values[0], 0);
-          geometry.vertices.push(v.clone());
-          break;
-        case "L":
-          tmp = xyListToVertices(values);
-          v = tmp.endpoint;
-          geometry.vertices = geometry.vertices.concat(tmp.vertices.map(function(v){return v.clone();}));
-          break;
-        case "l":
-          tmp = xyListToVertices(values);
-          tmp.vertices.forEach(function(t){
-            geometry.vertices.push(new THREE.Vector3(t.x + v.x, t.y+v.y, 0));
-          });
-          break;
-        case "Z":
-          geometry.vertices.push(lastPenDown.clone());
-          break;
-        case "c":
-        case "C":
-            if (svgCommand.type=="C") basisVector = new THREE.Vector3(0,0,0);
-            if (svgCommand.type=="c") basisVector = v;
-            // The "c" command can take multiple curves in sequences, hence the while loop
-            howManyCurves = values.length/6;
-            console.assert(howManyCurves==Math.floor(howManyCurves));
-            for (var h=0, z=0; h<howManyCurves; h++) {
-              p1 = v.clone(); // Relative coordinate
-              c1 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
-              c2 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
-              p2 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
-              c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-              v=p2.clone();
-              geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-              //console.log("added c " + x + "/" + howManyCurves);
-              //console.log(c);
-            }
-            break;
-        case "A":
-            geometry.vertices.pop(); // Remove the M command
-            var howManyArcs = values.length/ 7;
-            for (var arcNumber=0, z=0; arcNumber<howManyArcs; arcNumber++){
-              var tmp = arcToSVG(v.x, v.y, values[z++], values[z++], values[z++], values[z++],        values[z++],   values[z++], values[z++]);
-              howManyCurves = tmp.length/ 6;
-              for (var h=0, jj=0; h<howManyCurves; h++){
-                p1 = v.clone();
-                c1 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-                c2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-                p2 = new THREE.Vector3(tmp[jj++], tmp[jj++], 0);
-                c = new THREE.CubicBezierCurve3(p1, c1, c2, p2);
-                v=p2.clone();
-                geometry.vertices = geometry.vertices.concat(c.getSpacedPoints ( opts.curveQuality ));
-              }
-            }
-            break;  
-        default:
-          console.warn('bad');
-          console.error('Unrecognized SVG command:' + svgCommand.type);
-
-      } // swtich statement
-
-    } // foreach SVG command in the path
-    geometry.vertices.forEach(function(v){ v.y = opts.height-v.y; });
-    return geometry;
-} // end svgPathDataToGeometry ()
-
-function xyListToVertices(values){
-  var ret = {endpoint: null, vertices: [] };
-  for (var i=0; i<values.length;) {
-    ret.vertices.push(new THREE.Vector3(values[i++], values[i++],0));
-  }
-  ret.endpoint = ret.vertices[ret.vertices.length-1];
-  return ret;
-}
-
-
-
-
-
-
-// This function is ripped from
-// github.com/DmitryBaranovskiy/raphael/blob/4d97d4/raphael.js#L2216-L2304
-// which references w3.org/TR/SVG11/implnote.html#ArcImplementationNotes
-// TODO: make it human readable
-
-var PI = Math.PI;
-function __PRIVATE_radians(degress){
-  return degress * (PI / 180);
-}
-var _120 = __PRIVATE_radians(120);
-
-function deg2rad(deg){
-  return (deg  / 180) * Math.PI;
-}
-
-function arcToSVG(x1, y1, rx, ry, angle, large_arc_flag, sweep_flag, x2, y2, recursive) {
-  var f1,f2, cx,cy, res;
-  angle = deg2rad(angle);
-  if (!recursive) {
-    var xy = __PRIVATE_rotate(x1, y1, -angle);
-    x1 = xy.x;
-    y1 = xy.y;
-    xy = __PRIVATE_rotate(x2, y2, -angle);
-    x2 = xy.x;
-    y2 = xy.y;
-    var x = (x1 - x2) / 2;
-    var y = (y1 - y2) / 2;
-    var h = (x * x) / (rx * rx) + (y * y) / (ry * ry);
-    if (h > 1) {
-      h = Math.sqrt(h);
-      rx = h * rx;
-      ry = h * ry;
-    }
-    var rx2 = rx * rx;
-    var ry2 = ry * ry;
-    var k = (large_arc_flag == sweep_flag ? -1 : 1) * Math.sqrt(Math.abs((rx2 * ry2 - rx2 * y * y - ry2 * x * x) / (rx2 * y * y + ry2 * x * x)));
-    if (k == Infinity) {k = 1;} // neutralize
-    cx = k * rx * y / ry + (x1 + x2) / 2;
-    cy = k * -ry * x / rx + (y1 + y2) / 2;
-    f1 = Math.asin(((y1 - cy) / ry).toFixed(9));
-    f2 = Math.asin(((y2 - cy) / ry).toFixed(9));
-
-    f1 = x1 < cx ? PI - f1 : f1;
-    f2 = x2 < cx ? PI - f2 : f2;
-    if (f1 < 0) f1 = PI * 2 + f1;
-    if (f2 < 0) f2 = PI * 2 + f2;
-    if (sweep_flag && f1 > f2) f1 = f1 - PI * 2;
-    if (!sweep_flag && f2 > f1) f2 = f2 - PI * 2;
-  } else {
-    f1 = recursive[0];
-    f2 = recursive[1];
-    cx = recursive[2];
-    cy = recursive[3];
-  }
-  // greater than 120 degrees requires multiple segments
-  if (Math.abs(f2 - f1) > _120) {
-    var f2old = f2;
-    var x2old = x2;
-    var y2old = y2;
-    f2 = f1 + _120 * (sweep_flag && f2 > f1 ? 1 : -1);
-    x2 = cx + rx * Math.cos(f2);
-    y2 = cy + ry * Math.sin(f2);
-    res = arcToSVG(x2, y2, rx, ry, angle, 0, sweep_flag, x2old, y2old, [f2, f2old, cx, cy]);
-  }
-  var t = Math.tan((f2 - f1) / 4);
-  var hx = 4 / 3 * rx * t;
-  var hy = 4 / 3 * ry * t;
-  var curve = [
-    2 * x1 - (x1 + hx * Math.sin(f1)),
-    2 * y1 - (y1 - hy * Math.cos(f1)),
-    x2 + hx * Math.sin(f2),
-    y2 - hy * Math.cos(f2),
-    x2,
-    y2
-  ];
-  if (recursive) return curve;
-  if (res) curve = curve.concat(res);
-  for (var i = 0; i < curve.length;) {
-    var rot = __PRIVATE_rotate(curve[i], curve[i+1], angle);
-    curve[i++] = rot.x;
-    curve[i++] = rot.y;
-  }
-  return curve;
-}
-
-function __PRIVATE_rotate(x, y, rad){
-  return {
-    x: x * Math.cos(rad) - y * Math.sin(rad),
-    y: x * Math.sin(rad) + y * Math.cos(rad)
-  };
-}
-
-},{"./path-data-polyfill.es5.js":158,"./plugins/convertShapeToPath.js":159,"load-svg":57,"normalize-svg-path":62,"svg-mesh-3d":96,"svgo":140,"svgo/plugins/convertPathData.js":150,"svgo/plugins/convertStyleToAttrs.js":151,"svgo/plugins/convertTransform.js":152,"svgo/plugins/removeComments.js":153,"three-simplicial-complex":154,"three.meshline":155}],108:[function(require,module,exports){
-arguments[4][54][0].apply(exports,arguments)
-},{"dup":54}],109:[function(require,module,exports){
-'use strict';
-
-
-var yaml = require('./lib/js-yaml.js');
-
-
-module.exports = yaml;
-
-},{"./lib/js-yaml.js":110}],110:[function(require,module,exports){
-'use strict';
-
-
-var loader = require('./js-yaml/loader');
-var dumper = require('./js-yaml/dumper');
-
-
-function deprecated(name) {
-  return function () {
-    throw new Error('Function ' + name + ' is deprecated and cannot be used.');
-  };
-}
-
-
-module.exports.Type                = require('./js-yaml/type');
-module.exports.Schema              = require('./js-yaml/schema');
-module.exports.FAILSAFE_SCHEMA     = require('./js-yaml/schema/failsafe');
-module.exports.JSON_SCHEMA         = require('./js-yaml/schema/json');
-module.exports.CORE_SCHEMA         = require('./js-yaml/schema/core');
-module.exports.DEFAULT_SAFE_SCHEMA = require('./js-yaml/schema/default_safe');
-module.exports.DEFAULT_FULL_SCHEMA = require('./js-yaml/schema/default_full');
-module.exports.load                = loader.load;
-module.exports.loadAll             = loader.loadAll;
-module.exports.safeLoad            = loader.safeLoad;
-module.exports.safeLoadAll         = loader.safeLoadAll;
-module.exports.dump                = dumper.dump;
-module.exports.safeDump            = dumper.safeDump;
-module.exports.YAMLException       = require('./js-yaml/exception');
-
-// Deprecated schema names from JS-YAML 2.0.x
-module.exports.MINIMAL_SCHEMA = require('./js-yaml/schema/failsafe');
-module.exports.SAFE_SCHEMA    = require('./js-yaml/schema/default_safe');
-module.exports.DEFAULT_SCHEMA = require('./js-yaml/schema/default_full');
-
-// Deprecated functions from JS-YAML 1.x.x
-module.exports.scan           = deprecated('scan');
-module.exports.parse          = deprecated('parse');
-module.exports.compose        = deprecated('compose');
-module.exports.addConstructor = deprecated('addConstructor');
-
-},{"./js-yaml/dumper":112,"./js-yaml/exception":113,"./js-yaml/loader":114,"./js-yaml/schema":116,"./js-yaml/schema/core":117,"./js-yaml/schema/default_full":118,"./js-yaml/schema/default_safe":119,"./js-yaml/schema/failsafe":120,"./js-yaml/schema/json":121,"./js-yaml/type":122}],111:[function(require,module,exports){
-'use strict';
-
-
-function isNothing(subject) {
-  return (typeof subject === 'undefined') || (subject === null);
-}
-
-
-function isObject(subject) {
-  return (typeof subject === 'object') && (subject !== null);
-}
-
-
-function toArray(sequence) {
-  if (Array.isArray(sequence)) return sequence;
-  else if (isNothing(sequence)) return [];
-
-  return [ sequence ];
-}
-
-
-function extend(target, source) {
-  var index, length, key, sourceKeys;
-
-  if (source) {
-    sourceKeys = Object.keys(source);
-
-    for (index = 0, length = sourceKeys.length; index < length; index += 1) {
-      key = sourceKeys[index];
-      target[key] = source[key];
-    }
-  }
-
-  return target;
-}
-
-
-function repeat(string, count) {
-  var result = '', cycle;
-
-  for (cycle = 0; cycle < count; cycle += 1) {
-    result += string;
-  }
-
-  return result;
-}
-
-
-function isNegativeZero(number) {
-  return (number === 0) && (Number.NEGATIVE_INFINITY === 1 / number);
-}
-
-
-module.exports.isNothing      = isNothing;
-module.exports.isObject       = isObject;
-module.exports.toArray        = toArray;
-module.exports.repeat         = repeat;
-module.exports.isNegativeZero = isNegativeZero;
-module.exports.extend         = extend;
-
-},{}],112:[function(require,module,exports){
-'use strict';
-
-/*eslint-disable no-use-before-define*/
-
-var common              = require('./common');
-var YAMLException       = require('./exception');
-var DEFAULT_FULL_SCHEMA = require('./schema/default_full');
-var DEFAULT_SAFE_SCHEMA = require('./schema/default_safe');
-
-var _toString       = Object.prototype.toString;
-var _hasOwnProperty = Object.prototype.hasOwnProperty;
-
-var CHAR_TAB                  = 0x09; /* Tab */
-var CHAR_LINE_FEED            = 0x0A; /* LF */
-var CHAR_SPACE                = 0x20; /* Space */
-var CHAR_EXCLAMATION          = 0x21; /* ! */
-var CHAR_DOUBLE_QUOTE         = 0x22; /* " */
-var CHAR_SHARP                = 0x23; /* # */
-var CHAR_PERCENT              = 0x25; /* % */
-var CHAR_AMPERSAND            = 0x26; /* & */
-var CHAR_SINGLE_QUOTE         = 0x27; /* ' */
-var CHAR_ASTERISK             = 0x2A; /* * */
-var CHAR_COMMA                = 0x2C; /* , */
-var CHAR_MINUS                = 0x2D; /* - */
-var CHAR_COLON                = 0x3A; /* : */
-var CHAR_GREATER_THAN         = 0x3E; /* > */
-var CHAR_QUESTION             = 0x3F; /* ? */
-var CHAR_COMMERCIAL_AT        = 0x40; /* @ */
-var CHAR_LEFT_SQUARE_BRACKET  = 0x5B; /* [ */
-var CHAR_RIGHT_SQUARE_BRACKET = 0x5D; /* ] */
-var CHAR_GRAVE_ACCENT         = 0x60; /* ` */
-var CHAR_LEFT_CURLY_BRACKET   = 0x7B; /* { */
-var CHAR_VERTICAL_LINE        = 0x7C; /* | */
-var CHAR_RIGHT_CURLY_BRACKET  = 0x7D; /* } */
-
-var ESCAPE_SEQUENCES = {};
-
-ESCAPE_SEQUENCES[0x00]   = '\\0';
-ESCAPE_SEQUENCES[0x07]   = '\\a';
-ESCAPE_SEQUENCES[0x08]   = '\\b';
-ESCAPE_SEQUENCES[0x09]   = '\\t';
-ESCAPE_SEQUENCES[0x0A]   = '\\n';
-ESCAPE_SEQUENCES[0x0B]   = '\\v';
-ESCAPE_SEQUENCES[0x0C]   = '\\f';
-ESCAPE_SEQUENCES[0x0D]   = '\\r';
-ESCAPE_SEQUENCES[0x1B]   = '\\e';
-ESCAPE_SEQUENCES[0x22]   = '\\"';
-ESCAPE_SEQUENCES[0x5C]   = '\\\\';
-ESCAPE_SEQUENCES[0x85]   = '\\N';
-ESCAPE_SEQUENCES[0xA0]   = '\\_';
-ESCAPE_SEQUENCES[0x2028] = '\\L';
-ESCAPE_SEQUENCES[0x2029] = '\\P';
-
-var DEPRECATED_BOOLEANS_SYNTAX = [
-  'y', 'Y', 'yes', 'Yes', 'YES', 'on', 'On', 'ON',
-  'n', 'N', 'no', 'No', 'NO', 'off', 'Off', 'OFF'
-];
-
-function compileStyleMap(schema, map) {
-  var result, keys, index, length, tag, style, type;
-
-  if (map === null) return {};
-
-  result = {};
-  keys = Object.keys(map);
-
-  for (index = 0, length = keys.length; index < length; index += 1) {
-    tag = keys[index];
-    style = String(map[tag]);
-
-    if (tag.slice(0, 2) === '!!') {
-      tag = 'tag:yaml.org,2002:' + tag.slice(2);
-    }
-    type = schema.compiledTypeMap['fallback'][tag];
-
-    if (type && _hasOwnProperty.call(type.styleAliases, style)) {
-      style = type.styleAliases[style];
-    }
-
-    result[tag] = style;
-  }
-
-  return result;
-}
-
-function encodeHex(character) {
-  var string, handle, length;
-
-  string = character.toString(16).toUpperCase();
-
-  if (character <= 0xFF) {
-    handle = 'x';
-    length = 2;
-  } else if (character <= 0xFFFF) {
-    handle = 'u';
-    length = 4;
-  } else if (character <= 0xFFFFFFFF) {
-    handle = 'U';
-    length = 8;
-  } else {
-    throw new YAMLException('code point within a string may not be greater than 0xFFFFFFFF');
-  }
-
-  return '\\' + handle + common.repeat('0', length - string.length) + string;
-}
-
-function State(options) {
-  this.schema       = options['schema'] || DEFAULT_FULL_SCHEMA;
-  this.indent       = Math.max(1, (options['indent'] || 2));
-  this.skipInvalid  = options['skipInvalid'] || false;
-  this.flowLevel    = (common.isNothing(options['flowLevel']) ? -1 : options['flowLevel']);
-  this.styleMap     = compileStyleMap(this.schema, options['styles'] || null);
-  this.sortKeys     = options['sortKeys'] || false;
-  this.lineWidth    = options['lineWidth'] || 80;
-  this.noRefs       = options['noRefs'] || false;
-  this.noCompatMode = options['noCompatMode'] || false;
-
-  this.implicitTypes = this.schema.compiledImplicit;
-  this.explicitTypes = this.schema.compiledExplicit;
-
-  this.tag = null;
-  this.result = '';
-
-  this.duplicates = [];
-  this.usedDuplicates = null;
-}
-
-// Indents every line in a string. Empty lines (\n only) are not indented.
-function indentString(string, spaces) {
-  var ind = common.repeat(' ', spaces),
-      position = 0,
-      next = -1,
-      result = '',
-      line,
-      length = string.length;
-
-  while (position < length) {
-    next = string.indexOf('\n', position);
-    if (next === -1) {
-      line = string.slice(position);
-      position = length;
-    } else {
-      line = string.slice(position, next + 1);
-      position = next + 1;
-    }
-
-    if (line.length && line !== '\n') result += ind;
-
-    result += line;
-  }
-
-  return result;
-}
-
-function generateNextLine(state, level) {
-  return '\n' + common.repeat(' ', state.indent * level);
-}
-
-function testImplicitResolving(state, str) {
-  var index, length, type;
-
-  for (index = 0, length = state.implicitTypes.length; index < length; index += 1) {
-    type = state.implicitTypes[index];
-
-    if (type.resolve(str)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// [33] s-white ::= s-space | s-tab
-function isWhitespace(c) {
-  return c === CHAR_SPACE || c === CHAR_TAB;
-}
-
-// Returns true if the character can be printed without escaping.
-// From YAML 1.2: "any allowed characters known to be non-printable
-// should also be escaped. [However,] This isn’t mandatory"
-// Derived from nb-char - \t - #x85 - #xA0 - #x2028 - #x2029.
-function isPrintable(c) {
-  return  (0x00020 <= c && c <= 0x00007E)
-      || ((0x000A1 <= c && c <= 0x00D7FF) && c !== 0x2028 && c !== 0x2029)
-      || ((0x0E000 <= c && c <= 0x00FFFD) && c !== 0xFEFF /* BOM */)
-      ||  (0x10000 <= c && c <= 0x10FFFF);
-}
-
-// Simplified test for values allowed after the first character in plain style.
-function isPlainSafe(c) {
-  // Uses a subset of nb-char - c-flow-indicator - ":" - "#"
-  // where nb-char ::= c-printable - b-char - c-byte-order-mark.
-  return isPrintable(c) && c !== 0xFEFF
-    // - c-flow-indicator
-    && c !== CHAR_COMMA
-    && c !== CHAR_LEFT_SQUARE_BRACKET
-    && c !== CHAR_RIGHT_SQUARE_BRACKET
-    && c !== CHAR_LEFT_CURLY_BRACKET
-    && c !== CHAR_RIGHT_CURLY_BRACKET
-    // - ":" - "#"
-    && c !== CHAR_COLON
-    && c !== CHAR_SHARP;
-}
-
-// Simplified test for values allowed as the first character in plain style.
-function isPlainSafeFirst(c) {
-  // Uses a subset of ns-char - c-indicator
-  // where ns-char = nb-char - s-white.
-  return isPrintable(c) && c !== 0xFEFF
-    && !isWhitespace(c) // - s-white
-    // - (c-indicator ::=
-    // “-” | “?” | “:” | “,” | “[” | “]” | “{” | “}”
-    && c !== CHAR_MINUS
-    && c !== CHAR_QUESTION
-    && c !== CHAR_COLON
-    && c !== CHAR_COMMA
-    && c !== CHAR_LEFT_SQUARE_BRACKET
-    && c !== CHAR_RIGHT_SQUARE_BRACKET
-    && c !== CHAR_LEFT_CURLY_BRACKET
-    && c !== CHAR_RIGHT_CURLY_BRACKET
-    // | “#” | “&” | “*” | “!” | “|” | “>” | “'” | “"”
-    && c !== CHAR_SHARP
-    && c !== CHAR_AMPERSAND
-    && c !== CHAR_ASTERISK
-    && c !== CHAR_EXCLAMATION
-    && c !== CHAR_VERTICAL_LINE
-    && c !== CHAR_GREATER_THAN
-    && c !== CHAR_SINGLE_QUOTE
-    && c !== CHAR_DOUBLE_QUOTE
-    // | “%” | “@” | “`”)
-    && c !== CHAR_PERCENT
-    && c !== CHAR_COMMERCIAL_AT
-    && c !== CHAR_GRAVE_ACCENT;
-}
-
-var STYLE_PLAIN   = 1,
-    STYLE_SINGLE  = 2,
-    STYLE_LITERAL = 3,
-    STYLE_FOLDED  = 4,
-    STYLE_DOUBLE  = 5;
-
-// Determines which scalar styles are possible and returns the preferred style.
-// lineWidth = -1 => no limit.
-// Pre-conditions: str.length > 0.
-// Post-conditions:
-//    STYLE_PLAIN or STYLE_SINGLE => no \n are in the string.
-//    STYLE_LITERAL => no lines are suitable for folding (or lineWidth is -1).
-//    STYLE_FOLDED => a line > lineWidth and can be folded (and lineWidth != -1).
-function chooseScalarStyle(string, singleLineOnly, indentPerLevel, lineWidth, testAmbiguousType) {
-  var i;
-  var char;
-  var hasLineBreak = false;
-  var hasFoldableLine = false; // only checked if shouldTrackWidth
-  var shouldTrackWidth = lineWidth !== -1;
-  var previousLineBreak = -1; // count the first line correctly
-  var plain = isPlainSafeFirst(string.charCodeAt(0))
-          && !isWhitespace(string.charCodeAt(string.length - 1));
-
-  if (singleLineOnly) {
-    // Case: no block styles.
-    // Check for disallowed characters to rule out plain and single.
-    for (i = 0; i < string.length; i++) {
-      char = string.charCodeAt(i);
-      if (!isPrintable(char)) {
-        return STYLE_DOUBLE;
-      }
-      plain = plain && isPlainSafe(char);
-    }
-  } else {
-    // Case: block styles permitted.
-    for (i = 0; i < string.length; i++) {
-      char = string.charCodeAt(i);
-      if (char === CHAR_LINE_FEED) {
-        hasLineBreak = true;
-        // Check if any line can be folded.
-        if (shouldTrackWidth) {
-          hasFoldableLine = hasFoldableLine ||
-            // Foldable line = too long, and not more-indented.
-            (i - previousLineBreak - 1 > lineWidth &&
-             string[previousLineBreak + 1] !== ' ');
-          previousLineBreak = i;
-        }
-      } else if (!isPrintable(char)) {
-        return STYLE_DOUBLE;
-      }
-      plain = plain && isPlainSafe(char);
-    }
-    // in case the end is missing a \n
-    hasFoldableLine = hasFoldableLine || (shouldTrackWidth &&
-      (i - previousLineBreak - 1 > lineWidth &&
-       string[previousLineBreak + 1] !== ' '));
-  }
-  // Although every style can represent \n without escaping, prefer block styles
-  // for multiline, since they're more readable and they don't add empty lines.
-  // Also prefer folding a super-long line.
-  if (!hasLineBreak && !hasFoldableLine) {
-    // Strings interpretable as another type have to be quoted;
-    // e.g. the string 'true' vs. the boolean true.
-    return plain && !testAmbiguousType(string)
-      ? STYLE_PLAIN : STYLE_SINGLE;
-  }
-  // Edge case: block indentation indicator can only have one digit.
-  if (string[0] === ' ' && indentPerLevel > 9) {
-    return STYLE_DOUBLE;
-  }
-  // At this point we know block styles are valid.
-  // Prefer literal style unless we want to fold.
-  return hasFoldableLine ? STYLE_FOLDED : STYLE_LITERAL;
-}
-
-// Note: line breaking/folding is implemented for only the folded style.
-// NB. We drop the last trailing newline (if any) of a returned block scalar
-//  since the dumper adds its own newline. This always works:
-//    • No ending newline => unaffected; already using strip "-" chomping.
-//    • Ending newline    => removed then restored.
-//  Importantly, this keeps the "+" chomp indicator from gaining an extra line.
-function writeScalar(state, string, level, iskey) {
-  state.dump = (function () {
-    if (string.length === 0) {
-      return "''";
-    }
-    if (!state.noCompatMode &&
-        DEPRECATED_BOOLEANS_SYNTAX.indexOf(string) !== -1) {
-      return "'" + string + "'";
-    }
-
-    var indent = state.indent * Math.max(1, level); // no 0-indent scalars
-    // As indentation gets deeper, let the width decrease monotonically
-    // to the lower bound min(state.lineWidth, 40).
-    // Note that this implies
-    //  state.lineWidth ≤ 40 + state.indent: width is fixed at the lower bound.
-    //  state.lineWidth > 40 + state.indent: width decreases until the lower bound.
-    // This behaves better than a constant minimum width which disallows narrower options,
-    // or an indent threshold which causes the width to suddenly increase.
-    var lineWidth = state.lineWidth === -1
-      ? -1 : Math.max(Math.min(state.lineWidth, 40), state.lineWidth - indent);
-
-    // Without knowing if keys are implicit/explicit, assume implicit for safety.
-    var singleLineOnly = iskey
-      // No block styles in flow mode.
-      || (state.flowLevel > -1 && level >= state.flowLevel);
-    function testAmbiguity(string) {
-      return testImplicitResolving(state, string);
-    }
-
-    switch (chooseScalarStyle(string, singleLineOnly, state.indent, lineWidth, testAmbiguity)) {
-      case STYLE_PLAIN:
-        return string;
-      case STYLE_SINGLE:
-        return "'" + string.replace(/'/g, "''") + "'";
-      case STYLE_LITERAL:
-        return '|' + blockHeader(string, state.indent)
-          + dropEndingNewline(indentString(string, indent));
-      case STYLE_FOLDED:
-        return '>' + blockHeader(string, state.indent)
-          + dropEndingNewline(indentString(foldString(string, lineWidth), indent));
-      case STYLE_DOUBLE:
-        return '"' + escapeString(string, lineWidth) + '"';
-      default:
-        throw new YAMLException('impossible error: invalid scalar style');
-    }
-  }());
-}
-
-// Pre-conditions: string is valid for a block scalar, 1 <= indentPerLevel <= 9.
-function blockHeader(string, indentPerLevel) {
-  var indentIndicator = (string[0] === ' ') ? String(indentPerLevel) : '';
-
-  // note the special case: the string '\n' counts as a "trailing" empty line.
-  var clip =          string[string.length - 1] === '\n';
-  var keep = clip && (string[string.length - 2] === '\n' || string === '\n');
-  var chomp = keep ? '+' : (clip ? '' : '-');
-
-  return indentIndicator + chomp + '\n';
-}
-
-// (See the note for writeScalar.)
-function dropEndingNewline(string) {
-  return string[string.length - 1] === '\n' ? string.slice(0, -1) : string;
-}
-
-// Note: a long line without a suitable break point will exceed the width limit.
-// Pre-conditions: every char in str isPrintable, str.length > 0, width > 0.
-function foldString(string, width) {
-  // In folded style, $k$ consecutive newlines output as $k+1$ newlines—
-  // unless they're before or after a more-indented line, or at the very
-  // beginning or end, in which case $k$ maps to $k$.
-  // Therefore, parse each chunk as newline(s) followed by a content line.
-  var lineRe = /(\n+)([^\n]*)/g;
-
-  // first line (possibly an empty line)
-  var result = (function () {
-    var nextLF = string.indexOf('\n');
-    nextLF = nextLF !== -1 ? nextLF : string.length;
-    lineRe.lastIndex = nextLF;
-    return foldLine(string.slice(0, nextLF), width);
-  }());
-  // If we haven't reached the first content line yet, don't add an extra \n.
-  var prevMoreIndented = string[0] === '\n' || string[0] === ' ';
-  var moreIndented;
-
-  // rest of the lines
-  var match;
-  while ((match = lineRe.exec(string))) {
-    var prefix = match[1], line = match[2];
-    moreIndented = (line[0] === ' ');
-    result += prefix
-      + (!prevMoreIndented && !moreIndented && line !== ''
-        ? '\n' : '')
-      + foldLine(line, width);
-    prevMoreIndented = moreIndented;
-  }
-
-  return result;
-}
-
-// Greedy line breaking.
-// Picks the longest line under the limit each time,
-// otherwise settles for the shortest line over the limit.
-// NB. More-indented lines *cannot* be folded, as that would add an extra \n.
-function foldLine(line, width) {
-  if (line === '' || line[0] === ' ') return line;
-
-  // Since a more-indented line adds a \n, breaks can't be followed by a space.
-  var breakRe = / [^ ]/g; // note: the match index will always be <= length-2.
-  var match;
-  // start is an inclusive index. end, curr, and next are exclusive.
-  var start = 0, end, curr = 0, next = 0;
-  var result = '';
-
-  // Invariants: 0 <= start <= length-1.
-  //   0 <= curr <= next <= max(0, length-2). curr - start <= width.
-  // Inside the loop:
-  //   A match implies length >= 2, so curr and next are <= length-2.
-  while ((match = breakRe.exec(line))) {
-    next = match.index;
-    // maintain invariant: curr - start <= width
-    if (next - start > width) {
-      end = (curr > start) ? curr : next; // derive end <= length-2
-      result += '\n' + line.slice(start, end);
-      // skip the space that was output as \n
-      start = end + 1;                    // derive start <= length-1
-    }
-    curr = next;
-  }
-
-  // By the invariants, start <= length-1, so there is something left over.
-  // It is either the whole string or a part starting from non-whitespace.
-  result += '\n';
-  // Insert a break if the remainder is too long and there is a break available.
-  if (line.length - start > width && curr > start) {
-    result += line.slice(start, curr) + '\n' + line.slice(curr + 1);
-  } else {
-    result += line.slice(start);
-  }
-
-  return result.slice(1); // drop extra \n joiner
-}
-
-// Escapes a double-quoted string.
-function escapeString(string) {
-  var result = '';
-  var char;
-  var escapeSeq;
-
-  for (var i = 0; i < string.length; i++) {
-    char = string.charCodeAt(i);
-    escapeSeq = ESCAPE_SEQUENCES[char];
-    result += !escapeSeq && isPrintable(char)
-      ? string[i]
-      : escapeSeq || encodeHex(char);
-  }
-
-  return result;
-}
-
-function writeFlowSequence(state, level, object) {
-  var _result = '',
-      _tag    = state.tag,
-      index,
-      length;
-
-  for (index = 0, length = object.length; index < length; index += 1) {
-    // Write only valid elements.
-    if (writeNode(state, level, object[index], false, false)) {
-      if (index !== 0) _result += ', ';
-      _result += state.dump;
-    }
-  }
-
-  state.tag = _tag;
-  state.dump = '[' + _result + ']';
-}
-
-function writeBlockSequence(state, level, object, compact) {
-  var _result = '',
-      _tag    = state.tag,
-      index,
-      length;
-
-  for (index = 0, length = object.length; index < length; index += 1) {
-    // Write only valid elements.
-    if (writeNode(state, level + 1, object[index], true, true)) {
-      if (!compact || index !== 0) {
-        _result += generateNextLine(state, level);
-      }
-      _result += '- ' + state.dump;
-    }
-  }
-
-  state.tag = _tag;
-  state.dump = _result || '[]'; // Empty sequence if no valid values.
-}
-
-function writeFlowMapping(state, level, object) {
-  var _result       = '',
-      _tag          = state.tag,
-      objectKeyList = Object.keys(object),
-      index,
-      length,
-      objectKey,
-      objectValue,
-      pairBuffer;
-
-  for (index = 0, length = objectKeyList.length; index < length; index += 1) {
-    pairBuffer = '';
-
-    if (index !== 0) pairBuffer += ', ';
-
-    objectKey = objectKeyList[index];
-    objectValue = object[objectKey];
-
-    if (!writeNode(state, level, objectKey, false, false)) {
-      continue; // Skip this pair because of invalid key;
-    }
-
-    if (state.dump.length > 1024) pairBuffer += '? ';
-
-    pairBuffer += state.dump + ': ';
-
-    if (!writeNode(state, level, objectValue, false, false)) {
-      continue; // Skip this pair because of invalid value.
-    }
-
-    pairBuffer += state.dump;
-
-    // Both key and value are valid.
-    _result += pairBuffer;
-  }
-
-  state.tag = _tag;
-  state.dump = '{' + _result + '}';
-}
-
-function writeBlockMapping(state, level, object, compact) {
-  var _result       = '',
-      _tag          = state.tag,
-      objectKeyList = Object.keys(object),
-      index,
-      length,
-      objectKey,
-      objectValue,
-      explicitPair,
-      pairBuffer;
-
-  // Allow sorting keys so that the output file is deterministic
-  if (state.sortKeys === true) {
-    // Default sorting
-    objectKeyList.sort();
-  } else if (typeof state.sortKeys === 'function') {
-    // Custom sort function
-    objectKeyList.sort(state.sortKeys);
-  } else if (state.sortKeys) {
-    // Something is wrong
-    throw new YAMLException('sortKeys must be a boolean or a function');
-  }
-
-  for (index = 0, length = objectKeyList.length; index < length; index += 1) {
-    pairBuffer = '';
-
-    if (!compact || index !== 0) {
-      pairBuffer += generateNextLine(state, level);
-    }
-
-    objectKey = objectKeyList[index];
-    objectValue = object[objectKey];
-
-    if (!writeNode(state, level + 1, objectKey, true, true, true)) {
-      continue; // Skip this pair because of invalid key.
-    }
-
-    explicitPair = (state.tag !== null && state.tag !== '?') ||
-                   (state.dump && state.dump.length > 1024);
-
-    if (explicitPair) {
-      if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
-        pairBuffer += '?';
-      } else {
-        pairBuffer += '? ';
-      }
-    }
-
-    pairBuffer += state.dump;
-
-    if (explicitPair) {
-      pairBuffer += generateNextLine(state, level);
-    }
-
-    if (!writeNode(state, level + 1, objectValue, true, explicitPair)) {
-      continue; // Skip this pair because of invalid value.
-    }
-
-    if (state.dump && CHAR_LINE_FEED === state.dump.charCodeAt(0)) {
-      pairBuffer += ':';
-    } else {
-      pairBuffer += ': ';
-    }
-
-    pairBuffer += state.dump;
-
-    // Both key and value are valid.
-    _result += pairBuffer;
-  }
-
-  state.tag = _tag;
-  state.dump = _result || '{}'; // Empty mapping if no valid pairs.
-}
-
-function detectType(state, object, explicit) {
-  var _result, typeList, index, length, type, style;
-
-  typeList = explicit ? state.explicitTypes : state.implicitTypes;
-
-  for (index = 0, length = typeList.length; index < length; index += 1) {
-    type = typeList[index];
-
-    if ((type.instanceOf  || type.predicate) &&
-        (!type.instanceOf || ((typeof object === 'object') && (object instanceof type.instanceOf))) &&
-        (!type.predicate  || type.predicate(object))) {
-
-      state.tag = explicit ? type.tag : '?';
-
-      if (type.represent) {
-        style = state.styleMap[type.tag] || type.defaultStyle;
-
-        if (_toString.call(type.represent) === '[object Function]') {
-          _result = type.represent(object, style);
-        } else if (_hasOwnProperty.call(type.represent, style)) {
-          _result = type.represent[style](object, style);
-        } else {
-          throw new YAMLException('!<' + type.tag + '> tag resolver accepts not "' + style + '" style');
-        }
-
-        state.dump = _result;
-      }
-
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// Serializes `object` and writes it to global `result`.
-// Returns true on success, or false on invalid object.
-//
-function writeNode(state, level, object, block, compact, iskey) {
-  state.tag = null;
-  state.dump = object;
-
-  if (!detectType(state, object, false)) {
-    detectType(state, object, true);
-  }
-
-  var type = _toString.call(state.dump);
-
-  if (block) {
-    block = (state.flowLevel < 0 || state.flowLevel > level);
-  }
-
-  var objectOrArray = type === '[object Object]' || type === '[object Array]',
-      duplicateIndex,
-      duplicate;
-
-  if (objectOrArray) {
-    duplicateIndex = state.duplicates.indexOf(object);
-    duplicate = duplicateIndex !== -1;
-  }
-
-  if ((state.tag !== null && state.tag !== '?') || duplicate || (state.indent !== 2 && level > 0)) {
-    compact = false;
-  }
-
-  if (duplicate && state.usedDuplicates[duplicateIndex]) {
-    state.dump = '*ref_' + duplicateIndex;
-  } else {
-    if (objectOrArray && duplicate && !state.usedDuplicates[duplicateIndex]) {
-      state.usedDuplicates[duplicateIndex] = true;
-    }
-    if (type === '[object Object]') {
-      if (block && (Object.keys(state.dump).length !== 0)) {
-        writeBlockMapping(state, level, state.dump, compact);
-        if (duplicate) {
-          state.dump = '&ref_' + duplicateIndex + state.dump;
-        }
-      } else {
-        writeFlowMapping(state, level, state.dump);
-        if (duplicate) {
-          state.dump = '&ref_' + duplicateIndex + ' ' + state.dump;
-        }
-      }
-    } else if (type === '[object Array]') {
-      if (block && (state.dump.length !== 0)) {
-        writeBlockSequence(state, level, state.dump, compact);
-        if (duplicate) {
-          state.dump = '&ref_' + duplicateIndex + state.dump;
-        }
-      } else {
-        writeFlowSequence(state, level, state.dump);
-        if (duplicate) {
-          state.dump = '&ref_' + duplicateIndex + ' ' + state.dump;
-        }
-      }
-    } else if (type === '[object String]') {
-      if (state.tag !== '?') {
-        writeScalar(state, state.dump, level, iskey);
-      }
-    } else {
-      if (state.skipInvalid) return false;
-      throw new YAMLException('unacceptable kind of an object to dump ' + type);
-    }
-
-    if (state.tag !== null && state.tag !== '?') {
-      state.dump = '!<' + state.tag + '> ' + state.dump;
-    }
-  }
-
-  return true;
-}
-
-function getDuplicateReferences(object, state) {
-  var objects = [],
-      duplicatesIndexes = [],
-      index,
-      length;
-
-  inspectNode(object, objects, duplicatesIndexes);
-
-  for (index = 0, length = duplicatesIndexes.length; index < length; index += 1) {
-    state.duplicates.push(objects[duplicatesIndexes[index]]);
-  }
-  state.usedDuplicates = new Array(length);
-}
-
-function inspectNode(object, objects, duplicatesIndexes) {
-  var objectKeyList,
-      index,
-      length;
-
-  if (object !== null && typeof object === 'object') {
-    index = objects.indexOf(object);
-    if (index !== -1) {
-      if (duplicatesIndexes.indexOf(index) === -1) {
-        duplicatesIndexes.push(index);
-      }
-    } else {
-      objects.push(object);
-
-      if (Array.isArray(object)) {
-        for (index = 0, length = object.length; index < length; index += 1) {
-          inspectNode(object[index], objects, duplicatesIndexes);
-        }
-      } else {
-        objectKeyList = Object.keys(object);
-
-        for (index = 0, length = objectKeyList.length; index < length; index += 1) {
-          inspectNode(object[objectKeyList[index]], objects, duplicatesIndexes);
-        }
-      }
-    }
-  }
-}
-
-function dump(input, options) {
-  options = options || {};
-
-  var state = new State(options);
-
-  if (!state.noRefs) getDuplicateReferences(input, state);
-
-  if (writeNode(state, 0, input, true, true)) return state.dump + '\n';
-
-  return '';
-}
-
-function safeDump(input, options) {
-  return dump(input, common.extend({ schema: DEFAULT_SAFE_SCHEMA }, options));
-}
-
-module.exports.dump     = dump;
-module.exports.safeDump = safeDump;
-
-},{"./common":111,"./exception":113,"./schema/default_full":118,"./schema/default_safe":119}],113:[function(require,module,exports){
-// YAML error class. http://stackoverflow.com/questions/8458984
-//
-'use strict';
-
-function YAMLException(reason, mark) {
-  // Super constructor
-  Error.call(this);
-
-  // Include stack trace in error object
-  if (Error.captureStackTrace) {
-    // Chrome and NodeJS
-    Error.captureStackTrace(this, this.constructor);
-  } else {
-    // FF, IE 10+ and Safari 6+. Fallback for others
-    this.stack = (new Error()).stack || '';
-  }
-
-  this.name = 'YAMLException';
-  this.reason = reason;
-  this.mark = mark;
-  this.message = (this.reason || '(unknown reason)') + (this.mark ? ' ' + this.mark.toString() : '');
-}
-
-
-// Inherit from Error
-YAMLException.prototype = Object.create(Error.prototype);
-YAMLException.prototype.constructor = YAMLException;
-
-
-YAMLException.prototype.toString = function toString(compact) {
-  var result = this.name + ': ';
-
-  result += this.reason || '(unknown reason)';
-
-  if (!compact && this.mark) {
-    result += ' ' + this.mark.toString();
-  }
-
-  return result;
-};
-
-
-module.exports = YAMLException;
-
-},{}],114:[function(require,module,exports){
-'use strict';
-
-/*eslint-disable max-len,no-use-before-define*/
-
-var common              = require('./common');
-var YAMLException       = require('./exception');
-var Mark                = require('./mark');
-var DEFAULT_SAFE_SCHEMA = require('./schema/default_safe');
-var DEFAULT_FULL_SCHEMA = require('./schema/default_full');
-
-
-var _hasOwnProperty = Object.prototype.hasOwnProperty;
-
-
-var CONTEXT_FLOW_IN   = 1;
-var CONTEXT_FLOW_OUT  = 2;
-var CONTEXT_BLOCK_IN  = 3;
-var CONTEXT_BLOCK_OUT = 4;
-
-
-var CHOMPING_CLIP  = 1;
-var CHOMPING_STRIP = 2;
-var CHOMPING_KEEP  = 3;
-
-
-var PATTERN_NON_PRINTABLE         = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x84\x86-\x9F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
-var PATTERN_NON_ASCII_LINE_BREAKS = /[\x85\u2028\u2029]/;
-var PATTERN_FLOW_INDICATORS       = /[,\[\]\{\}]/;
-var PATTERN_TAG_HANDLE            = /^(?:!|!!|![a-z\-]+!)$/i;
-var PATTERN_TAG_URI               = /^(?:!|[^,\[\]\{\}])(?:%[0-9a-f]{2}|[0-9a-z\-#;\/\?:@&=\+\$,_\.!~\*'\(\)\[\]])*$/i;
-
-
-function is_EOL(c) {
-  return (c === 0x0A/* LF */) || (c === 0x0D/* CR */);
-}
-
-function is_WHITE_SPACE(c) {
-  return (c === 0x09/* Tab */) || (c === 0x20/* Space */);
-}
-
-function is_WS_OR_EOL(c) {
-  return (c === 0x09/* Tab */) ||
-         (c === 0x20/* Space */) ||
-         (c === 0x0A/* LF */) ||
-         (c === 0x0D/* CR */);
-}
-
-function is_FLOW_INDICATOR(c) {
-  return c === 0x2C/* , */ ||
-         c === 0x5B/* [ */ ||
-         c === 0x5D/* ] */ ||
-         c === 0x7B/* { */ ||
-         c === 0x7D/* } */;
-}
-
-function fromHexCode(c) {
-  var lc;
-
-  if ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */)) {
-    return c - 0x30;
-  }
-
-  /*eslint-disable no-bitwise*/
-  lc = c | 0x20;
-
-  if ((0x61/* a */ <= lc) && (lc <= 0x66/* f */)) {
-    return lc - 0x61 + 10;
-  }
-
-  return -1;
-}
-
-function escapedHexLen(c) {
-  if (c === 0x78/* x */) { return 2; }
-  if (c === 0x75/* u */) { return 4; }
-  if (c === 0x55/* U */) { return 8; }
-  return 0;
-}
-
-function fromDecimalCode(c) {
-  if ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */)) {
-    return c - 0x30;
-  }
-
-  return -1;
-}
-
-function simpleEscapeSequence(c) {
-  return (c === 0x30/* 0 */) ? '\x00' :
-        (c === 0x61/* a */) ? '\x07' :
-        (c === 0x62/* b */) ? '\x08' :
-        (c === 0x74/* t */) ? '\x09' :
-        (c === 0x09/* Tab */) ? '\x09' :
-        (c === 0x6E/* n */) ? '\x0A' :
-        (c === 0x76/* v */) ? '\x0B' :
-        (c === 0x66/* f */) ? '\x0C' :
-        (c === 0x72/* r */) ? '\x0D' :
-        (c === 0x65/* e */) ? '\x1B' :
-        (c === 0x20/* Space */) ? ' ' :
-        (c === 0x22/* " */) ? '\x22' :
-        (c === 0x2F/* / */) ? '/' :
-        (c === 0x5C/* \ */) ? '\x5C' :
-        (c === 0x4E/* N */) ? '\x85' :
-        (c === 0x5F/* _ */) ? '\xA0' :
-        (c === 0x4C/* L */) ? '\u2028' :
-        (c === 0x50/* P */) ? '\u2029' : '';
-}
-
-function charFromCodepoint(c) {
-  if (c <= 0xFFFF) {
-    return String.fromCharCode(c);
-  }
-  // Encode UTF-16 surrogate pair
-  // https://en.wikipedia.org/wiki/UTF-16#Code_points_U.2B010000_to_U.2B10FFFF
-  return String.fromCharCode(((c - 0x010000) >> 10) + 0xD800,
-                             ((c - 0x010000) & 0x03FF) + 0xDC00);
-}
-
-var simpleEscapeCheck = new Array(256); // integer, for fast access
-var simpleEscapeMap = new Array(256);
-for (var i = 0; i < 256; i++) {
-  simpleEscapeCheck[i] = simpleEscapeSequence(i) ? 1 : 0;
-  simpleEscapeMap[i] = simpleEscapeSequence(i);
-}
-
-
-function State(input, options) {
-  this.input = input;
-
-  this.filename  = options['filename']  || null;
-  this.schema    = options['schema']    || DEFAULT_FULL_SCHEMA;
-  this.onWarning = options['onWarning'] || null;
-  this.legacy    = options['legacy']    || false;
-  this.json      = options['json']      || false;
-  this.listener  = options['listener']  || null;
-
-  this.implicitTypes = this.schema.compiledImplicit;
-  this.typeMap       = this.schema.compiledTypeMap;
-
-  this.length     = input.length;
-  this.position   = 0;
-  this.line       = 0;
-  this.lineStart  = 0;
-  this.lineIndent = 0;
-
-  this.documents = [];
-
-  /*
-  this.version;
-  this.checkLineBreaks;
-  this.tagMap;
-  this.anchorMap;
-  this.tag;
-  this.anchor;
-  this.kind;
-  this.result;*/
-
-}
-
-
-function generateError(state, message) {
-  return new YAMLException(
-    message,
-    new Mark(state.filename, state.input, state.position, state.line, (state.position - state.lineStart)));
-}
-
-function throwError(state, message) {
-  throw generateError(state, message);
-}
-
-function throwWarning(state, message) {
-  if (state.onWarning) {
-    state.onWarning.call(null, generateError(state, message));
-  }
-}
-
-
-var directiveHandlers = {
-
-  YAML: function handleYamlDirective(state, name, args) {
-
-    var match, major, minor;
-
-    if (state.version !== null) {
-      throwError(state, 'duplication of %YAML directive');
-    }
-
-    if (args.length !== 1) {
-      throwError(state, 'YAML directive accepts exactly one argument');
-    }
-
-    match = /^([0-9]+)\.([0-9]+)$/.exec(args[0]);
-
-    if (match === null) {
-      throwError(state, 'ill-formed argument of the YAML directive');
-    }
-
-    major = parseInt(match[1], 10);
-    minor = parseInt(match[2], 10);
-
-    if (major !== 1) {
-      throwError(state, 'unacceptable YAML version of the document');
-    }
-
-    state.version = args[0];
-    state.checkLineBreaks = (minor < 2);
-
-    if (minor !== 1 && minor !== 2) {
-      throwWarning(state, 'unsupported YAML version of the document');
-    }
-  },
-
-  TAG: function handleTagDirective(state, name, args) {
-
-    var handle, prefix;
-
-    if (args.length !== 2) {
-      throwError(state, 'TAG directive accepts exactly two arguments');
-    }
-
-    handle = args[0];
-    prefix = args[1];
-
-    if (!PATTERN_TAG_HANDLE.test(handle)) {
-      throwError(state, 'ill-formed tag handle (first argument) of the TAG directive');
-    }
-
-    if (_hasOwnProperty.call(state.tagMap, handle)) {
-      throwError(state, 'there is a previously declared suffix for "' + handle + '" tag handle');
-    }
-
-    if (!PATTERN_TAG_URI.test(prefix)) {
-      throwError(state, 'ill-formed tag prefix (second argument) of the TAG directive');
-    }
-
-    state.tagMap[handle] = prefix;
-  }
-};
-
-
-function captureSegment(state, start, end, checkJson) {
-  var _position, _length, _character, _result;
-
-  if (start < end) {
-    _result = state.input.slice(start, end);
-
-    if (checkJson) {
-      for (_position = 0, _length = _result.length;
-           _position < _length;
-           _position += 1) {
-        _character = _result.charCodeAt(_position);
-        if (!(_character === 0x09 ||
-              (0x20 <= _character && _character <= 0x10FFFF))) {
-          throwError(state, 'expected valid JSON character');
-        }
-      }
-    } else if (PATTERN_NON_PRINTABLE.test(_result)) {
-      throwError(state, 'the stream contains non-printable characters');
-    }
-
-    state.result += _result;
-  }
-}
-
-function mergeMappings(state, destination, source, overridableKeys) {
-  var sourceKeys, key, index, quantity;
-
-  if (!common.isObject(source)) {
-    throwError(state, 'cannot merge mappings; the provided source object is unacceptable');
-  }
-
-  sourceKeys = Object.keys(source);
-
-  for (index = 0, quantity = sourceKeys.length; index < quantity; index += 1) {
-    key = sourceKeys[index];
-
-    if (!_hasOwnProperty.call(destination, key)) {
-      destination[key] = source[key];
-      overridableKeys[key] = true;
-    }
-  }
-}
-
-function storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode) {
-  var index, quantity;
-
-  keyNode = String(keyNode);
-
-  if (_result === null) {
-    _result = {};
-  }
-
-  if (keyTag === 'tag:yaml.org,2002:merge') {
-    if (Array.isArray(valueNode)) {
-      for (index = 0, quantity = valueNode.length; index < quantity; index += 1) {
-        mergeMappings(state, _result, valueNode[index], overridableKeys);
-      }
-    } else {
-      mergeMappings(state, _result, valueNode, overridableKeys);
-    }
-  } else {
-    if (!state.json &&
-        !_hasOwnProperty.call(overridableKeys, keyNode) &&
-        _hasOwnProperty.call(_result, keyNode)) {
-      throwError(state, 'duplicated mapping key');
-    }
-    _result[keyNode] = valueNode;
-    delete overridableKeys[keyNode];
-  }
-
-  return _result;
-}
-
-function readLineBreak(state) {
-  var ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch === 0x0A/* LF */) {
-    state.position++;
-  } else if (ch === 0x0D/* CR */) {
-    state.position++;
-    if (state.input.charCodeAt(state.position) === 0x0A/* LF */) {
-      state.position++;
-    }
-  } else {
-    throwError(state, 'a line break is expected');
-  }
-
-  state.line += 1;
-  state.lineStart = state.position;
-}
-
-function skipSeparationSpace(state, allowComments, checkIndent) {
-  var lineBreaks = 0,
-      ch = state.input.charCodeAt(state.position);
-
-  while (ch !== 0) {
-    while (is_WHITE_SPACE(ch)) {
-      ch = state.input.charCodeAt(++state.position);
-    }
-
-    if (allowComments && ch === 0x23/* # */) {
-      do {
-        ch = state.input.charCodeAt(++state.position);
-      } while (ch !== 0x0A/* LF */ && ch !== 0x0D/* CR */ && ch !== 0);
-    }
-
-    if (is_EOL(ch)) {
-      readLineBreak(state);
-
-      ch = state.input.charCodeAt(state.position);
-      lineBreaks++;
-      state.lineIndent = 0;
-
-      while (ch === 0x20/* Space */) {
-        state.lineIndent++;
-        ch = state.input.charCodeAt(++state.position);
-      }
-    } else {
-      break;
-    }
-  }
-
-  if (checkIndent !== -1 && lineBreaks !== 0 && state.lineIndent < checkIndent) {
-    throwWarning(state, 'deficient indentation');
-  }
-
-  return lineBreaks;
-}
-
-function testDocumentSeparator(state) {
-  var _position = state.position,
-      ch;
-
-  ch = state.input.charCodeAt(_position);
-
-  // Condition state.position === state.lineStart is tested
-  // in parent on each call, for efficiency. No needs to test here again.
-  if ((ch === 0x2D/* - */ || ch === 0x2E/* . */) &&
-      ch === state.input.charCodeAt(_position + 1) &&
-      ch === state.input.charCodeAt(_position + 2)) {
-
-    _position += 3;
-
-    ch = state.input.charCodeAt(_position);
-
-    if (ch === 0 || is_WS_OR_EOL(ch)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function writeFoldedLines(state, count) {
-  if (count === 1) {
-    state.result += ' ';
-  } else if (count > 1) {
-    state.result += common.repeat('\n', count - 1);
-  }
-}
-
-
-function readPlainScalar(state, nodeIndent, withinFlowCollection) {
-  var preceding,
-      following,
-      captureStart,
-      captureEnd,
-      hasPendingContent,
-      _line,
-      _lineStart,
-      _lineIndent,
-      _kind = state.kind,
-      _result = state.result,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (is_WS_OR_EOL(ch)      ||
-      is_FLOW_INDICATOR(ch) ||
-      ch === 0x23/* # */    ||
-      ch === 0x26/* & */    ||
-      ch === 0x2A/* * */    ||
-      ch === 0x21/* ! */    ||
-      ch === 0x7C/* | */    ||
-      ch === 0x3E/* > */    ||
-      ch === 0x27/* ' */    ||
-      ch === 0x22/* " */    ||
-      ch === 0x25/* % */    ||
-      ch === 0x40/* @ */    ||
-      ch === 0x60/* ` */) {
-    return false;
-  }
-
-  if (ch === 0x3F/* ? */ || ch === 0x2D/* - */) {
-    following = state.input.charCodeAt(state.position + 1);
-
-    if (is_WS_OR_EOL(following) ||
-        withinFlowCollection && is_FLOW_INDICATOR(following)) {
-      return false;
-    }
-  }
-
-  state.kind = 'scalar';
-  state.result = '';
-  captureStart = captureEnd = state.position;
-  hasPendingContent = false;
-
-  while (ch !== 0) {
-    if (ch === 0x3A/* : */) {
-      following = state.input.charCodeAt(state.position + 1);
-
-      if (is_WS_OR_EOL(following) ||
-          withinFlowCollection && is_FLOW_INDICATOR(following)) {
-        break;
-      }
-
-    } else if (ch === 0x23/* # */) {
-      preceding = state.input.charCodeAt(state.position - 1);
-
-      if (is_WS_OR_EOL(preceding)) {
-        break;
-      }
-
-    } else if ((state.position === state.lineStart && testDocumentSeparator(state)) ||
-               withinFlowCollection && is_FLOW_INDICATOR(ch)) {
-      break;
-
-    } else if (is_EOL(ch)) {
-      _line = state.line;
-      _lineStart = state.lineStart;
-      _lineIndent = state.lineIndent;
-      skipSeparationSpace(state, false, -1);
-
-      if (state.lineIndent >= nodeIndent) {
-        hasPendingContent = true;
-        ch = state.input.charCodeAt(state.position);
-        continue;
-      } else {
-        state.position = captureEnd;
-        state.line = _line;
-        state.lineStart = _lineStart;
-        state.lineIndent = _lineIndent;
-        break;
-      }
-    }
-
-    if (hasPendingContent) {
-      captureSegment(state, captureStart, captureEnd, false);
-      writeFoldedLines(state, state.line - _line);
-      captureStart = captureEnd = state.position;
-      hasPendingContent = false;
-    }
-
-    if (!is_WHITE_SPACE(ch)) {
-      captureEnd = state.position + 1;
-    }
-
-    ch = state.input.charCodeAt(++state.position);
-  }
-
-  captureSegment(state, captureStart, captureEnd, false);
-
-  if (state.result) {
-    return true;
-  }
-
-  state.kind = _kind;
-  state.result = _result;
-  return false;
-}
-
-function readSingleQuotedScalar(state, nodeIndent) {
-  var ch,
-      captureStart, captureEnd;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch !== 0x27/* ' */) {
-    return false;
-  }
-
-  state.kind = 'scalar';
-  state.result = '';
-  state.position++;
-  captureStart = captureEnd = state.position;
-
-  while ((ch = state.input.charCodeAt(state.position)) !== 0) {
-    if (ch === 0x27/* ' */) {
-      captureSegment(state, captureStart, state.position, true);
-      ch = state.input.charCodeAt(++state.position);
-
-      if (ch === 0x27/* ' */) {
-        captureStart = state.position;
-        state.position++;
-        captureEnd = state.position;
-      } else {
-        return true;
-      }
-
-    } else if (is_EOL(ch)) {
-      captureSegment(state, captureStart, captureEnd, true);
-      writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
-      captureStart = captureEnd = state.position;
-
-    } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
-      throwError(state, 'unexpected end of the document within a single quoted scalar');
-
-    } else {
-      state.position++;
-      captureEnd = state.position;
-    }
-  }
-
-  throwError(state, 'unexpected end of the stream within a single quoted scalar');
-}
-
-function readDoubleQuotedScalar(state, nodeIndent) {
-  var captureStart,
-      captureEnd,
-      hexLength,
-      hexResult,
-      tmp,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch !== 0x22/* " */) {
-    return false;
-  }
-
-  state.kind = 'scalar';
-  state.result = '';
-  state.position++;
-  captureStart = captureEnd = state.position;
-
-  while ((ch = state.input.charCodeAt(state.position)) !== 0) {
-    if (ch === 0x22/* " */) {
-      captureSegment(state, captureStart, state.position, true);
-      state.position++;
-      return true;
-
-    } else if (ch === 0x5C/* \ */) {
-      captureSegment(state, captureStart, state.position, true);
-      ch = state.input.charCodeAt(++state.position);
-
-      if (is_EOL(ch)) {
-        skipSeparationSpace(state, false, nodeIndent);
-
-        // TODO: rework to inline fn with no type cast?
-      } else if (ch < 256 && simpleEscapeCheck[ch]) {
-        state.result += simpleEscapeMap[ch];
-        state.position++;
-
-      } else if ((tmp = escapedHexLen(ch)) > 0) {
-        hexLength = tmp;
-        hexResult = 0;
-
-        for (; hexLength > 0; hexLength--) {
-          ch = state.input.charCodeAt(++state.position);
-
-          if ((tmp = fromHexCode(ch)) >= 0) {
-            hexResult = (hexResult << 4) + tmp;
-
-          } else {
-            throwError(state, 'expected hexadecimal character');
-          }
-        }
-
-        state.result += charFromCodepoint(hexResult);
-
-        state.position++;
-
-      } else {
-        throwError(state, 'unknown escape sequence');
-      }
-
-      captureStart = captureEnd = state.position;
-
-    } else if (is_EOL(ch)) {
-      captureSegment(state, captureStart, captureEnd, true);
-      writeFoldedLines(state, skipSeparationSpace(state, false, nodeIndent));
-      captureStart = captureEnd = state.position;
-
-    } else if (state.position === state.lineStart && testDocumentSeparator(state)) {
-      throwError(state, 'unexpected end of the document within a double quoted scalar');
-
-    } else {
-      state.position++;
-      captureEnd = state.position;
-    }
-  }
-
-  throwError(state, 'unexpected end of the stream within a double quoted scalar');
-}
-
-function readFlowCollection(state, nodeIndent) {
-  var readNext = true,
-      _line,
-      _tag     = state.tag,
-      _result,
-      _anchor  = state.anchor,
-      following,
-      terminator,
-      isPair,
-      isExplicitPair,
-      isMapping,
-      overridableKeys = {},
-      keyNode,
-      keyTag,
-      valueNode,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch === 0x5B/* [ */) {
-    terminator = 0x5D;/* ] */
-    isMapping = false;
-    _result = [];
-  } else if (ch === 0x7B/* { */) {
-    terminator = 0x7D;/* } */
-    isMapping = true;
-    _result = {};
-  } else {
-    return false;
-  }
-
-  if (state.anchor !== null) {
-    state.anchorMap[state.anchor] = _result;
-  }
-
-  ch = state.input.charCodeAt(++state.position);
-
-  while (ch !== 0) {
-    skipSeparationSpace(state, true, nodeIndent);
-
-    ch = state.input.charCodeAt(state.position);
-
-    if (ch === terminator) {
-      state.position++;
-      state.tag = _tag;
-      state.anchor = _anchor;
-      state.kind = isMapping ? 'mapping' : 'sequence';
-      state.result = _result;
-      return true;
-    } else if (!readNext) {
-      throwError(state, 'missed comma between flow collection entries');
-    }
-
-    keyTag = keyNode = valueNode = null;
-    isPair = isExplicitPair = false;
-
-    if (ch === 0x3F/* ? */) {
-      following = state.input.charCodeAt(state.position + 1);
-
-      if (is_WS_OR_EOL(following)) {
-        isPair = isExplicitPair = true;
-        state.position++;
-        skipSeparationSpace(state, true, nodeIndent);
-      }
-    }
-
-    _line = state.line;
-    composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
-    keyTag = state.tag;
-    keyNode = state.result;
-    skipSeparationSpace(state, true, nodeIndent);
-
-    ch = state.input.charCodeAt(state.position);
-
-    if ((isExplicitPair || state.line === _line) && ch === 0x3A/* : */) {
-      isPair = true;
-      ch = state.input.charCodeAt(++state.position);
-      skipSeparationSpace(state, true, nodeIndent);
-      composeNode(state, nodeIndent, CONTEXT_FLOW_IN, false, true);
-      valueNode = state.result;
-    }
-
-    if (isMapping) {
-      storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode);
-    } else if (isPair) {
-      _result.push(storeMappingPair(state, null, overridableKeys, keyTag, keyNode, valueNode));
-    } else {
-      _result.push(keyNode);
-    }
-
-    skipSeparationSpace(state, true, nodeIndent);
-
-    ch = state.input.charCodeAt(state.position);
-
-    if (ch === 0x2C/* , */) {
-      readNext = true;
-      ch = state.input.charCodeAt(++state.position);
-    } else {
-      readNext = false;
-    }
-  }
-
-  throwError(state, 'unexpected end of the stream within a flow collection');
-}
-
-function readBlockScalar(state, nodeIndent) {
-  var captureStart,
-      folding,
-      chomping       = CHOMPING_CLIP,
-      didReadContent = false,
-      detectedIndent = false,
-      textIndent     = nodeIndent,
-      emptyLines     = 0,
-      atMoreIndented = false,
-      tmp,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch === 0x7C/* | */) {
-    folding = false;
-  } else if (ch === 0x3E/* > */) {
-    folding = true;
-  } else {
-    return false;
-  }
-
-  state.kind = 'scalar';
-  state.result = '';
-
-  while (ch !== 0) {
-    ch = state.input.charCodeAt(++state.position);
-
-    if (ch === 0x2B/* + */ || ch === 0x2D/* - */) {
-      if (CHOMPING_CLIP === chomping) {
-        chomping = (ch === 0x2B/* + */) ? CHOMPING_KEEP : CHOMPING_STRIP;
-      } else {
-        throwError(state, 'repeat of a chomping mode identifier');
-      }
-
-    } else if ((tmp = fromDecimalCode(ch)) >= 0) {
-      if (tmp === 0) {
-        throwError(state, 'bad explicit indentation width of a block scalar; it cannot be less than one');
-      } else if (!detectedIndent) {
-        textIndent = nodeIndent + tmp - 1;
-        detectedIndent = true;
-      } else {
-        throwError(state, 'repeat of an indentation width identifier');
-      }
-
-    } else {
-      break;
-    }
-  }
-
-  if (is_WHITE_SPACE(ch)) {
-    do { ch = state.input.charCodeAt(++state.position); }
-    while (is_WHITE_SPACE(ch));
-
-    if (ch === 0x23/* # */) {
-      do { ch = state.input.charCodeAt(++state.position); }
-      while (!is_EOL(ch) && (ch !== 0));
-    }
-  }
-
-  while (ch !== 0) {
-    readLineBreak(state);
-    state.lineIndent = 0;
-
-    ch = state.input.charCodeAt(state.position);
-
-    while ((!detectedIndent || state.lineIndent < textIndent) &&
-           (ch === 0x20/* Space */)) {
-      state.lineIndent++;
-      ch = state.input.charCodeAt(++state.position);
-    }
-
-    if (!detectedIndent && state.lineIndent > textIndent) {
-      textIndent = state.lineIndent;
-    }
-
-    if (is_EOL(ch)) {
-      emptyLines++;
-      continue;
-    }
-
-    // End of the scalar.
-    if (state.lineIndent < textIndent) {
-
-      // Perform the chomping.
-      if (chomping === CHOMPING_KEEP) {
-        state.result += common.repeat('\n', didReadContent ? 1 + emptyLines : emptyLines);
-      } else if (chomping === CHOMPING_CLIP) {
-        if (didReadContent) { // i.e. only if the scalar is not empty.
-          state.result += '\n';
-        }
-      }
-
-      // Break this `while` cycle and go to the funciton's epilogue.
-      break;
-    }
-
-    // Folded style: use fancy rules to handle line breaks.
-    if (folding) {
-
-      // Lines starting with white space characters (more-indented lines) are not folded.
-      if (is_WHITE_SPACE(ch)) {
-        atMoreIndented = true;
-        // except for the first content line (cf. Example 8.1)
-        state.result += common.repeat('\n', didReadContent ? 1 + emptyLines : emptyLines);
-
-      // End of more-indented block.
-      } else if (atMoreIndented) {
-        atMoreIndented = false;
-        state.result += common.repeat('\n', emptyLines + 1);
-
-      // Just one line break - perceive as the same line.
-      } else if (emptyLines === 0) {
-        if (didReadContent) { // i.e. only if we have already read some scalar content.
-          state.result += ' ';
-        }
-
-      // Several line breaks - perceive as different lines.
-      } else {
-        state.result += common.repeat('\n', emptyLines);
-      }
-
-    // Literal style: just add exact number of line breaks between content lines.
-    } else {
-      // Keep all line breaks except the header line break.
-      state.result += common.repeat('\n', didReadContent ? 1 + emptyLines : emptyLines);
-    }
-
-    didReadContent = true;
-    detectedIndent = true;
-    emptyLines = 0;
-    captureStart = state.position;
-
-    while (!is_EOL(ch) && (ch !== 0)) {
-      ch = state.input.charCodeAt(++state.position);
-    }
-
-    captureSegment(state, captureStart, state.position, false);
-  }
-
-  return true;
-}
-
-function readBlockSequence(state, nodeIndent) {
-  var _line,
-      _tag      = state.tag,
-      _anchor   = state.anchor,
-      _result   = [],
-      following,
-      detected  = false,
-      ch;
-
-  if (state.anchor !== null) {
-    state.anchorMap[state.anchor] = _result;
-  }
-
-  ch = state.input.charCodeAt(state.position);
-
-  while (ch !== 0) {
-
-    if (ch !== 0x2D/* - */) {
-      break;
-    }
-
-    following = state.input.charCodeAt(state.position + 1);
-
-    if (!is_WS_OR_EOL(following)) {
-      break;
-    }
-
-    detected = true;
-    state.position++;
-
-    if (skipSeparationSpace(state, true, -1)) {
-      if (state.lineIndent <= nodeIndent) {
-        _result.push(null);
-        ch = state.input.charCodeAt(state.position);
-        continue;
-      }
-    }
-
-    _line = state.line;
-    composeNode(state, nodeIndent, CONTEXT_BLOCK_IN, false, true);
-    _result.push(state.result);
-    skipSeparationSpace(state, true, -1);
-
-    ch = state.input.charCodeAt(state.position);
-
-    if ((state.line === _line || state.lineIndent > nodeIndent) && (ch !== 0)) {
-      throwError(state, 'bad indentation of a sequence entry');
-    } else if (state.lineIndent < nodeIndent) {
-      break;
-    }
-  }
-
-  if (detected) {
-    state.tag = _tag;
-    state.anchor = _anchor;
-    state.kind = 'sequence';
-    state.result = _result;
-    return true;
-  }
-  return false;
-}
-
-function readBlockMapping(state, nodeIndent, flowIndent) {
-  var following,
-      allowCompact,
-      _line,
-      _tag          = state.tag,
-      _anchor       = state.anchor,
-      _result       = {},
-      overridableKeys = {},
-      keyTag        = null,
-      keyNode       = null,
-      valueNode     = null,
-      atExplicitKey = false,
-      detected      = false,
-      ch;
-
-  if (state.anchor !== null) {
-    state.anchorMap[state.anchor] = _result;
-  }
-
-  ch = state.input.charCodeAt(state.position);
-
-  while (ch !== 0) {
-    following = state.input.charCodeAt(state.position + 1);
-    _line = state.line; // Save the current line.
-
-    //
-    // Explicit notation case. There are two separate blocks:
-    // first for the key (denoted by "?") and second for the value (denoted by ":")
-    //
-    if ((ch === 0x3F/* ? */ || ch === 0x3A/* : */) && is_WS_OR_EOL(following)) {
-
-      if (ch === 0x3F/* ? */) {
-        if (atExplicitKey) {
-          storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null);
-          keyTag = keyNode = valueNode = null;
-        }
-
-        detected = true;
-        atExplicitKey = true;
-        allowCompact = true;
-
-      } else if (atExplicitKey) {
-        // i.e. 0x3A/* : */ === character after the explicit key.
-        atExplicitKey = false;
-        allowCompact = true;
-
-      } else {
-        throwError(state, 'incomplete explicit mapping pair; a key node is missed');
-      }
-
-      state.position += 1;
-      ch = following;
-
-    //
-    // Implicit notation case. Flow-style node as the key first, then ":", and the value.
-    //
-    } else if (composeNode(state, flowIndent, CONTEXT_FLOW_OUT, false, true)) {
-
-      if (state.line === _line) {
-        ch = state.input.charCodeAt(state.position);
-
-        while (is_WHITE_SPACE(ch)) {
-          ch = state.input.charCodeAt(++state.position);
-        }
-
-        if (ch === 0x3A/* : */) {
-          ch = state.input.charCodeAt(++state.position);
-
-          if (!is_WS_OR_EOL(ch)) {
-            throwError(state, 'a whitespace character is expected after the key-value separator within a block mapping');
-          }
-
-          if (atExplicitKey) {
-            storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null);
-            keyTag = keyNode = valueNode = null;
-          }
-
-          detected = true;
-          atExplicitKey = false;
-          allowCompact = false;
-          keyTag = state.tag;
-          keyNode = state.result;
-
-        } else if (detected) {
-          throwError(state, 'can not read an implicit mapping pair; a colon is missed');
-
-        } else {
-          state.tag = _tag;
-          state.anchor = _anchor;
-          return true; // Keep the result of `composeNode`.
-        }
-
-      } else if (detected) {
-        throwError(state, 'can not read a block mapping entry; a multiline key may not be an implicit key');
-
-      } else {
-        state.tag = _tag;
-        state.anchor = _anchor;
-        return true; // Keep the result of `composeNode`.
-      }
-
-    } else {
-      break; // Reading is done. Go to the epilogue.
-    }
-
-    //
-    // Common reading code for both explicit and implicit notations.
-    //
-    if (state.line === _line || state.lineIndent > nodeIndent) {
-      if (composeNode(state, nodeIndent, CONTEXT_BLOCK_OUT, true, allowCompact)) {
-        if (atExplicitKey) {
-          keyNode = state.result;
-        } else {
-          valueNode = state.result;
-        }
-      }
-
-      if (!atExplicitKey) {
-        storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, valueNode);
-        keyTag = keyNode = valueNode = null;
-      }
-
-      skipSeparationSpace(state, true, -1);
-      ch = state.input.charCodeAt(state.position);
-    }
-
-    if (state.lineIndent > nodeIndent && (ch !== 0)) {
-      throwError(state, 'bad indentation of a mapping entry');
-    } else if (state.lineIndent < nodeIndent) {
-      break;
-    }
-  }
-
-  //
-  // Epilogue.
-  //
-
-  // Special case: last mapping's node contains only the key in explicit notation.
-  if (atExplicitKey) {
-    storeMappingPair(state, _result, overridableKeys, keyTag, keyNode, null);
-  }
-
-  // Expose the resulting mapping.
-  if (detected) {
-    state.tag = _tag;
-    state.anchor = _anchor;
-    state.kind = 'mapping';
-    state.result = _result;
-  }
-
-  return detected;
-}
-
-function readTagProperty(state) {
-  var _position,
-      isVerbatim = false,
-      isNamed    = false,
-      tagHandle,
-      tagName,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch !== 0x21/* ! */) return false;
-
-  if (state.tag !== null) {
-    throwError(state, 'duplication of a tag property');
-  }
-
-  ch = state.input.charCodeAt(++state.position);
-
-  if (ch === 0x3C/* < */) {
-    isVerbatim = true;
-    ch = state.input.charCodeAt(++state.position);
-
-  } else if (ch === 0x21/* ! */) {
-    isNamed = true;
-    tagHandle = '!!';
-    ch = state.input.charCodeAt(++state.position);
-
-  } else {
-    tagHandle = '!';
-  }
-
-  _position = state.position;
-
-  if (isVerbatim) {
-    do { ch = state.input.charCodeAt(++state.position); }
-    while (ch !== 0 && ch !== 0x3E/* > */);
-
-    if (state.position < state.length) {
-      tagName = state.input.slice(_position, state.position);
-      ch = state.input.charCodeAt(++state.position);
-    } else {
-      throwError(state, 'unexpected end of the stream within a verbatim tag');
-    }
-  } else {
-    while (ch !== 0 && !is_WS_OR_EOL(ch)) {
-
-      if (ch === 0x21/* ! */) {
-        if (!isNamed) {
-          tagHandle = state.input.slice(_position - 1, state.position + 1);
-
-          if (!PATTERN_TAG_HANDLE.test(tagHandle)) {
-            throwError(state, 'named tag handle cannot contain such characters');
-          }
-
-          isNamed = true;
-          _position = state.position + 1;
-        } else {
-          throwError(state, 'tag suffix cannot contain exclamation marks');
-        }
-      }
-
-      ch = state.input.charCodeAt(++state.position);
-    }
-
-    tagName = state.input.slice(_position, state.position);
-
-    if (PATTERN_FLOW_INDICATORS.test(tagName)) {
-      throwError(state, 'tag suffix cannot contain flow indicator characters');
-    }
-  }
-
-  if (tagName && !PATTERN_TAG_URI.test(tagName)) {
-    throwError(state, 'tag name cannot contain such characters: ' + tagName);
-  }
-
-  if (isVerbatim) {
-    state.tag = tagName;
-
-  } else if (_hasOwnProperty.call(state.tagMap, tagHandle)) {
-    state.tag = state.tagMap[tagHandle] + tagName;
-
-  } else if (tagHandle === '!') {
-    state.tag = '!' + tagName;
-
-  } else if (tagHandle === '!!') {
-    state.tag = 'tag:yaml.org,2002:' + tagName;
-
-  } else {
-    throwError(state, 'undeclared tag handle "' + tagHandle + '"');
-  }
-
-  return true;
-}
-
-function readAnchorProperty(state) {
-  var _position,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch !== 0x26/* & */) return false;
-
-  if (state.anchor !== null) {
-    throwError(state, 'duplication of an anchor property');
-  }
-
-  ch = state.input.charCodeAt(++state.position);
-  _position = state.position;
-
-  while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
-    ch = state.input.charCodeAt(++state.position);
-  }
-
-  if (state.position === _position) {
-    throwError(state, 'name of an anchor node must contain at least one character');
-  }
-
-  state.anchor = state.input.slice(_position, state.position);
-  return true;
-}
-
-function readAlias(state) {
-  var _position, alias,
-      ch;
-
-  ch = state.input.charCodeAt(state.position);
-
-  if (ch !== 0x2A/* * */) return false;
-
-  ch = state.input.charCodeAt(++state.position);
-  _position = state.position;
-
-  while (ch !== 0 && !is_WS_OR_EOL(ch) && !is_FLOW_INDICATOR(ch)) {
-    ch = state.input.charCodeAt(++state.position);
-  }
-
-  if (state.position === _position) {
-    throwError(state, 'name of an alias node must contain at least one character');
-  }
-
-  alias = state.input.slice(_position, state.position);
-
-  if (!state.anchorMap.hasOwnProperty(alias)) {
-    throwError(state, 'unidentified alias "' + alias + '"');
-  }
-
-  state.result = state.anchorMap[alias];
-  skipSeparationSpace(state, true, -1);
-  return true;
-}
-
-function composeNode(state, parentIndent, nodeContext, allowToSeek, allowCompact) {
-  var allowBlockStyles,
-      allowBlockScalars,
-      allowBlockCollections,
-      indentStatus = 1, // 1: this>parent, 0: this=parent, -1: this<parent
-      atNewLine  = false,
-      hasContent = false,
-      typeIndex,
-      typeQuantity,
-      type,
-      flowIndent,
-      blockIndent;
-
-  if (state.listener !== null) {
-    state.listener('open', state);
-  }
-
-  state.tag    = null;
-  state.anchor = null;
-  state.kind   = null;
-  state.result = null;
-
-  allowBlockStyles = allowBlockScalars = allowBlockCollections =
-    CONTEXT_BLOCK_OUT === nodeContext ||
-    CONTEXT_BLOCK_IN  === nodeContext;
-
-  if (allowToSeek) {
-    if (skipSeparationSpace(state, true, -1)) {
-      atNewLine = true;
-
-      if (state.lineIndent > parentIndent) {
-        indentStatus = 1;
-      } else if (state.lineIndent === parentIndent) {
-        indentStatus = 0;
-      } else if (state.lineIndent < parentIndent) {
-        indentStatus = -1;
-      }
-    }
-  }
-
-  if (indentStatus === 1) {
-    while (readTagProperty(state) || readAnchorProperty(state)) {
-      if (skipSeparationSpace(state, true, -1)) {
-        atNewLine = true;
-        allowBlockCollections = allowBlockStyles;
-
-        if (state.lineIndent > parentIndent) {
-          indentStatus = 1;
-        } else if (state.lineIndent === parentIndent) {
-          indentStatus = 0;
-        } else if (state.lineIndent < parentIndent) {
-          indentStatus = -1;
-        }
-      } else {
-        allowBlockCollections = false;
-      }
-    }
-  }
-
-  if (allowBlockCollections) {
-    allowBlockCollections = atNewLine || allowCompact;
-  }
-
-  if (indentStatus === 1 || CONTEXT_BLOCK_OUT === nodeContext) {
-    if (CONTEXT_FLOW_IN === nodeContext || CONTEXT_FLOW_OUT === nodeContext) {
-      flowIndent = parentIndent;
-    } else {
-      flowIndent = parentIndent + 1;
-    }
-
-    blockIndent = state.position - state.lineStart;
-
-    if (indentStatus === 1) {
-      if (allowBlockCollections &&
-          (readBlockSequence(state, blockIndent) ||
-           readBlockMapping(state, blockIndent, flowIndent)) ||
-          readFlowCollection(state, flowIndent)) {
-        hasContent = true;
-      } else {
-        if ((allowBlockScalars && readBlockScalar(state, flowIndent)) ||
-            readSingleQuotedScalar(state, flowIndent) ||
-            readDoubleQuotedScalar(state, flowIndent)) {
-          hasContent = true;
-
-        } else if (readAlias(state)) {
-          hasContent = true;
-
-          if (state.tag !== null || state.anchor !== null) {
-            throwError(state, 'alias node should not have any properties');
-          }
-
-        } else if (readPlainScalar(state, flowIndent, CONTEXT_FLOW_IN === nodeContext)) {
-          hasContent = true;
-
-          if (state.tag === null) {
-            state.tag = '?';
-          }
-        }
-
-        if (state.anchor !== null) {
-          state.anchorMap[state.anchor] = state.result;
-        }
-      }
-    } else if (indentStatus === 0) {
-      // Special case: block sequences are allowed to have same indentation level as the parent.
-      // http://www.yaml.org/spec/1.2/spec.html#id2799784
-      hasContent = allowBlockCollections && readBlockSequence(state, blockIndent);
-    }
-  }
-
-  if (state.tag !== null && state.tag !== '!') {
-    if (state.tag === '?') {
-      for (typeIndex = 0, typeQuantity = state.implicitTypes.length;
-           typeIndex < typeQuantity;
-           typeIndex += 1) {
-        type = state.implicitTypes[typeIndex];
-
-        // Implicit resolving is not allowed for non-scalar types, and '?'
-        // non-specific tag is only assigned to plain scalars. So, it isn't
-        // needed to check for 'kind' conformity.
-
-        if (type.resolve(state.result)) { // `state.result` updated in resolver if matched
-          state.result = type.construct(state.result);
-          state.tag = type.tag;
-          if (state.anchor !== null) {
-            state.anchorMap[state.anchor] = state.result;
-          }
-          break;
-        }
-      }
-    } else if (_hasOwnProperty.call(state.typeMap[state.kind || 'fallback'], state.tag)) {
-      type = state.typeMap[state.kind || 'fallback'][state.tag];
-
-      if (state.result !== null && type.kind !== state.kind) {
-        throwError(state, 'unacceptable node kind for !<' + state.tag + '> tag; it should be "' + type.kind + '", not "' + state.kind + '"');
-      }
-
-      if (!type.resolve(state.result)) { // `state.result` updated in resolver if matched
-        throwError(state, 'cannot resolve a node with !<' + state.tag + '> explicit tag');
-      } else {
-        state.result = type.construct(state.result);
-        if (state.anchor !== null) {
-          state.anchorMap[state.anchor] = state.result;
-        }
-      }
-    } else {
-      throwError(state, 'unknown tag !<' + state.tag + '>');
-    }
-  }
-
-  if (state.listener !== null) {
-    state.listener('close', state);
-  }
-  return state.tag !== null ||  state.anchor !== null || hasContent;
-}
-
-function readDocument(state) {
-  var documentStart = state.position,
-      _position,
-      directiveName,
-      directiveArgs,
-      hasDirectives = false,
-      ch;
-
-  state.version = null;
-  state.checkLineBreaks = state.legacy;
-  state.tagMap = {};
-  state.anchorMap = {};
-
-  while ((ch = state.input.charCodeAt(state.position)) !== 0) {
-    skipSeparationSpace(state, true, -1);
-
-    ch = state.input.charCodeAt(state.position);
-
-    if (state.lineIndent > 0 || ch !== 0x25/* % */) {
-      break;
-    }
-
-    hasDirectives = true;
-    ch = state.input.charCodeAt(++state.position);
-    _position = state.position;
-
-    while (ch !== 0 && !is_WS_OR_EOL(ch)) {
-      ch = state.input.charCodeAt(++state.position);
-    }
-
-    directiveName = state.input.slice(_position, state.position);
-    directiveArgs = [];
-
-    if (directiveName.length < 1) {
-      throwError(state, 'directive name must not be less than one character in length');
-    }
-
-    while (ch !== 0) {
-      while (is_WHITE_SPACE(ch)) {
-        ch = state.input.charCodeAt(++state.position);
-      }
-
-      if (ch === 0x23/* # */) {
-        do { ch = state.input.charCodeAt(++state.position); }
-        while (ch !== 0 && !is_EOL(ch));
-        break;
-      }
-
-      if (is_EOL(ch)) break;
-
-      _position = state.position;
-
-      while (ch !== 0 && !is_WS_OR_EOL(ch)) {
-        ch = state.input.charCodeAt(++state.position);
-      }
-
-      directiveArgs.push(state.input.slice(_position, state.position));
-    }
-
-    if (ch !== 0) readLineBreak(state);
-
-    if (_hasOwnProperty.call(directiveHandlers, directiveName)) {
-      directiveHandlers[directiveName](state, directiveName, directiveArgs);
-    } else {
-      throwWarning(state, 'unknown document directive "' + directiveName + '"');
-    }
-  }
-
-  skipSeparationSpace(state, true, -1);
-
-  if (state.lineIndent === 0 &&
-      state.input.charCodeAt(state.position)     === 0x2D/* - */ &&
-      state.input.charCodeAt(state.position + 1) === 0x2D/* - */ &&
-      state.input.charCodeAt(state.position + 2) === 0x2D/* - */) {
-    state.position += 3;
-    skipSeparationSpace(state, true, -1);
-
-  } else if (hasDirectives) {
-    throwError(state, 'directives end mark is expected');
-  }
-
-  composeNode(state, state.lineIndent - 1, CONTEXT_BLOCK_OUT, false, true);
-  skipSeparationSpace(state, true, -1);
-
-  if (state.checkLineBreaks &&
-      PATTERN_NON_ASCII_LINE_BREAKS.test(state.input.slice(documentStart, state.position))) {
-    throwWarning(state, 'non-ASCII line breaks are interpreted as content');
-  }
-
-  state.documents.push(state.result);
-
-  if (state.position === state.lineStart && testDocumentSeparator(state)) {
-
-    if (state.input.charCodeAt(state.position) === 0x2E/* . */) {
-      state.position += 3;
-      skipSeparationSpace(state, true, -1);
-    }
-    return;
-  }
-
-  if (state.position < (state.length - 1)) {
-    throwError(state, 'end of the stream or a document separator is expected');
-  } else {
-    return;
-  }
-}
-
-
-function loadDocuments(input, options) {
-  input = String(input);
-  options = options || {};
-
-  if (input.length !== 0) {
-
-    // Add tailing `\n` if not exists
-    if (input.charCodeAt(input.length - 1) !== 0x0A/* LF */ &&
-        input.charCodeAt(input.length - 1) !== 0x0D/* CR */) {
-      input += '\n';
-    }
-
-    // Strip BOM
-    if (input.charCodeAt(0) === 0xFEFF) {
-      input = input.slice(1);
-    }
-  }
-
-  var state = new State(input, options);
-
-  // Use 0 as string terminator. That significantly simplifies bounds check.
-  state.input += '\0';
-
-  while (state.input.charCodeAt(state.position) === 0x20/* Space */) {
-    state.lineIndent += 1;
-    state.position += 1;
-  }
-
-  while (state.position < (state.length - 1)) {
-    readDocument(state);
-  }
-
-  return state.documents;
-}
-
-
-function loadAll(input, iterator, options) {
-  var documents = loadDocuments(input, options), index, length;
-
-  for (index = 0, length = documents.length; index < length; index += 1) {
-    iterator(documents[index]);
-  }
-}
-
-
-function load(input, options) {
-  var documents = loadDocuments(input, options);
-
-  if (documents.length === 0) {
-    /*eslint-disable no-undefined*/
-    return undefined;
-  } else if (documents.length === 1) {
-    return documents[0];
-  }
-  throw new YAMLException('expected a single document in the stream, but found more');
-}
-
-
-function safeLoadAll(input, output, options) {
-  loadAll(input, output, common.extend({ schema: DEFAULT_SAFE_SCHEMA }, options));
-}
-
-
-function safeLoad(input, options) {
-  return load(input, common.extend({ schema: DEFAULT_SAFE_SCHEMA }, options));
-}
-
-
-module.exports.loadAll     = loadAll;
-module.exports.load        = load;
-module.exports.safeLoadAll = safeLoadAll;
-module.exports.safeLoad    = safeLoad;
-
-},{"./common":111,"./exception":113,"./mark":115,"./schema/default_full":118,"./schema/default_safe":119}],115:[function(require,module,exports){
-'use strict';
-
-
-var common = require('./common');
-
-
-function Mark(name, buffer, position, line, column) {
-  this.name     = name;
-  this.buffer   = buffer;
-  this.position = position;
-  this.line     = line;
-  this.column   = column;
-}
-
-
-Mark.prototype.getSnippet = function getSnippet(indent, maxLength) {
-  var head, start, tail, end, snippet;
-
-  if (!this.buffer) return null;
-
-  indent = indent || 4;
-  maxLength = maxLength || 75;
-
-  head = '';
-  start = this.position;
-
-  while (start > 0 && '\x00\r\n\x85\u2028\u2029'.indexOf(this.buffer.charAt(start - 1)) === -1) {
-    start -= 1;
-    if (this.position - start > (maxLength / 2 - 1)) {
-      head = ' ... ';
-      start += 5;
-      break;
-    }
-  }
-
-  tail = '';
-  end = this.position;
-
-  while (end < this.buffer.length && '\x00\r\n\x85\u2028\u2029'.indexOf(this.buffer.charAt(end)) === -1) {
-    end += 1;
-    if (end - this.position > (maxLength / 2 - 1)) {
-      tail = ' ... ';
-      end -= 5;
-      break;
-    }
-  }
-
-  snippet = this.buffer.slice(start, end);
-
-  return common.repeat(' ', indent) + head + snippet + tail + '\n' +
-         common.repeat(' ', indent + this.position - start + head.length) + '^';
-};
-
-
-Mark.prototype.toString = function toString(compact) {
-  var snippet, where = '';
-
-  if (this.name) {
-    where += 'in "' + this.name + '" ';
-  }
-
-  where += 'at line ' + (this.line + 1) + ', column ' + (this.column + 1);
-
-  if (!compact) {
-    snippet = this.getSnippet();
-
-    if (snippet) {
-      where += ':\n' + snippet;
-    }
-  }
-
-  return where;
-};
-
-
-module.exports = Mark;
-
-},{"./common":111}],116:[function(require,module,exports){
-'use strict';
-
-/*eslint-disable max-len*/
-
-var common        = require('./common');
-var YAMLException = require('./exception');
-var Type          = require('./type');
-
-
-function compileList(schema, name, result) {
-  var exclude = [];
-
-  schema.include.forEach(function (includedSchema) {
-    result = compileList(includedSchema, name, result);
-  });
-
-  schema[name].forEach(function (currentType) {
-    result.forEach(function (previousType, previousIndex) {
-      if (previousType.tag === currentType.tag && previousType.kind === currentType.kind) {
-        exclude.push(previousIndex);
-      }
-    });
-
-    result.push(currentType);
-  });
-
-  return result.filter(function (type, index) {
-    return exclude.indexOf(index) === -1;
-  });
-}
-
-
-function compileMap(/* lists... */) {
-  var result = {
-        scalar: {},
-        sequence: {},
-        mapping: {},
-        fallback: {}
-      }, index, length;
-
-  function collectType(type) {
-    result[type.kind][type.tag] = result['fallback'][type.tag] = type;
-  }
-
-  for (index = 0, length = arguments.length; index < length; index += 1) {
-    arguments[index].forEach(collectType);
-  }
-  return result;
-}
-
-
-function Schema(definition) {
-  this.include  = definition.include  || [];
-  this.implicit = definition.implicit || [];
-  this.explicit = definition.explicit || [];
-
-  this.implicit.forEach(function (type) {
-    if (type.loadKind && type.loadKind !== 'scalar') {
-      throw new YAMLException('There is a non-scalar type in the implicit list of a schema. Implicit resolving of such types is not supported.');
-    }
-  });
-
-  this.compiledImplicit = compileList(this, 'implicit', []);
-  this.compiledExplicit = compileList(this, 'explicit', []);
-  this.compiledTypeMap  = compileMap(this.compiledImplicit, this.compiledExplicit);
-}
-
-
-Schema.DEFAULT = null;
-
-
-Schema.create = function createSchema() {
-  var schemas, types;
-
-  switch (arguments.length) {
-    case 1:
-      schemas = Schema.DEFAULT;
-      types = arguments[0];
-      break;
-
-    case 2:
-      schemas = arguments[0];
-      types = arguments[1];
-      break;
-
-    default:
-      throw new YAMLException('Wrong number of arguments for Schema.create function');
-  }
-
-  schemas = common.toArray(schemas);
-  types = common.toArray(types);
-
-  if (!schemas.every(function (schema) { return schema instanceof Schema; })) {
-    throw new YAMLException('Specified list of super schemas (or a single Schema object) contains a non-Schema object.');
-  }
-
-  if (!types.every(function (type) { return type instanceof Type; })) {
-    throw new YAMLException('Specified list of YAML types (or a single Type object) contains a non-Type object.');
-  }
-
-  return new Schema({
-    include: schemas,
-    explicit: types
-  });
-};
-
-
-module.exports = Schema;
-
-},{"./common":111,"./exception":113,"./type":122}],117:[function(require,module,exports){
-// Standard YAML's Core schema.
-// http://www.yaml.org/spec/1.2/spec.html#id2804923
-//
-// NOTE: JS-YAML does not support schema-specific tag resolution restrictions.
-// So, Core schema has no distinctions from JSON schema is JS-YAML.
-
-
-'use strict';
-
-
-var Schema = require('../schema');
-
-
-module.exports = new Schema({
-  include: [
-    require('./json')
-  ]
-});
-
-},{"../schema":116,"./json":121}],118:[function(require,module,exports){
-// JS-YAML's default schema for `load` function.
-// It is not described in the YAML specification.
-//
-// This schema is based on JS-YAML's default safe schema and includes
-// JavaScript-specific types: !!js/undefined, !!js/regexp and !!js/function.
-//
-// Also this schema is used as default base schema at `Schema.create` function.
-
-
-'use strict';
-
-
-var Schema = require('../schema');
-
-
-module.exports = Schema.DEFAULT = new Schema({
-  include: [
-    require('./default_safe')
-  ],
-  explicit: [
-    require('../type/js/undefined'),
-    require('../type/js/regexp'),
-    require('../type/js/function')
-  ]
-});
-
-},{"../schema":116,"../type/js/function":127,"../type/js/regexp":128,"../type/js/undefined":129,"./default_safe":119}],119:[function(require,module,exports){
-// JS-YAML's default schema for `safeLoad` function.
-// It is not described in the YAML specification.
-//
-// This schema is based on standard YAML's Core schema and includes most of
-// extra types described at YAML tag repository. (http://yaml.org/type/)
-
-
-'use strict';
-
-
-var Schema = require('../schema');
-
-
-module.exports = new Schema({
-  include: [
-    require('./core')
-  ],
-  implicit: [
-    require('../type/timestamp'),
-    require('../type/merge')
-  ],
-  explicit: [
-    require('../type/binary'),
-    require('../type/omap'),
-    require('../type/pairs'),
-    require('../type/set')
-  ]
-});
-
-},{"../schema":116,"../type/binary":123,"../type/merge":131,"../type/omap":133,"../type/pairs":134,"../type/set":136,"../type/timestamp":138,"./core":117}],120:[function(require,module,exports){
-// Standard YAML's Failsafe schema.
-// http://www.yaml.org/spec/1.2/spec.html#id2802346
-
-
-'use strict';
-
-
-var Schema = require('../schema');
-
-
-module.exports = new Schema({
-  explicit: [
-    require('../type/str'),
-    require('../type/seq'),
-    require('../type/map')
-  ]
-});
-
-},{"../schema":116,"../type/map":130,"../type/seq":135,"../type/str":137}],121:[function(require,module,exports){
-// Standard YAML's JSON schema.
-// http://www.yaml.org/spec/1.2/spec.html#id2803231
-//
-// NOTE: JS-YAML does not support schema-specific tag resolution restrictions.
-// So, this schema is not such strict as defined in the YAML specification.
-// It allows numbers in binary notaion, use `Null` and `NULL` as `null`, etc.
-
-
-'use strict';
-
-
-var Schema = require('../schema');
-
-
-module.exports = new Schema({
-  include: [
-    require('./failsafe')
-  ],
-  implicit: [
-    require('../type/null'),
-    require('../type/bool'),
-    require('../type/int'),
-    require('../type/float')
-  ]
-});
-
-},{"../schema":116,"../type/bool":124,"../type/float":125,"../type/int":126,"../type/null":132,"./failsafe":120}],122:[function(require,module,exports){
-'use strict';
-
-var YAMLException = require('./exception');
-
-var TYPE_CONSTRUCTOR_OPTIONS = [
-  'kind',
-  'resolve',
-  'construct',
-  'instanceOf',
-  'predicate',
-  'represent',
-  'defaultStyle',
-  'styleAliases'
-];
-
-var YAML_NODE_KINDS = [
-  'scalar',
-  'sequence',
-  'mapping'
-];
-
-function compileStyleAliases(map) {
-  var result = {};
-
-  if (map !== null) {
-    Object.keys(map).forEach(function (style) {
-      map[style].forEach(function (alias) {
-        result[String(alias)] = style;
-      });
-    });
-  }
-
-  return result;
-}
-
-function Type(tag, options) {
-  options = options || {};
-
-  Object.keys(options).forEach(function (name) {
-    if (TYPE_CONSTRUCTOR_OPTIONS.indexOf(name) === -1) {
-      throw new YAMLException('Unknown option "' + name + '" is met in definition of "' + tag + '" YAML type.');
-    }
-  });
-
-  // TODO: Add tag format check.
-  this.tag          = tag;
-  this.kind         = options['kind']         || null;
-  this.resolve      = options['resolve']      || function () { return true; };
-  this.construct    = options['construct']    || function (data) { return data; };
-  this.instanceOf   = options['instanceOf']   || null;
-  this.predicate    = options['predicate']    || null;
-  this.represent    = options['represent']    || null;
-  this.defaultStyle = options['defaultStyle'] || null;
-  this.styleAliases = compileStyleAliases(options['styleAliases'] || null);
-
-  if (YAML_NODE_KINDS.indexOf(this.kind) === -1) {
-    throw new YAMLException('Unknown kind "' + this.kind + '" is specified for "' + tag + '" YAML type.');
-  }
-}
-
-module.exports = Type;
-
-},{"./exception":113}],123:[function(require,module,exports){
-'use strict';
-
-/*eslint-disable no-bitwise*/
-
-var NodeBuffer;
-
-try {
-  // A trick for browserified version, to not include `Buffer` shim
-  var _require = require;
-  NodeBuffer = _require('buffer').Buffer;
-} catch (__) {}
-
-var Type       = require('../type');
-
-
-// [ 64, 65, 66 ] -> [ padding, CR, LF ]
-var BASE64_MAP = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r';
-
-
-function resolveYamlBinary(data) {
-  if (data === null) return false;
-
-  var code, idx, bitlen = 0, max = data.length, map = BASE64_MAP;
-
-  // Convert one by one.
-  for (idx = 0; idx < max; idx++) {
-    code = map.indexOf(data.charAt(idx));
-
-    // Skip CR/LF
-    if (code > 64) continue;
-
-    // Fail on illegal characters
-    if (code < 0) return false;
-
-    bitlen += 6;
-  }
-
-  // If there are any bits left, source was corrupted
-  return (bitlen % 8) === 0;
-}
-
-function constructYamlBinary(data) {
-  var idx, tailbits,
-      input = data.replace(/[\r\n=]/g, ''), // remove CR/LF & padding to simplify scan
-      max = input.length,
-      map = BASE64_MAP,
-      bits = 0,
-      result = [];
-
-  // Collect by 6*4 bits (3 bytes)
-
-  for (idx = 0; idx < max; idx++) {
-    if ((idx % 4 === 0) && idx) {
-      result.push((bits >> 16) & 0xFF);
-      result.push((bits >> 8) & 0xFF);
-      result.push(bits & 0xFF);
-    }
-
-    bits = (bits << 6) | map.indexOf(input.charAt(idx));
-  }
-
-  // Dump tail
-
-  tailbits = (max % 4) * 6;
-
-  if (tailbits === 0) {
-    result.push((bits >> 16) & 0xFF);
-    result.push((bits >> 8) & 0xFF);
-    result.push(bits & 0xFF);
-  } else if (tailbits === 18) {
-    result.push((bits >> 10) & 0xFF);
-    result.push((bits >> 2) & 0xFF);
-  } else if (tailbits === 12) {
-    result.push((bits >> 4) & 0xFF);
-  }
-
-  // Wrap into Buffer for NodeJS and leave Array for browser
-  if (NodeBuffer) return new NodeBuffer(result);
-
-  return result;
-}
-
-function representYamlBinary(object /*, style*/) {
-  var result = '', bits = 0, idx, tail,
-      max = object.length,
-      map = BASE64_MAP;
-
-  // Convert every three bytes to 4 ASCII characters.
-
-  for (idx = 0; idx < max; idx++) {
-    if ((idx % 3 === 0) && idx) {
-      result += map[(bits >> 18) & 0x3F];
-      result += map[(bits >> 12) & 0x3F];
-      result += map[(bits >> 6) & 0x3F];
-      result += map[bits & 0x3F];
-    }
-
-    bits = (bits << 8) + object[idx];
-  }
-
-  // Dump tail
-
-  tail = max % 3;
-
-  if (tail === 0) {
-    result += map[(bits >> 18) & 0x3F];
-    result += map[(bits >> 12) & 0x3F];
-    result += map[(bits >> 6) & 0x3F];
-    result += map[bits & 0x3F];
-  } else if (tail === 2) {
-    result += map[(bits >> 10) & 0x3F];
-    result += map[(bits >> 4) & 0x3F];
-    result += map[(bits << 2) & 0x3F];
-    result += map[64];
-  } else if (tail === 1) {
-    result += map[(bits >> 2) & 0x3F];
-    result += map[(bits << 4) & 0x3F];
-    result += map[64];
-    result += map[64];
-  }
-
-  return result;
-}
-
-function isBinary(object) {
-  return NodeBuffer && NodeBuffer.isBuffer(object);
-}
-
-module.exports = new Type('tag:yaml.org,2002:binary', {
-  kind: 'scalar',
-  resolve: resolveYamlBinary,
-  construct: constructYamlBinary,
-  predicate: isBinary,
-  represent: representYamlBinary
-});
-
-},{"../type":122}],124:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-function resolveYamlBoolean(data) {
-  if (data === null) return false;
-
-  var max = data.length;
-
-  return (max === 4 && (data === 'true' || data === 'True' || data === 'TRUE')) ||
-         (max === 5 && (data === 'false' || data === 'False' || data === 'FALSE'));
-}
-
-function constructYamlBoolean(data) {
-  return data === 'true' ||
-         data === 'True' ||
-         data === 'TRUE';
-}
-
-function isBoolean(object) {
-  return Object.prototype.toString.call(object) === '[object Boolean]';
-}
-
-module.exports = new Type('tag:yaml.org,2002:bool', {
-  kind: 'scalar',
-  resolve: resolveYamlBoolean,
-  construct: constructYamlBoolean,
-  predicate: isBoolean,
-  represent: {
-    lowercase: function (object) { return object ? 'true' : 'false'; },
-    uppercase: function (object) { return object ? 'TRUE' : 'FALSE'; },
-    camelcase: function (object) { return object ? 'True' : 'False'; }
-  },
-  defaultStyle: 'lowercase'
-});
-
-},{"../type":122}],125:[function(require,module,exports){
-'use strict';
-
-var common = require('../common');
-var Type   = require('../type');
-
-var YAML_FLOAT_PATTERN = new RegExp(
-  '^(?:[-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+][0-9]+)?' +
-  '|\\.[0-9_]+(?:[eE][-+][0-9]+)?' +
-  '|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*' +
-  '|[-+]?\\.(?:inf|Inf|INF)' +
-  '|\\.(?:nan|NaN|NAN))$');
-
-function resolveYamlFloat(data) {
-  if (data === null) return false;
-
-  if (!YAML_FLOAT_PATTERN.test(data)) return false;
-
-  return true;
-}
-
-function constructYamlFloat(data) {
-  var value, sign, base, digits;
-
-  value  = data.replace(/_/g, '').toLowerCase();
-  sign   = value[0] === '-' ? -1 : 1;
-  digits = [];
-
-  if ('+-'.indexOf(value[0]) >= 0) {
-    value = value.slice(1);
-  }
-
-  if (value === '.inf') {
-    return (sign === 1) ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
-
-  } else if (value === '.nan') {
-    return NaN;
-
-  } else if (value.indexOf(':') >= 0) {
-    value.split(':').forEach(function (v) {
-      digits.unshift(parseFloat(v, 10));
-    });
-
-    value = 0.0;
-    base = 1;
-
-    digits.forEach(function (d) {
-      value += d * base;
-      base *= 60;
-    });
-
-    return sign * value;
-
-  }
-  return sign * parseFloat(value, 10);
-}
-
-
-var SCIENTIFIC_WITHOUT_DOT = /^[-+]?[0-9]+e/;
-
-function representYamlFloat(object, style) {
-  var res;
-
-  if (isNaN(object)) {
-    switch (style) {
-      case 'lowercase': return '.nan';
-      case 'uppercase': return '.NAN';
-      case 'camelcase': return '.NaN';
-    }
-  } else if (Number.POSITIVE_INFINITY === object) {
-    switch (style) {
-      case 'lowercase': return '.inf';
-      case 'uppercase': return '.INF';
-      case 'camelcase': return '.Inf';
-    }
-  } else if (Number.NEGATIVE_INFINITY === object) {
-    switch (style) {
-      case 'lowercase': return '-.inf';
-      case 'uppercase': return '-.INF';
-      case 'camelcase': return '-.Inf';
-    }
-  } else if (common.isNegativeZero(object)) {
-    return '-0.0';
-  }
-
-  res = object.toString(10);
-
-  // JS stringifier can build scientific format without dots: 5e-100,
-  // while YAML requres dot: 5.e-100. Fix it with simple hack
-
-  return SCIENTIFIC_WITHOUT_DOT.test(res) ? res.replace('e', '.e') : res;
-}
-
-function isFloat(object) {
-  return (Object.prototype.toString.call(object) === '[object Number]') &&
-         (object % 1 !== 0 || common.isNegativeZero(object));
-}
-
-module.exports = new Type('tag:yaml.org,2002:float', {
-  kind: 'scalar',
-  resolve: resolveYamlFloat,
-  construct: constructYamlFloat,
-  predicate: isFloat,
-  represent: representYamlFloat,
-  defaultStyle: 'lowercase'
-});
-
-},{"../common":111,"../type":122}],126:[function(require,module,exports){
-'use strict';
-
-var common = require('../common');
-var Type   = require('../type');
-
-function isHexCode(c) {
-  return ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */)) ||
-         ((0x41/* A */ <= c) && (c <= 0x46/* F */)) ||
-         ((0x61/* a */ <= c) && (c <= 0x66/* f */));
-}
-
-function isOctCode(c) {
-  return ((0x30/* 0 */ <= c) && (c <= 0x37/* 7 */));
-}
-
-function isDecCode(c) {
-  return ((0x30/* 0 */ <= c) && (c <= 0x39/* 9 */));
-}
-
-function resolveYamlInteger(data) {
-  if (data === null) return false;
-
-  var max = data.length,
-      index = 0,
-      hasDigits = false,
-      ch;
-
-  if (!max) return false;
-
-  ch = data[index];
-
-  // sign
-  if (ch === '-' || ch === '+') {
-    ch = data[++index];
-  }
-
-  if (ch === '0') {
-    // 0
-    if (index + 1 === max) return true;
-    ch = data[++index];
-
-    // base 2, base 8, base 16
-
-    if (ch === 'b') {
-      // base 2
-      index++;
-
-      for (; index < max; index++) {
-        ch = data[index];
-        if (ch === '_') continue;
-        if (ch !== '0' && ch !== '1') return false;
-        hasDigits = true;
-      }
-      return hasDigits;
-    }
-
-
-    if (ch === 'x') {
-      // base 16
-      index++;
-
-      for (; index < max; index++) {
-        ch = data[index];
-        if (ch === '_') continue;
-        if (!isHexCode(data.charCodeAt(index))) return false;
-        hasDigits = true;
-      }
-      return hasDigits;
-    }
-
-    // base 8
-    for (; index < max; index++) {
-      ch = data[index];
-      if (ch === '_') continue;
-      if (!isOctCode(data.charCodeAt(index))) return false;
-      hasDigits = true;
-    }
-    return hasDigits;
-  }
-
-  // base 10 (except 0) or base 60
-
-  for (; index < max; index++) {
-    ch = data[index];
-    if (ch === '_') continue;
-    if (ch === ':') break;
-    if (!isDecCode(data.charCodeAt(index))) {
-      return false;
-    }
-    hasDigits = true;
-  }
-
-  if (!hasDigits) return false;
-
-  // if !base60 - done;
-  if (ch !== ':') return true;
-
-  // base60 almost not used, no needs to optimize
-  return /^(:[0-5]?[0-9])+$/.test(data.slice(index));
-}
-
-function constructYamlInteger(data) {
-  var value = data, sign = 1, ch, base, digits = [];
-
-  if (value.indexOf('_') !== -1) {
-    value = value.replace(/_/g, '');
-  }
-
-  ch = value[0];
-
-  if (ch === '-' || ch === '+') {
-    if (ch === '-') sign = -1;
-    value = value.slice(1);
-    ch = value[0];
-  }
-
-  if (value === '0') return 0;
-
-  if (ch === '0') {
-    if (value[1] === 'b') return sign * parseInt(value.slice(2), 2);
-    if (value[1] === 'x') return sign * parseInt(value, 16);
-    return sign * parseInt(value, 8);
-  }
-
-  if (value.indexOf(':') !== -1) {
-    value.split(':').forEach(function (v) {
-      digits.unshift(parseInt(v, 10));
-    });
-
-    value = 0;
-    base = 1;
-
-    digits.forEach(function (d) {
-      value += (d * base);
-      base *= 60;
-    });
-
-    return sign * value;
-
-  }
-
-  return sign * parseInt(value, 10);
-}
-
-function isInteger(object) {
-  return (Object.prototype.toString.call(object)) === '[object Number]' &&
-         (object % 1 === 0 && !common.isNegativeZero(object));
-}
-
-module.exports = new Type('tag:yaml.org,2002:int', {
-  kind: 'scalar',
-  resolve: resolveYamlInteger,
-  construct: constructYamlInteger,
-  predicate: isInteger,
-  represent: {
-    binary:      function (object) { return '0b' + object.toString(2); },
-    octal:       function (object) { return '0'  + object.toString(8); },
-    decimal:     function (object) { return        object.toString(10); },
-    hexadecimal: function (object) { return '0x' + object.toString(16).toUpperCase(); }
-  },
-  defaultStyle: 'decimal',
-  styleAliases: {
-    binary:      [ 2,  'bin' ],
-    octal:       [ 8,  'oct' ],
-    decimal:     [ 10, 'dec' ],
-    hexadecimal: [ 16, 'hex' ]
-  }
-});
-
-},{"../common":111,"../type":122}],127:[function(require,module,exports){
-'use strict';
-
-var esprima;
-
-// Browserified version does not have esprima
-//
-// 1. For node.js just require module as deps
-// 2. For browser try to require mudule via external AMD system.
-//    If not found - try to fallback to window.esprima. If not
-//    found too - then fail to parse.
-//
-try {
-  // workaround to exclude package from browserify list.
-  var _require = require;
-  esprima = _require('esprima');
-} catch (_) {
-  /*global window */
-  if (typeof window !== 'undefined') esprima = window.esprima;
-}
-
-var Type = require('../../type');
-
-function resolveJavascriptFunction(data) {
-  if (data === null) return false;
-
-  try {
-    var source = '(' + data + ')',
-        ast    = esprima.parse(source, { range: true });
-
-    if (ast.type                    !== 'Program'             ||
-        ast.body.length             !== 1                     ||
-        ast.body[0].type            !== 'ExpressionStatement' ||
-        ast.body[0].expression.type !== 'FunctionExpression') {
-      return false;
-    }
-
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-function constructJavascriptFunction(data) {
-  /*jslint evil:true*/
-
-  var source = '(' + data + ')',
-      ast    = esprima.parse(source, { range: true }),
-      params = [],
-      body;
-
-  if (ast.type                    !== 'Program'             ||
-      ast.body.length             !== 1                     ||
-      ast.body[0].type            !== 'ExpressionStatement' ||
-      ast.body[0].expression.type !== 'FunctionExpression') {
-    throw new Error('Failed to resolve function');
-  }
-
-  ast.body[0].expression.params.forEach(function (param) {
-    params.push(param.name);
-  });
-
-  body = ast.body[0].expression.body.range;
-
-  // Esprima's ranges include the first '{' and the last '}' characters on
-  // function expressions. So cut them out.
-  /*eslint-disable no-new-func*/
-  return new Function(params, source.slice(body[0] + 1, body[1] - 1));
-}
-
-function representJavascriptFunction(object /*, style*/) {
-  return object.toString();
-}
-
-function isFunction(object) {
-  return Object.prototype.toString.call(object) === '[object Function]';
-}
-
-module.exports = new Type('tag:yaml.org,2002:js/function', {
-  kind: 'scalar',
-  resolve: resolveJavascriptFunction,
-  construct: constructJavascriptFunction,
-  predicate: isFunction,
-  represent: representJavascriptFunction
-});
-
-},{"../../type":122}],128:[function(require,module,exports){
-'use strict';
-
-var Type = require('../../type');
-
-function resolveJavascriptRegExp(data) {
-  if (data === null) return false;
-  if (data.length === 0) return false;
-
-  var regexp = data,
-      tail   = /\/([gim]*)$/.exec(data),
-      modifiers = '';
-
-  // if regexp starts with '/' it can have modifiers and must be properly closed
-  // `/foo/gim` - modifiers tail can be maximum 3 chars
-  if (regexp[0] === '/') {
-    if (tail) modifiers = tail[1];
-
-    if (modifiers.length > 3) return false;
-    // if expression starts with /, is should be properly terminated
-    if (regexp[regexp.length - modifiers.length - 1] !== '/') return false;
-  }
-
-  return true;
-}
-
-function constructJavascriptRegExp(data) {
-  var regexp = data,
-      tail   = /\/([gim]*)$/.exec(data),
-      modifiers = '';
-
-  // `/foo/gim` - tail can be maximum 4 chars
-  if (regexp[0] === '/') {
-    if (tail) modifiers = tail[1];
-    regexp = regexp.slice(1, regexp.length - modifiers.length - 1);
-  }
-
-  return new RegExp(regexp, modifiers);
-}
-
-function representJavascriptRegExp(object /*, style*/) {
-  var result = '/' + object.source + '/';
-
-  if (object.global) result += 'g';
-  if (object.multiline) result += 'm';
-  if (object.ignoreCase) result += 'i';
-
-  return result;
-}
-
-function isRegExp(object) {
-  return Object.prototype.toString.call(object) === '[object RegExp]';
-}
-
-module.exports = new Type('tag:yaml.org,2002:js/regexp', {
-  kind: 'scalar',
-  resolve: resolveJavascriptRegExp,
-  construct: constructJavascriptRegExp,
-  predicate: isRegExp,
-  represent: representJavascriptRegExp
-});
-
-},{"../../type":122}],129:[function(require,module,exports){
-'use strict';
-
-var Type = require('../../type');
-
-function resolveJavascriptUndefined() {
-  return true;
-}
-
-function constructJavascriptUndefined() {
-  /*eslint-disable no-undefined*/
-  return undefined;
-}
-
-function representJavascriptUndefined() {
-  return '';
-}
-
-function isUndefined(object) {
-  return typeof object === 'undefined';
-}
-
-module.exports = new Type('tag:yaml.org,2002:js/undefined', {
-  kind: 'scalar',
-  resolve: resolveJavascriptUndefined,
-  construct: constructJavascriptUndefined,
-  predicate: isUndefined,
-  represent: representJavascriptUndefined
-});
-
-},{"../../type":122}],130:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-module.exports = new Type('tag:yaml.org,2002:map', {
-  kind: 'mapping',
-  construct: function (data) { return data !== null ? data : {}; }
-});
-
-},{"../type":122}],131:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-function resolveYamlMerge(data) {
-  return data === '<<' || data === null;
-}
-
-module.exports = new Type('tag:yaml.org,2002:merge', {
-  kind: 'scalar',
-  resolve: resolveYamlMerge
-});
-
-},{"../type":122}],132:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-function resolveYamlNull(data) {
-  if (data === null) return true;
-
-  var max = data.length;
-
-  return (max === 1 && data === '~') ||
-         (max === 4 && (data === 'null' || data === 'Null' || data === 'NULL'));
-}
-
-function constructYamlNull() {
-  return null;
-}
-
-function isNull(object) {
-  return object === null;
-}
-
-module.exports = new Type('tag:yaml.org,2002:null', {
-  kind: 'scalar',
-  resolve: resolveYamlNull,
-  construct: constructYamlNull,
-  predicate: isNull,
-  represent: {
-    canonical: function () { return '~';    },
-    lowercase: function () { return 'null'; },
-    uppercase: function () { return 'NULL'; },
-    camelcase: function () { return 'Null'; }
-  },
-  defaultStyle: 'lowercase'
-});
-
-},{"../type":122}],133:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-var _hasOwnProperty = Object.prototype.hasOwnProperty;
-var _toString       = Object.prototype.toString;
-
-function resolveYamlOmap(data) {
-  if (data === null) return true;
-
-  var objectKeys = [], index, length, pair, pairKey, pairHasKey,
-      object = data;
-
-  for (index = 0, length = object.length; index < length; index += 1) {
-    pair = object[index];
-    pairHasKey = false;
-
-    if (_toString.call(pair) !== '[object Object]') return false;
-
-    for (pairKey in pair) {
-      if (_hasOwnProperty.call(pair, pairKey)) {
-        if (!pairHasKey) pairHasKey = true;
-        else return false;
-      }
-    }
-
-    if (!pairHasKey) return false;
-
-    if (objectKeys.indexOf(pairKey) === -1) objectKeys.push(pairKey);
-    else return false;
-  }
-
-  return true;
-}
-
-function constructYamlOmap(data) {
-  return data !== null ? data : [];
-}
-
-module.exports = new Type('tag:yaml.org,2002:omap', {
-  kind: 'sequence',
-  resolve: resolveYamlOmap,
-  construct: constructYamlOmap
-});
-
-},{"../type":122}],134:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-var _toString = Object.prototype.toString;
-
-function resolveYamlPairs(data) {
-  if (data === null) return true;
-
-  var index, length, pair, keys, result,
-      object = data;
-
-  result = new Array(object.length);
-
-  for (index = 0, length = object.length; index < length; index += 1) {
-    pair = object[index];
-
-    if (_toString.call(pair) !== '[object Object]') return false;
-
-    keys = Object.keys(pair);
-
-    if (keys.length !== 1) return false;
-
-    result[index] = [ keys[0], pair[keys[0]] ];
-  }
-
-  return true;
-}
-
-function constructYamlPairs(data) {
-  if (data === null) return [];
-
-  var index, length, pair, keys, result,
-      object = data;
-
-  result = new Array(object.length);
-
-  for (index = 0, length = object.length; index < length; index += 1) {
-    pair = object[index];
-
-    keys = Object.keys(pair);
-
-    result[index] = [ keys[0], pair[keys[0]] ];
-  }
-
-  return result;
-}
-
-module.exports = new Type('tag:yaml.org,2002:pairs', {
-  kind: 'sequence',
-  resolve: resolveYamlPairs,
-  construct: constructYamlPairs
-});
-
-},{"../type":122}],135:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-module.exports = new Type('tag:yaml.org,2002:seq', {
-  kind: 'sequence',
-  construct: function (data) { return data !== null ? data : []; }
-});
-
-},{"../type":122}],136:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-var _hasOwnProperty = Object.prototype.hasOwnProperty;
-
-function resolveYamlSet(data) {
-  if (data === null) return true;
-
-  var key, object = data;
-
-  for (key in object) {
-    if (_hasOwnProperty.call(object, key)) {
-      if (object[key] !== null) return false;
-    }
-  }
-
-  return true;
-}
-
-function constructYamlSet(data) {
-  return data !== null ? data : {};
-}
-
-module.exports = new Type('tag:yaml.org,2002:set', {
-  kind: 'mapping',
-  resolve: resolveYamlSet,
-  construct: constructYamlSet
-});
-
-},{"../type":122}],137:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-module.exports = new Type('tag:yaml.org,2002:str', {
-  kind: 'scalar',
-  construct: function (data) { return data !== null ? data : ''; }
-});
-
-},{"../type":122}],138:[function(require,module,exports){
-'use strict';
-
-var Type = require('../type');
-
-var YAML_DATE_REGEXP = new RegExp(
-  '^([0-9][0-9][0-9][0-9])'          + // [1] year
-  '-([0-9][0-9])'                    + // [2] month
-  '-([0-9][0-9])$');                   // [3] day
-
-var YAML_TIMESTAMP_REGEXP = new RegExp(
-  '^([0-9][0-9][0-9][0-9])'          + // [1] year
-  '-([0-9][0-9]?)'                   + // [2] month
-  '-([0-9][0-9]?)'                   + // [3] day
-  '(?:[Tt]|[ \\t]+)'                 + // ...
-  '([0-9][0-9]?)'                    + // [4] hour
-  ':([0-9][0-9])'                    + // [5] minute
-  ':([0-9][0-9])'                    + // [6] second
-  '(?:\\.([0-9]*))?'                 + // [7] fraction
-  '(?:[ \\t]*(Z|([-+])([0-9][0-9]?)' + // [8] tz [9] tz_sign [10] tz_hour
-  '(?::([0-9][0-9]))?))?$');           // [11] tz_minute
-
-function resolveYamlTimestamp(data) {
-  if (data === null) return false;
-  if (YAML_DATE_REGEXP.exec(data) !== null) return true;
-  if (YAML_TIMESTAMP_REGEXP.exec(data) !== null) return true;
-  return false;
-}
-
-function constructYamlTimestamp(data) {
-  var match, year, month, day, hour, minute, second, fraction = 0,
-      delta = null, tz_hour, tz_minute, date;
-
-  match = YAML_DATE_REGEXP.exec(data);
-  if (match === null) match = YAML_TIMESTAMP_REGEXP.exec(data);
-
-  if (match === null) throw new Error('Date resolve error');
-
-  // match: [1] year [2] month [3] day
-
-  year = +(match[1]);
-  month = +(match[2]) - 1; // JS month starts with 0
-  day = +(match[3]);
-
-  if (!match[4]) { // no hour
-    return new Date(Date.UTC(year, month, day));
-  }
-
-  // match: [4] hour [5] minute [6] second [7] fraction
-
-  hour = +(match[4]);
-  minute = +(match[5]);
-  second = +(match[6]);
-
-  if (match[7]) {
-    fraction = match[7].slice(0, 3);
-    while (fraction.length < 3) { // milli-seconds
-      fraction += '0';
-    }
-    fraction = +fraction;
-  }
-
-  // match: [8] tz [9] tz_sign [10] tz_hour [11] tz_minute
-
-  if (match[9]) {
-    tz_hour = +(match[10]);
-    tz_minute = +(match[11] || 0);
-    delta = (tz_hour * 60 + tz_minute) * 60000; // delta in mili-seconds
-    if (match[9] === '-') delta = -delta;
-  }
-
-  date = new Date(Date.UTC(year, month, day, hour, minute, second, fraction));
-
-  if (delta) date.setTime(date.getTime() - delta);
-
-  return date;
-}
-
-function representYamlTimestamp(object /*, style*/) {
-  return object.toISOString();
-}
-
-module.exports = new Type('tag:yaml.org,2002:timestamp', {
-  kind: 'scalar',
-  resolve: resolveYamlTimestamp,
-  construct: constructYamlTimestamp,
-  instanceOf: Date,
-  represent: representYamlTimestamp
-});
-
-},{"../type":122}],139:[function(require,module,exports){
-(function (Buffer){
-;(function (sax) { // wrapper for non-node envs
-  sax.parser = function (strict, opt) { return new SAXParser(strict, opt) }
-  sax.SAXParser = SAXParser
-  sax.SAXStream = SAXStream
-  sax.createStream = createStream
-
-  // When we pass the MAX_BUFFER_LENGTH position, start checking for buffer overruns.
-  // When we check, schedule the next check for MAX_BUFFER_LENGTH - (max(buffer lengths)),
-  // since that's the earliest that a buffer overrun could occur.  This way, checks are
-  // as rare as required, but as often as necessary to ensure never crossing this bound.
-  // Furthermore, buffers are only tested at most once per write(), so passing a very
-  // large string into write() might have undesirable effects, but this is manageable by
-  // the caller, so it is assumed to be safe.  Thus, a call to write() may, in the extreme
-  // edge case, result in creating at most one complete copy of the string passed in.
-  // Set to Infinity to have unlimited buffers.
-  sax.MAX_BUFFER_LENGTH = 64 * 1024
-
-  var buffers = [
-    'comment', 'sgmlDecl', 'textNode', 'tagName', 'doctype',
-    'procInstName', 'procInstBody', 'entity', 'attribName',
-    'attribValue', 'cdata', 'script'
-  ]
-
-  sax.EVENTS = [
-    'text',
-    'processinginstruction',
-    'sgmldeclaration',
-    'doctype',
-    'comment',
-    'opentagstart',
-    'attribute',
-    'opentag',
-    'closetag',
-    'opencdata',
-    'cdata',
-    'closecdata',
-    'error',
-    'end',
-    'ready',
-    'script',
-    'opennamespace',
-    'closenamespace'
-  ]
-
-  function SAXParser (strict, opt) {
-    if (!(this instanceof SAXParser)) {
-      return new SAXParser(strict, opt)
-    }
-
-    var parser = this
-    clearBuffers(parser)
-    parser.q = parser.c = ''
-    parser.bufferCheckPosition = sax.MAX_BUFFER_LENGTH
-    parser.opt = opt || {}
-    parser.opt.lowercase = parser.opt.lowercase || parser.opt.lowercasetags
-    parser.looseCase = parser.opt.lowercase ? 'toLowerCase' : 'toUpperCase'
-    parser.tags = []
-    parser.closed = parser.closedRoot = parser.sawRoot = false
-    parser.tag = parser.error = null
-    parser.strict = !!strict
-    parser.noscript = !!(strict || parser.opt.noscript)
-    parser.state = S.BEGIN
-    parser.strictEntities = parser.opt.strictEntities
-    parser.ENTITIES = parser.strictEntities ? Object.create(sax.XML_ENTITIES) : Object.create(sax.ENTITIES)
-    parser.attribList = []
-
-    // namespaces form a prototype chain.
-    // it always points at the current tag,
-    // which protos to its parent tag.
-    if (parser.opt.xmlns) {
-      parser.ns = Object.create(rootNS)
-    }
-
-    // mostly just for error reporting
-    parser.trackPosition = parser.opt.position !== false
-    if (parser.trackPosition) {
-      parser.position = parser.line = parser.column = 0
-    }
-    emit(parser, 'onready')
-  }
-
-  if (!Object.create) {
-    Object.create = function (o) {
-      function F () {}
-      F.prototype = o
-      var newf = new F()
-      return newf
-    }
-  }
-
-  if (!Object.keys) {
-    Object.keys = function (o) {
-      var a = []
-      for (var i in o) if (o.hasOwnProperty(i)) a.push(i)
-      return a
-    }
-  }
-
-  function checkBufferLength (parser) {
-    var maxAllowed = Math.max(sax.MAX_BUFFER_LENGTH, 10)
-    var maxActual = 0
-    for (var i = 0, l = buffers.length; i < l; i++) {
-      var len = parser[buffers[i]].length
-      if (len > maxAllowed) {
-        // Text/cdata nodes can get big, and since they're buffered,
-        // we can get here under normal conditions.
-        // Avoid issues by emitting the text node now,
-        // so at least it won't get any bigger.
-        switch (buffers[i]) {
-          case 'textNode':
-            closeText(parser)
-            break
-
-          case 'cdata':
-            emitNode(parser, 'oncdata', parser.cdata)
-            parser.cdata = ''
-            break
-
-          case 'script':
-            emitNode(parser, 'onscript', parser.script)
-            parser.script = ''
-            break
-
-          default:
-            error(parser, 'Max buffer length exceeded: ' + buffers[i])
-        }
-      }
-      maxActual = Math.max(maxActual, len)
-    }
-    // schedule the next check for the earliest possible buffer overrun.
-    var m = sax.MAX_BUFFER_LENGTH - maxActual
-    parser.bufferCheckPosition = m + parser.position
-  }
-
-  function clearBuffers (parser) {
-    for (var i = 0, l = buffers.length; i < l; i++) {
-      parser[buffers[i]] = ''
-    }
-  }
-
-  function flushBuffers (parser) {
-    closeText(parser)
-    if (parser.cdata !== '') {
-      emitNode(parser, 'oncdata', parser.cdata)
-      parser.cdata = ''
-    }
-    if (parser.script !== '') {
-      emitNode(parser, 'onscript', parser.script)
-      parser.script = ''
-    }
-  }
-
-  SAXParser.prototype = {
-    end: function () { end(this) },
-    write: write,
-    resume: function () { this.error = null; return this },
-    close: function () { return this.write(null) },
-    flush: function () { flushBuffers(this) }
-  }
-
-  var Stream
-  try {
-    Stream = require('stream').Stream
-  } catch (ex) {
-    Stream = function () {}
-  }
-
-  var streamWraps = sax.EVENTS.filter(function (ev) {
-    return ev !== 'error' && ev !== 'end'
-  })
-
-  function createStream (strict, opt) {
-    return new SAXStream(strict, opt)
-  }
-
-  function SAXStream (strict, opt) {
-    if (!(this instanceof SAXStream)) {
-      return new SAXStream(strict, opt)
-    }
-
-    Stream.apply(this)
-
-    this._parser = new SAXParser(strict, opt)
-    this.writable = true
-    this.readable = true
-
-    var me = this
-
-    this._parser.onend = function () {
-      me.emit('end')
-    }
-
-    this._parser.onerror = function (er) {
-      me.emit('error', er)
-
-      // if didn't throw, then means error was handled.
-      // go ahead and clear error, so we can write again.
-      me._parser.error = null
-    }
-
-    this._decoder = null
-
-    streamWraps.forEach(function (ev) {
-      Object.defineProperty(me, 'on' + ev, {
-        get: function () {
-          return me._parser['on' + ev]
-        },
-        set: function (h) {
-          if (!h) {
-            me.removeAllListeners(ev)
-            me._parser['on' + ev] = h
-            return h
-          }
-          me.on(ev, h)
-        },
-        enumerable: true,
-        configurable: false
-      })
-    })
-  }
-
-  SAXStream.prototype = Object.create(Stream.prototype, {
-    constructor: {
-      value: SAXStream
-    }
-  })
-
-  SAXStream.prototype.write = function (data) {
-    if (typeof Buffer === 'function' &&
-      typeof Buffer.isBuffer === 'function' &&
-      Buffer.isBuffer(data)) {
-      if (!this._decoder) {
-        var SD = require('string_decoder').StringDecoder
-        this._decoder = new SD('utf8')
-      }
-      data = this._decoder.write(data)
-    }
-
-    this._parser.write(data.toString())
-    this.emit('data', data)
-    return true
-  }
-
-  SAXStream.prototype.end = function (chunk) {
-    if (chunk && chunk.length) {
-      this.write(chunk)
-    }
-    this._parser.end()
-    return true
-  }
-
-  SAXStream.prototype.on = function (ev, handler) {
-    var me = this
-    if (!me._parser['on' + ev] && streamWraps.indexOf(ev) !== -1) {
-      me._parser['on' + ev] = function () {
-        var args = arguments.length === 1 ? [arguments[0]] : Array.apply(null, arguments)
-        args.splice(0, 0, ev)
-        me.emit.apply(me, args)
-      }
-    }
-
-    return Stream.prototype.on.call(me, ev, handler)
-  }
-
-  // character classes and tokens
-  var whitespace = '\r\n\t '
-
-  // this really needs to be replaced with character classes.
-  // XML allows all manner of ridiculous numbers and digits.
-
-  // (Letter | "_" | ":")
-  var quote = '\'"'
-  var attribEnd = whitespace + '>'
-  var CDATA = '[CDATA['
-  var DOCTYPE = 'DOCTYPE'
-  var XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace'
-  var XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/'
-  var rootNS = { xml: XML_NAMESPACE, xmlns: XMLNS_NAMESPACE }
-
-  // turn all the string character sets into character class objects.
-  whitespace = charClass(whitespace)
-
-  // http://www.w3.org/TR/REC-xml/#NT-NameStartChar
-  // This implementation works on strings, a single character at a time
-  // as such, it cannot ever support astral-plane characters (10000-EFFFF)
-  // without a significant breaking change to either this  parser, or the
-  // JavaScript language.  Implementation of an emoji-capable xml parser
-  // is left as an exercise for the reader.
-  var nameStart = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
-
-  var nameBody = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
-
-  var entityStart = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/
-  var entityBody = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/
-
-  quote = charClass(quote)
-  attribEnd = charClass(attribEnd)
-
-  function charClass (str) {
-    return str.split('').reduce(function (s, c) {
-      s[c] = true
-      return s
-    }, {})
-  }
-
-  function isMatch (regex, c) {
-    return regex.test(c)
-  }
-
-  function is (charclass, c) {
-    return charclass[c]
-  }
-
-  function notMatch (regex, c) {
-    return !isMatch(regex, c)
-  }
-
-  function not (charclass, c) {
-    return !is(charclass, c)
-  }
-
-  var S = 0
-  sax.STATE = {
-    BEGIN: S++, // leading byte order mark or whitespace
-    BEGIN_WHITESPACE: S++, // leading whitespace
-    TEXT: S++, // general stuff
-    TEXT_ENTITY: S++, // &amp and such.
-    OPEN_WAKA: S++, // <
-    SGML_DECL: S++, // <!BLARG
-    SGML_DECL_QUOTED: S++, // <!BLARG foo "bar
-    DOCTYPE: S++, // <!DOCTYPE
-    DOCTYPE_QUOTED: S++, // <!DOCTYPE "//blah
-    DOCTYPE_DTD: S++, // <!DOCTYPE "//blah" [ ...
-    DOCTYPE_DTD_QUOTED: S++, // <!DOCTYPE "//blah" [ "foo
-    COMMENT_STARTING: S++, // <!-
-    COMMENT: S++, // <!--
-    COMMENT_ENDING: S++, // <!-- blah -
-    COMMENT_ENDED: S++, // <!-- blah --
-    CDATA: S++, // <![CDATA[ something
-    CDATA_ENDING: S++, // ]
-    CDATA_ENDING_2: S++, // ]]
-    PROC_INST: S++, // <?hi
-    PROC_INST_BODY: S++, // <?hi there
-    PROC_INST_ENDING: S++, // <?hi "there" ?
-    OPEN_TAG: S++, // <strong
-    OPEN_TAG_SLASH: S++, // <strong /
-    ATTRIB: S++, // <a
-    ATTRIB_NAME: S++, // <a foo
-    ATTRIB_NAME_SAW_WHITE: S++, // <a foo _
-    ATTRIB_VALUE: S++, // <a foo=
-    ATTRIB_VALUE_QUOTED: S++, // <a foo="bar
-    ATTRIB_VALUE_CLOSED: S++, // <a foo="bar"
-    ATTRIB_VALUE_UNQUOTED: S++, // <a foo=bar
-    ATTRIB_VALUE_ENTITY_Q: S++, // <foo bar="&quot;"
-    ATTRIB_VALUE_ENTITY_U: S++, // <foo bar=&quot
-    CLOSE_TAG: S++, // </a
-    CLOSE_TAG_SAW_WHITE: S++, // </a   >
-    SCRIPT: S++, // <script> ...
-    SCRIPT_ENDING: S++ // <script> ... <
-  }
-
-  sax.XML_ENTITIES = {
-    'amp': '&',
-    'gt': '>',
-    'lt': '<',
-    'quot': '"',
-    'apos': "'"
-  }
-
-  sax.ENTITIES = {
-    'amp': '&',
-    'gt': '>',
-    'lt': '<',
-    'quot': '"',
-    'apos': "'",
-    'AElig': 198,
-    'Aacute': 193,
-    'Acirc': 194,
-    'Agrave': 192,
-    'Aring': 197,
-    'Atilde': 195,
-    'Auml': 196,
-    'Ccedil': 199,
-    'ETH': 208,
-    'Eacute': 201,
-    'Ecirc': 202,
-    'Egrave': 200,
-    'Euml': 203,
-    'Iacute': 205,
-    'Icirc': 206,
-    'Igrave': 204,
-    'Iuml': 207,
-    'Ntilde': 209,
-    'Oacute': 211,
-    'Ocirc': 212,
-    'Ograve': 210,
-    'Oslash': 216,
-    'Otilde': 213,
-    'Ouml': 214,
-    'THORN': 222,
-    'Uacute': 218,
-    'Ucirc': 219,
-    'Ugrave': 217,
-    'Uuml': 220,
-    'Yacute': 221,
-    'aacute': 225,
-    'acirc': 226,
-    'aelig': 230,
-    'agrave': 224,
-    'aring': 229,
-    'atilde': 227,
-    'auml': 228,
-    'ccedil': 231,
-    'eacute': 233,
-    'ecirc': 234,
-    'egrave': 232,
-    'eth': 240,
-    'euml': 235,
-    'iacute': 237,
-    'icirc': 238,
-    'igrave': 236,
-    'iuml': 239,
-    'ntilde': 241,
-    'oacute': 243,
-    'ocirc': 244,
-    'ograve': 242,
-    'oslash': 248,
-    'otilde': 245,
-    'ouml': 246,
-    'szlig': 223,
-    'thorn': 254,
-    'uacute': 250,
-    'ucirc': 251,
-    'ugrave': 249,
-    'uuml': 252,
-    'yacute': 253,
-    'yuml': 255,
-    'copy': 169,
-    'reg': 174,
-    'nbsp': 160,
-    'iexcl': 161,
-    'cent': 162,
-    'pound': 163,
-    'curren': 164,
-    'yen': 165,
-    'brvbar': 166,
-    'sect': 167,
-    'uml': 168,
-    'ordf': 170,
-    'laquo': 171,
-    'not': 172,
-    'shy': 173,
-    'macr': 175,
-    'deg': 176,
-    'plusmn': 177,
-    'sup1': 185,
-    'sup2': 178,
-    'sup3': 179,
-    'acute': 180,
-    'micro': 181,
-    'para': 182,
-    'middot': 183,
-    'cedil': 184,
-    'ordm': 186,
-    'raquo': 187,
-    'frac14': 188,
-    'frac12': 189,
-    'frac34': 190,
-    'iquest': 191,
-    'times': 215,
-    'divide': 247,
-    'OElig': 338,
-    'oelig': 339,
-    'Scaron': 352,
-    'scaron': 353,
-    'Yuml': 376,
-    'fnof': 402,
-    'circ': 710,
-    'tilde': 732,
-    'Alpha': 913,
-    'Beta': 914,
-    'Gamma': 915,
-    'Delta': 916,
-    'Epsilon': 917,
-    'Zeta': 918,
-    'Eta': 919,
-    'Theta': 920,
-    'Iota': 921,
-    'Kappa': 922,
-    'Lambda': 923,
-    'Mu': 924,
-    'Nu': 925,
-    'Xi': 926,
-    'Omicron': 927,
-    'Pi': 928,
-    'Rho': 929,
-    'Sigma': 931,
-    'Tau': 932,
-    'Upsilon': 933,
-    'Phi': 934,
-    'Chi': 935,
-    'Psi': 936,
-    'Omega': 937,
-    'alpha': 945,
-    'beta': 946,
-    'gamma': 947,
-    'delta': 948,
-    'epsilon': 949,
-    'zeta': 950,
-    'eta': 951,
-    'theta': 952,
-    'iota': 953,
-    'kappa': 954,
-    'lambda': 955,
-    'mu': 956,
-    'nu': 957,
-    'xi': 958,
-    'omicron': 959,
-    'pi': 960,
-    'rho': 961,
-    'sigmaf': 962,
-    'sigma': 963,
-    'tau': 964,
-    'upsilon': 965,
-    'phi': 966,
-    'chi': 967,
-    'psi': 968,
-    'omega': 969,
-    'thetasym': 977,
-    'upsih': 978,
-    'piv': 982,
-    'ensp': 8194,
-    'emsp': 8195,
-    'thinsp': 8201,
-    'zwnj': 8204,
-    'zwj': 8205,
-    'lrm': 8206,
-    'rlm': 8207,
-    'ndash': 8211,
-    'mdash': 8212,
-    'lsquo': 8216,
-    'rsquo': 8217,
-    'sbquo': 8218,
-    'ldquo': 8220,
-    'rdquo': 8221,
-    'bdquo': 8222,
-    'dagger': 8224,
-    'Dagger': 8225,
-    'bull': 8226,
-    'hellip': 8230,
-    'permil': 8240,
-    'prime': 8242,
-    'Prime': 8243,
-    'lsaquo': 8249,
-    'rsaquo': 8250,
-    'oline': 8254,
-    'frasl': 8260,
-    'euro': 8364,
-    'image': 8465,
-    'weierp': 8472,
-    'real': 8476,
-    'trade': 8482,
-    'alefsym': 8501,
-    'larr': 8592,
-    'uarr': 8593,
-    'rarr': 8594,
-    'darr': 8595,
-    'harr': 8596,
-    'crarr': 8629,
-    'lArr': 8656,
-    'uArr': 8657,
-    'rArr': 8658,
-    'dArr': 8659,
-    'hArr': 8660,
-    'forall': 8704,
-    'part': 8706,
-    'exist': 8707,
-    'empty': 8709,
-    'nabla': 8711,
-    'isin': 8712,
-    'notin': 8713,
-    'ni': 8715,
-    'prod': 8719,
-    'sum': 8721,
-    'minus': 8722,
-    'lowast': 8727,
-    'radic': 8730,
-    'prop': 8733,
-    'infin': 8734,
-    'ang': 8736,
-    'and': 8743,
-    'or': 8744,
-    'cap': 8745,
-    'cup': 8746,
-    'int': 8747,
-    'there4': 8756,
-    'sim': 8764,
-    'cong': 8773,
-    'asymp': 8776,
-    'ne': 8800,
-    'equiv': 8801,
-    'le': 8804,
-    'ge': 8805,
-    'sub': 8834,
-    'sup': 8835,
-    'nsub': 8836,
-    'sube': 8838,
-    'supe': 8839,
-    'oplus': 8853,
-    'otimes': 8855,
-    'perp': 8869,
-    'sdot': 8901,
-    'lceil': 8968,
-    'rceil': 8969,
-    'lfloor': 8970,
-    'rfloor': 8971,
-    'lang': 9001,
-    'rang': 9002,
-    'loz': 9674,
-    'spades': 9824,
-    'clubs': 9827,
-    'hearts': 9829,
-    'diams': 9830
-  }
-
-  Object.keys(sax.ENTITIES).forEach(function (key) {
-    var e = sax.ENTITIES[key]
-    var s = typeof e === 'number' ? String.fromCharCode(e) : e
-    sax.ENTITIES[key] = s
-  })
-
-  for (var s in sax.STATE) {
-    sax.STATE[sax.STATE[s]] = s
-  }
-
-  // shorthand
-  S = sax.STATE
-
-  function emit (parser, event, data) {
-    parser[event] && parser[event](data)
-  }
-
-  function emitNode (parser, nodeType, data) {
-    if (parser.textNode) closeText(parser)
-    emit(parser, nodeType, data)
-  }
-
-  function closeText (parser) {
-    parser.textNode = textopts(parser.opt, parser.textNode)
-    if (parser.textNode) emit(parser, 'ontext', parser.textNode)
-    parser.textNode = ''
-  }
-
-  function textopts (opt, text) {
-    if (opt.trim) text = text.trim()
-    if (opt.normalize) text = text.replace(/\s+/g, ' ')
-    return text
-  }
-
-  function error (parser, er) {
-    closeText(parser)
-    if (parser.trackPosition) {
-      er += '\nLine: ' + parser.line +
-        '\nColumn: ' + parser.column +
-        '\nChar: ' + parser.c
-    }
-    er = new Error(er)
-    parser.error = er
-    emit(parser, 'onerror', er)
-    return parser
-  }
-
-  function end (parser) {
-    if (parser.sawRoot && !parser.closedRoot) strictFail(parser, 'Unclosed root tag')
-    if ((parser.state !== S.BEGIN) &&
-      (parser.state !== S.BEGIN_WHITESPACE) &&
-      (parser.state !== S.TEXT)) {
-      error(parser, 'Unexpected end')
-    }
-    closeText(parser)
-    parser.c = ''
-    parser.closed = true
-    emit(parser, 'onend')
-    SAXParser.call(parser, parser.strict, parser.opt)
-    return parser
-  }
-
-  function strictFail (parser, message) {
-    if (typeof parser !== 'object' || !(parser instanceof SAXParser)) {
-      throw new Error('bad call to strictFail')
-    }
-    if (parser.strict) {
-      error(parser, message)
-    }
-  }
-
-  function newTag (parser) {
-    if (!parser.strict) parser.tagName = parser.tagName[parser.looseCase]()
-    var parent = parser.tags[parser.tags.length - 1] || parser
-    var tag = parser.tag = { name: parser.tagName, attributes: {} }
-
-    // will be overridden if tag contails an xmlns="foo" or xmlns:foo="bar"
-    if (parser.opt.xmlns) {
-      tag.ns = parent.ns
-    }
-    parser.attribList.length = 0
-    emitNode(parser, 'onopentagstart', tag)
-  }
-
-  function qname (name, attribute) {
-    var i = name.indexOf(':')
-    var qualName = i < 0 ? [ '', name ] : name.split(':')
-    var prefix = qualName[0]
-    var local = qualName[1]
-
-    // <x "xmlns"="http://foo">
-    if (attribute && name === 'xmlns') {
-      prefix = 'xmlns'
-      local = ''
-    }
-
-    return { prefix: prefix, local: local }
-  }
-
-  function attrib (parser) {
-    if (!parser.strict) {
-      parser.attribName = parser.attribName[parser.looseCase]()
-    }
-
-    if (parser.attribList.indexOf(parser.attribName) !== -1 ||
-      parser.tag.attributes.hasOwnProperty(parser.attribName)) {
-      parser.attribName = parser.attribValue = ''
-      return
-    }
-
-    if (parser.opt.xmlns) {
-      var qn = qname(parser.attribName, true)
-      var prefix = qn.prefix
-      var local = qn.local
-
-      if (prefix === 'xmlns') {
-        // namespace binding attribute. push the binding into scope
-        if (local === 'xml' && parser.attribValue !== XML_NAMESPACE) {
-          strictFail(parser,
-            'xml: prefix must be bound to ' + XML_NAMESPACE + '\n' +
-            'Actual: ' + parser.attribValue)
-        } else if (local === 'xmlns' && parser.attribValue !== XMLNS_NAMESPACE) {
-          strictFail(parser,
-            'xmlns: prefix must be bound to ' + XMLNS_NAMESPACE + '\n' +
-            'Actual: ' + parser.attribValue)
-        } else {
-          var tag = parser.tag
-          var parent = parser.tags[parser.tags.length - 1] || parser
-          if (tag.ns === parent.ns) {
-            tag.ns = Object.create(parent.ns)
-          }
-          tag.ns[local] = parser.attribValue
-        }
-      }
-
-      // defer onattribute events until all attributes have been seen
-      // so any new bindings can take effect. preserve attribute order
-      // so deferred events can be emitted in document order
-      parser.attribList.push([parser.attribName, parser.attribValue])
-    } else {
-      // in non-xmlns mode, we can emit the event right away
-      parser.tag.attributes[parser.attribName] = parser.attribValue
-      emitNode(parser, 'onattribute', {
-        name: parser.attribName,
-        value: parser.attribValue
-      })
-    }
-
-    parser.attribName = parser.attribValue = ''
-  }
-
-  function openTag (parser, selfClosing) {
-    if (parser.opt.xmlns) {
-      // emit namespace binding events
-      var tag = parser.tag
-
-      // add namespace info to tag
-      var qn = qname(parser.tagName)
-      tag.prefix = qn.prefix
-      tag.local = qn.local
-      tag.uri = tag.ns[qn.prefix] || ''
-
-      if (tag.prefix && !tag.uri) {
-        strictFail(parser, 'Unbound namespace prefix: ' +
-          JSON.stringify(parser.tagName))
-        tag.uri = qn.prefix
-      }
-
-      var parent = parser.tags[parser.tags.length - 1] || parser
-      if (tag.ns && parent.ns !== tag.ns) {
-        Object.keys(tag.ns).forEach(function (p) {
-          emitNode(parser, 'onopennamespace', {
-            prefix: p,
-            uri: tag.ns[p]
-          })
-        })
-      }
-
-      // handle deferred onattribute events
-      // Note: do not apply default ns to attributes:
-      //   http://www.w3.org/TR/REC-xml-names/#defaulting
-      for (var i = 0, l = parser.attribList.length; i < l; i++) {
-        var nv = parser.attribList[i]
-        var name = nv[0]
-        var value = nv[1]
-        var qualName = qname(name, true)
-        var prefix = qualName.prefix
-        var local = qualName.local
-        var uri = prefix === '' ? '' : (tag.ns[prefix] || '')
-        var a = {
-          name: name,
-          value: value,
-          prefix: prefix,
-          local: local,
-          uri: uri
-        }
-
-        // if there's any attributes with an undefined namespace,
-        // then fail on them now.
-        if (prefix && prefix !== 'xmlns' && !uri) {
-          strictFail(parser, 'Unbound namespace prefix: ' +
-            JSON.stringify(prefix))
-          a.uri = prefix
-        }
-        parser.tag.attributes[name] = a
-        emitNode(parser, 'onattribute', a)
-      }
-      parser.attribList.length = 0
-    }
-
-    parser.tag.isSelfClosing = !!selfClosing
-
-    // process the tag
-    parser.sawRoot = true
-    parser.tags.push(parser.tag)
-    emitNode(parser, 'onopentag', parser.tag)
-    if (!selfClosing) {
-      // special case for <script> in non-strict mode.
-      if (!parser.noscript && parser.tagName.toLowerCase() === 'script') {
-        parser.state = S.SCRIPT
-      } else {
-        parser.state = S.TEXT
-      }
-      parser.tag = null
-      parser.tagName = ''
-    }
-    parser.attribName = parser.attribValue = ''
-    parser.attribList.length = 0
-  }
-
-  function closeTag (parser) {
-    if (!parser.tagName) {
-      strictFail(parser, 'Weird empty close tag.')
-      parser.textNode += '</>'
-      parser.state = S.TEXT
-      return
-    }
-
-    if (parser.script) {
-      if (parser.tagName !== 'script') {
-        parser.script += '</' + parser.tagName + '>'
-        parser.tagName = ''
-        parser.state = S.SCRIPT
-        return
-      }
-      emitNode(parser, 'onscript', parser.script)
-      parser.script = ''
-    }
-
-    // first make sure that the closing tag actually exists.
-    // <a><b></c></b></a> will close everything, otherwise.
-    var t = parser.tags.length
-    var tagName = parser.tagName
-    if (!parser.strict) {
-      tagName = tagName[parser.looseCase]()
-    }
-    var closeTo = tagName
-    while (t--) {
-      var close = parser.tags[t]
-      if (close.name !== closeTo) {
-        // fail the first time in strict mode
-        strictFail(parser, 'Unexpected close tag')
-      } else {
-        break
-      }
-    }
-
-    // didn't find it.  we already failed for strict, so just abort.
-    if (t < 0) {
-      strictFail(parser, 'Unmatched closing tag: ' + parser.tagName)
-      parser.textNode += '</' + parser.tagName + '>'
-      parser.state = S.TEXT
-      return
-    }
-    parser.tagName = tagName
-    var s = parser.tags.length
-    while (s-- > t) {
-      var tag = parser.tag = parser.tags.pop()
-      parser.tagName = parser.tag.name
-      emitNode(parser, 'onclosetag', parser.tagName)
-
-      var x = {}
-      for (var i in tag.ns) {
-        x[i] = tag.ns[i]
-      }
-
-      var parent = parser.tags[parser.tags.length - 1] || parser
-      if (parser.opt.xmlns && tag.ns !== parent.ns) {
-        // remove namespace bindings introduced by tag
-        Object.keys(tag.ns).forEach(function (p) {
-          var n = tag.ns[p]
-          emitNode(parser, 'onclosenamespace', { prefix: p, uri: n })
-        })
-      }
-    }
-    if (t === 0) parser.closedRoot = true
-    parser.tagName = parser.attribValue = parser.attribName = ''
-    parser.attribList.length = 0
-    parser.state = S.TEXT
-  }
-
-  function parseEntity (parser) {
-    var entity = parser.entity
-    var entityLC = entity.toLowerCase()
-    var num
-    var numStr = ''
-
-    if (parser.ENTITIES[entity]) {
-      return parser.ENTITIES[entity]
-    }
-    if (parser.ENTITIES[entityLC]) {
-      return parser.ENTITIES[entityLC]
-    }
-    entity = entityLC
-    if (entity.charAt(0) === '#') {
-      if (entity.charAt(1) === 'x') {
-        entity = entity.slice(2)
-        num = parseInt(entity, 16)
-        numStr = num.toString(16)
-      } else {
-        entity = entity.slice(1)
-        num = parseInt(entity, 10)
-        numStr = num.toString(10)
-      }
-    }
-    entity = entity.replace(/^0+/, '')
-    if (numStr.toLowerCase() !== entity) {
-      strictFail(parser, 'Invalid character entity')
-      return '&' + parser.entity + ';'
-    }
-
-    return String.fromCodePoint(num)
-  }
-
-  function beginWhiteSpace (parser, c) {
-    if (c === '<') {
-      parser.state = S.OPEN_WAKA
-      parser.startTagPosition = parser.position
-    } else if (not(whitespace, c)) {
-      // have to process this as a text node.
-      // weird, but happens.
-      strictFail(parser, 'Non-whitespace before first tag.')
-      parser.textNode = c
-      parser.state = S.TEXT
-    }
-  }
-
-  function charAt (chunk, i) {
-    var result = ''
-    if (i < chunk.length) {
-      result = chunk.charAt(i)
-    }
-    return result
-  }
-
-  function write (chunk) {
-    var parser = this
-    if (this.error) {
-      throw this.error
-    }
-    if (parser.closed) {
-      return error(parser,
-        'Cannot write after close. Assign an onready handler.')
-    }
-    if (chunk === null) {
-      return end(parser)
-    }
-    if (typeof chunk === 'object') {
-      chunk = chunk.toString()
-    }
-    var i = 0
-    var c = ''
-    while (true) {
-      c = charAt(chunk, i++)
-      parser.c = c
-
-      if (!c) {
-        break
-      }
-
-      if (parser.trackPosition) {
-        parser.position++
-        if (c === '\n') {
-          parser.line++
-          parser.column = 0
-        } else {
-          parser.column++
-        }
-      }
-
-      switch (parser.state) {
-        case S.BEGIN:
-          parser.state = S.BEGIN_WHITESPACE
-          if (c === '\uFEFF') {
-            continue
-          }
-          beginWhiteSpace(parser, c)
-          continue
-
-        case S.BEGIN_WHITESPACE:
-          beginWhiteSpace(parser, c)
-          continue
-
-        case S.TEXT:
-          if (parser.sawRoot && !parser.closedRoot) {
-            var starti = i - 1
-            while (c && c !== '<' && c !== '&') {
-              c = charAt(chunk, i++)
-              if (c && parser.trackPosition) {
-                parser.position++
-                if (c === '\n') {
-                  parser.line++
-                  parser.column = 0
-                } else {
-                  parser.column++
-                }
-              }
-            }
-            parser.textNode += chunk.substring(starti, i - 1)
-          }
-          if (c === '<' && !(parser.sawRoot && parser.closedRoot && !parser.strict)) {
-            parser.state = S.OPEN_WAKA
-            parser.startTagPosition = parser.position
-          } else {
-            if (not(whitespace, c) && (!parser.sawRoot || parser.closedRoot)) {
-              strictFail(parser, 'Text data outside of root node.')
-            }
-            if (c === '&') {
-              parser.state = S.TEXT_ENTITY
-            } else {
-              parser.textNode += c
-            }
-          }
-          continue
-
-        case S.SCRIPT:
-          // only non-strict
-          if (c === '<') {
-            parser.state = S.SCRIPT_ENDING
-          } else {
-            parser.script += c
-          }
-          continue
-
-        case S.SCRIPT_ENDING:
-          if (c === '/') {
-            parser.state = S.CLOSE_TAG
-          } else {
-            parser.script += '<' + c
-            parser.state = S.SCRIPT
-          }
-          continue
-
-        case S.OPEN_WAKA:
-          // either a /, ?, !, or text is coming next.
-          if (c === '!') {
-            parser.state = S.SGML_DECL
-            parser.sgmlDecl = ''
-          } else if (is(whitespace, c)) {
-            // wait for it...
-          } else if (isMatch(nameStart, c)) {
-            parser.state = S.OPEN_TAG
-            parser.tagName = c
-          } else if (c === '/') {
-            parser.state = S.CLOSE_TAG
-            parser.tagName = ''
-          } else if (c === '?') {
-            parser.state = S.PROC_INST
-            parser.procInstName = parser.procInstBody = ''
-          } else {
-            strictFail(parser, 'Unencoded <')
-            // if there was some whitespace, then add that in.
-            if (parser.startTagPosition + 1 < parser.position) {
-              var pad = parser.position - parser.startTagPosition
-              c = new Array(pad).join(' ') + c
-            }
-            parser.textNode += '<' + c
-            parser.state = S.TEXT
-          }
-          continue
-
-        case S.SGML_DECL:
-          if ((parser.sgmlDecl + c).toUpperCase() === CDATA) {
-            emitNode(parser, 'onopencdata')
-            parser.state = S.CDATA
-            parser.sgmlDecl = ''
-            parser.cdata = ''
-          } else if (parser.sgmlDecl + c === '--') {
-            parser.state = S.COMMENT
-            parser.comment = ''
-            parser.sgmlDecl = ''
-          } else if ((parser.sgmlDecl + c).toUpperCase() === DOCTYPE) {
-            parser.state = S.DOCTYPE
-            if (parser.doctype || parser.sawRoot) {
-              strictFail(parser,
-                'Inappropriately located doctype declaration')
-            }
-            parser.doctype = ''
-            parser.sgmlDecl = ''
-          } else if (c === '>') {
-            emitNode(parser, 'onsgmldeclaration', parser.sgmlDecl)
-            parser.sgmlDecl = ''
-            parser.state = S.TEXT
-          } else if (is(quote, c)) {
-            parser.state = S.SGML_DECL_QUOTED
-            parser.sgmlDecl += c
-          } else {
-            parser.sgmlDecl += c
-          }
-          continue
-
-        case S.SGML_DECL_QUOTED:
-          if (c === parser.q) {
-            parser.state = S.SGML_DECL
-            parser.q = ''
-          }
-          parser.sgmlDecl += c
-          continue
-
-        case S.DOCTYPE:
-          if (c === '>') {
-            parser.state = S.TEXT
-            emitNode(parser, 'ondoctype', parser.doctype)
-            parser.doctype = true // just remember that we saw it.
-          } else {
-            parser.doctype += c
-            if (c === '[') {
-              parser.state = S.DOCTYPE_DTD
-            } else if (is(quote, c)) {
-              parser.state = S.DOCTYPE_QUOTED
-              parser.q = c
-            }
-          }
-          continue
-
-        case S.DOCTYPE_QUOTED:
-          parser.doctype += c
-          if (c === parser.q) {
-            parser.q = ''
-            parser.state = S.DOCTYPE
-          }
-          continue
-
-        case S.DOCTYPE_DTD:
-          parser.doctype += c
-          if (c === ']') {
-            parser.state = S.DOCTYPE
-          } else if (is(quote, c)) {
-            parser.state = S.DOCTYPE_DTD_QUOTED
-            parser.q = c
-          }
-          continue
-
-        case S.DOCTYPE_DTD_QUOTED:
-          parser.doctype += c
-          if (c === parser.q) {
-            parser.state = S.DOCTYPE_DTD
-            parser.q = ''
-          }
-          continue
-
-        case S.COMMENT:
-          if (c === '-') {
-            parser.state = S.COMMENT_ENDING
-          } else {
-            parser.comment += c
-          }
-          continue
-
-        case S.COMMENT_ENDING:
-          if (c === '-') {
-            parser.state = S.COMMENT_ENDED
-            parser.comment = textopts(parser.opt, parser.comment)
-            if (parser.comment) {
-              emitNode(parser, 'oncomment', parser.comment)
-            }
-            parser.comment = ''
-          } else {
-            parser.comment += '-' + c
-            parser.state = S.COMMENT
-          }
-          continue
-
-        case S.COMMENT_ENDED:
-          if (c !== '>') {
-            strictFail(parser, 'Malformed comment')
-            // allow <!-- blah -- bloo --> in non-strict mode,
-            // which is a comment of " blah -- bloo "
-            parser.comment += '--' + c
-            parser.state = S.COMMENT
-          } else {
-            parser.state = S.TEXT
-          }
-          continue
-
-        case S.CDATA:
-          if (c === ']') {
-            parser.state = S.CDATA_ENDING
-          } else {
-            parser.cdata += c
-          }
-          continue
-
-        case S.CDATA_ENDING:
-          if (c === ']') {
-            parser.state = S.CDATA_ENDING_2
-          } else {
-            parser.cdata += ']' + c
-            parser.state = S.CDATA
-          }
-          continue
-
-        case S.CDATA_ENDING_2:
-          if (c === '>') {
-            if (parser.cdata) {
-              emitNode(parser, 'oncdata', parser.cdata)
-            }
-            emitNode(parser, 'onclosecdata')
-            parser.cdata = ''
-            parser.state = S.TEXT
-          } else if (c === ']') {
-            parser.cdata += ']'
-          } else {
-            parser.cdata += ']]' + c
-            parser.state = S.CDATA
-          }
-          continue
-
-        case S.PROC_INST:
-          if (c === '?') {
-            parser.state = S.PROC_INST_ENDING
-          } else if (is(whitespace, c)) {
-            parser.state = S.PROC_INST_BODY
-          } else {
-            parser.procInstName += c
-          }
-          continue
-
-        case S.PROC_INST_BODY:
-          if (!parser.procInstBody && is(whitespace, c)) {
-            continue
-          } else if (c === '?') {
-            parser.state = S.PROC_INST_ENDING
-          } else {
-            parser.procInstBody += c
-          }
-          continue
-
-        case S.PROC_INST_ENDING:
-          if (c === '>') {
-            emitNode(parser, 'onprocessinginstruction', {
-              name: parser.procInstName,
-              body: parser.procInstBody
-            })
-            parser.procInstName = parser.procInstBody = ''
-            parser.state = S.TEXT
-          } else {
-            parser.procInstBody += '?' + c
-            parser.state = S.PROC_INST_BODY
-          }
-          continue
-
-        case S.OPEN_TAG:
-          if (isMatch(nameBody, c)) {
-            parser.tagName += c
-          } else {
-            newTag(parser)
-            if (c === '>') {
-              openTag(parser)
-            } else if (c === '/') {
-              parser.state = S.OPEN_TAG_SLASH
-            } else {
-              if (not(whitespace, c)) {
-                strictFail(parser, 'Invalid character in tag name')
-              }
-              parser.state = S.ATTRIB
-            }
-          }
-          continue
-
-        case S.OPEN_TAG_SLASH:
-          if (c === '>') {
-            openTag(parser, true)
-            closeTag(parser)
-          } else {
-            strictFail(parser, 'Forward-slash in opening tag not followed by >')
-            parser.state = S.ATTRIB
-          }
-          continue
-
-        case S.ATTRIB:
-          // haven't read the attribute name yet.
-          if (is(whitespace, c)) {
-            continue
-          } else if (c === '>') {
-            openTag(parser)
-          } else if (c === '/') {
-            parser.state = S.OPEN_TAG_SLASH
-          } else if (isMatch(nameStart, c)) {
-            parser.attribName = c
-            parser.attribValue = ''
-            parser.state = S.ATTRIB_NAME
-          } else {
-            strictFail(parser, 'Invalid attribute name')
-          }
-          continue
-
-        case S.ATTRIB_NAME:
-          if (c === '=') {
-            parser.state = S.ATTRIB_VALUE
-          } else if (c === '>') {
-            strictFail(parser, 'Attribute without value')
-            parser.attribValue = parser.attribName
-            attrib(parser)
-            openTag(parser)
-          } else if (is(whitespace, c)) {
-            parser.state = S.ATTRIB_NAME_SAW_WHITE
-          } else if (isMatch(nameBody, c)) {
-            parser.attribName += c
-          } else {
-            strictFail(parser, 'Invalid attribute name')
-          }
-          continue
-
-        case S.ATTRIB_NAME_SAW_WHITE:
-          if (c === '=') {
-            parser.state = S.ATTRIB_VALUE
-          } else if (is(whitespace, c)) {
-            continue
-          } else {
-            strictFail(parser, 'Attribute without value')
-            parser.tag.attributes[parser.attribName] = ''
-            parser.attribValue = ''
-            emitNode(parser, 'onattribute', {
-              name: parser.attribName,
-              value: ''
-            })
-            parser.attribName = ''
-            if (c === '>') {
-              openTag(parser)
-            } else if (isMatch(nameStart, c)) {
-              parser.attribName = c
-              parser.state = S.ATTRIB_NAME
-            } else {
-              strictFail(parser, 'Invalid attribute name')
-              parser.state = S.ATTRIB
-            }
-          }
-          continue
-
-        case S.ATTRIB_VALUE:
-          if (is(whitespace, c)) {
-            continue
-          } else if (is(quote, c)) {
-            parser.q = c
-            parser.state = S.ATTRIB_VALUE_QUOTED
-          } else {
-            strictFail(parser, 'Unquoted attribute value')
-            parser.state = S.ATTRIB_VALUE_UNQUOTED
-            parser.attribValue = c
-          }
-          continue
-
-        case S.ATTRIB_VALUE_QUOTED:
-          if (c !== parser.q) {
-            if (c === '&') {
-              parser.state = S.ATTRIB_VALUE_ENTITY_Q
-            } else {
-              parser.attribValue += c
-            }
-            continue
-          }
-          attrib(parser)
-          parser.q = ''
-          parser.state = S.ATTRIB_VALUE_CLOSED
-          continue
-
-        case S.ATTRIB_VALUE_CLOSED:
-          if (is(whitespace, c)) {
-            parser.state = S.ATTRIB
-          } else if (c === '>') {
-            openTag(parser)
-          } else if (c === '/') {
-            parser.state = S.OPEN_TAG_SLASH
-          } else if (isMatch(nameStart, c)) {
-            strictFail(parser, 'No whitespace between attributes')
-            parser.attribName = c
-            parser.attribValue = ''
-            parser.state = S.ATTRIB_NAME
-          } else {
-            strictFail(parser, 'Invalid attribute name')
-          }
-          continue
-
-        case S.ATTRIB_VALUE_UNQUOTED:
-          if (not(attribEnd, c)) {
-            if (c === '&') {
-              parser.state = S.ATTRIB_VALUE_ENTITY_U
-            } else {
-              parser.attribValue += c
-            }
-            continue
-          }
-          attrib(parser)
-          if (c === '>') {
-            openTag(parser)
-          } else {
-            parser.state = S.ATTRIB
-          }
-          continue
-
-        case S.CLOSE_TAG:
-          if (!parser.tagName) {
-            if (is(whitespace, c)) {
-              continue
-            } else if (notMatch(nameStart, c)) {
-              if (parser.script) {
-                parser.script += '</' + c
-                parser.state = S.SCRIPT
-              } else {
-                strictFail(parser, 'Invalid tagname in closing tag.')
-              }
-            } else {
-              parser.tagName = c
-            }
-          } else if (c === '>') {
-            closeTag(parser)
-          } else if (isMatch(nameBody, c)) {
-            parser.tagName += c
-          } else if (parser.script) {
-            parser.script += '</' + parser.tagName
-            parser.tagName = ''
-            parser.state = S.SCRIPT
-          } else {
-            if (not(whitespace, c)) {
-              strictFail(parser, 'Invalid tagname in closing tag')
-            }
-            parser.state = S.CLOSE_TAG_SAW_WHITE
-          }
-          continue
-
-        case S.CLOSE_TAG_SAW_WHITE:
-          if (is(whitespace, c)) {
-            continue
-          }
-          if (c === '>') {
-            closeTag(parser)
-          } else {
-            strictFail(parser, 'Invalid characters in closing tag')
-          }
-          continue
-
-        case S.TEXT_ENTITY:
-        case S.ATTRIB_VALUE_ENTITY_Q:
-        case S.ATTRIB_VALUE_ENTITY_U:
-          var returnState
-          var buffer
-          switch (parser.state) {
-            case S.TEXT_ENTITY:
-              returnState = S.TEXT
-              buffer = 'textNode'
-              break
-
-            case S.ATTRIB_VALUE_ENTITY_Q:
-              returnState = S.ATTRIB_VALUE_QUOTED
-              buffer = 'attribValue'
-              break
-
-            case S.ATTRIB_VALUE_ENTITY_U:
-              returnState = S.ATTRIB_VALUE_UNQUOTED
-              buffer = 'attribValue'
-              break
-          }
-
-          if (c === ';') {
-            parser[buffer] += parseEntity(parser)
-            parser.entity = ''
-            parser.state = returnState
-          } else if (isMatch(parser.entity.length ? entityBody : entityStart, c)) {
-            parser.entity += c
-          } else {
-            strictFail(parser, 'Invalid character in entity name')
-            parser[buffer] += '&' + parser.entity + c
-            parser.entity = ''
-            parser.state = returnState
-          }
-
-          continue
-
-        default:
-          throw new Error(parser, 'Unknown state: ' + parser.state)
-      }
-    } // while
-
-    if (parser.position >= parser.bufferCheckPosition) {
-      checkBufferLength(parser)
-    }
-    return parser
-  }
-
-  /*! http://mths.be/fromcodepoint v0.1.0 by @mathias */
-  /* istanbul ignore next */
-  if (!String.fromCodePoint) {
-    (function () {
-      var stringFromCharCode = String.fromCharCode
-      var floor = Math.floor
-      var fromCodePoint = function () {
-        var MAX_SIZE = 0x4000
-        var codeUnits = []
-        var highSurrogate
-        var lowSurrogate
-        var index = -1
-        var length = arguments.length
-        if (!length) {
-          return ''
-        }
-        var result = ''
-        while (++index < length) {
-          var codePoint = Number(arguments[index])
-          if (
-            !isFinite(codePoint) || // `NaN`, `+Infinity`, or `-Infinity`
-            codePoint < 0 || // not a valid Unicode code point
-            codePoint > 0x10FFFF || // not a valid Unicode code point
-            floor(codePoint) !== codePoint // not an integer
-          ) {
-            throw RangeError('Invalid code point: ' + codePoint)
-          }
-          if (codePoint <= 0xFFFF) { // BMP code point
-            codeUnits.push(codePoint)
-          } else { // Astral code point; split in surrogate halves
-            // http://mathiasbynens.be/notes/javascript-encoding#surrogate-formulae
-            codePoint -= 0x10000
-            highSurrogate = (codePoint >> 10) + 0xD800
-            lowSurrogate = (codePoint % 0x400) + 0xDC00
-            codeUnits.push(highSurrogate, lowSurrogate)
-          }
-          if (index + 1 === length || codeUnits.length > MAX_SIZE) {
-            result += stringFromCharCode.apply(null, codeUnits)
-            codeUnits.length = 0
-          }
-        }
-        return result
-      }
-      /* istanbul ignore next */
-      if (Object.defineProperty) {
-        Object.defineProperty(String, 'fromCodePoint', {
-          value: fromCodePoint,
-          configurable: true,
-          writable: true
-        })
-      } else {
-        String.fromCodePoint = fromCodePoint
-      }
-    }())
-  }
-})(typeof exports === 'undefined' ? this.sax = {} : exports)
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":34,"stream":81,"string_decoder":38}],140:[function(require,module,exports){
-'use strict';
-
-/**
- * SVGO is a Nodejs-based tool for optimizing SVG vector graphics files.
- *
- * @see https://github.com/svg/svgo
- *
- * @author Kir Belevich <kir@soulshine.in> (https://github.com/deepsweet)
- * @copyright © 2012 Kir Belevich
- * @license MIT https://raw.githubusercontent.com/svg/svgo/master/LICENSE
- */
-
-var CONFIG = require('./svgo/config.js'),
-    SVG2JS = require('./svgo/svg2js.js'),
-    PLUGINS = require('./svgo/plugins.js'),
-    JSAPI = require('./svgo/jsAPI.js'),
-    JS2SVG = require('./svgo/js2svg.js');
-
-var SVGO = module.exports = function(config) {
-
-    this.config = CONFIG(config);
-
-};
-
-SVGO.prototype.optimize = function(svgstr, callback) {
-    if (this.config.error) return callback(this.config);
-
-    var _this = this,
-        config = this.config,
-        maxPassCount = config.multipass ? 10 : 1,
-        counter = 0,
-        prevResultSize = Number.POSITIVE_INFINITY,
-        optimizeOnceCallback = function(svgjs) {
-
-            if (svgjs.error) {
-                callback(svgjs);
-                return;
-            }
-
-            if (++counter < maxPassCount && svgjs.data.length < prevResultSize) {
-                prevResultSize = svgjs.data.length;
-                _this._optimizeOnce(svgjs.data, optimizeOnceCallback);
-            } else {
-                callback(svgjs);
-            }
-
-        };
-
-    _this._optimizeOnce(svgstr, optimizeOnceCallback);
-
-};
-
-SVGO.prototype._optimizeOnce = function(svgstr, callback) {
-    var config = this.config;
-
-    SVG2JS(svgstr, function(svgjs) {
-
-        if (svgjs.error) {
-            callback(svgjs);
-            return;
-        }
-
-        svgjs = PLUGINS(svgjs, config.plugins);
-
-        callback(JS2SVG(svgjs, config.js2svg));
-
-    });
-};
-
-/**
- * The factory that creates a content item with the helper methods.
- *
- * @param {Object} data which passed to jsAPI constructor
- * @returns {JSAPI} content item
- */
-SVGO.prototype.createContentItem = function(data) {
-
-    return new JSAPI(data);
-
-};
-
-},{"./svgo/config.js":141,"./svgo/js2svg.js":142,"./svgo/jsAPI.js":143,"./svgo/plugins.js":144,"./svgo/svg2js.js":145}],141:[function(require,module,exports){
-(function (__dirname){
-'use strict';
-
-var FS = require('fs');
-var yaml = require('js-yaml');
-
-var EXTEND = require('whet.extend');
-
-/**
- * Read and/or extend/replace default config file,
- * prepare and optimize plugins array.
- *
- * @param {Object} [config] input config
- * @return {Object} output config
- */
-module.exports = function(config) {
-
-    var defaults;
-    config = typeof config == 'object' && config || {};
-
-    if (config.plugins && !Array.isArray(config.plugins)) {
-        return { error: 'Error: Invalid plugins list. Provided \'plugins\' in config should be an array.' };
-    }
-
-    if (config.full) {
-        defaults = config;
-
-        if (Array.isArray(defaults.plugins)) {
-            defaults.plugins = preparePluginsArray(defaults.plugins);
-        }
-    } else {
-        defaults = EXTEND({}, yaml.safeLoad(FS.readFileSync(__dirname + '/../../.svgo.yml', 'utf8')));
-        defaults.plugins = preparePluginsArray(defaults.plugins);
-        defaults = extendConfig(defaults, config);
-    }
-
-    if ('floatPrecision' in config && Array.isArray(defaults.plugins)) {
-        defaults.plugins.forEach(function(plugin) {
-            if (plugin.params && ('floatPrecision' in plugin.params)) {
-                // Don't touch default plugin params
-                plugin.params = EXTEND({}, plugin.params, { floatPrecision: config.floatPrecision });
-            }
-        });
-    }
-
-    if (Array.isArray(defaults.plugins)) {
-        defaults.plugins = optimizePluginsArray(defaults.plugins);
-    }
-
-    return defaults;
-
-};
-
-/**
- * Require() all plugins in array.
- *
- * @param {Array} plugins input plugins array
- * @return {Array} input plugins array of arrays
- */
-function preparePluginsArray(plugins) {
-
-    var plugin,
-        key;
-
-    return plugins.map(function(item) {
-
-        // {}
-        if (typeof item === 'object') {
-
-            key = Object.keys(item)[0];
-
-            // custom
-            if (typeof item[key] === 'object' && item[key].fn && typeof item[key].fn === 'function') {
-                plugin = setupCustomPlugin(key, item[key]);
-
-            } else {
-
-              plugin = EXTEND({}, require('../../plugins/' + key));
-
-              // name: {}
-              if (typeof item[key] === 'object') {
-                  plugin.params = EXTEND({}, plugin.params || {}, item[key]);
-                  plugin.active = true;
-
-              // name: false
-              } else if (item[key] === false) {
-                 plugin.active = false;
-
-              // name: true
-              } else if (item[key] === true) {
-                 plugin.active = true;
-              }
-
-              plugin.name = key;
-            }
-
-        // name
-        } else {
-
-            plugin = EXTEND({}, require('../../plugins/' + item));
-            plugin.name = item;
-
-        }
-
-        return plugin;
-
-    });
-
-}
-
-/**
- * Extend plugins with the custom config object.
- *
- * @param {Array} plugins input plugins
- * @param {Object} config config
- * @return {Array} output plugins
- */
-function extendConfig(defaults, config) {
-
-    var key;
-
-    // plugins
-    if (config.plugins) {
-
-        config.plugins.forEach(function(item) {
-
-            // {}
-            if (typeof item === 'object') {
-
-                key = Object.keys(item)[0];
-
-                // custom
-                if (typeof item[key] === 'object' && item[key].fn && typeof item[key].fn === 'function') {
-                    defaults.plugins.push(setupCustomPlugin(key, item[key]));
-
-                } else {
-                    defaults.plugins.forEach(function(plugin) {
-
-                        if (plugin.name === key) {
-                            // name: {}
-                            if (typeof item[key] === 'object') {
-                                plugin.params = EXTEND({}, plugin.params || {}, item[key]);
-                                plugin.active = true;
-
-                            // name: false
-                            } else if (item[key] === false) {
-                               plugin.active = false;
-
-                            // name: true
-                            } else if (item[key] === true) {
-                               plugin.active = true;
-                            }
-                        }
-                    });
-                }
-
-            }
-
-        });
-
-    }
-
-    defaults.multipass = config.multipass;
-
-    // svg2js
-    if (config.svg2js) {
-        defaults.svg2js = config.svg2js;
-    }
-
-    // js2svg
-    if (config.js2svg) {
-        defaults.js2svg = config.js2svg;
-    }
-
-    return defaults;
-
-}
-
-/**
- * Setup and enable a custom plugin
- *
- * @param {String} plugin name
- * @param {Object} custom plugin
- * @return {Array} enabled plugin
- */
-function setupCustomPlugin(name, plugin) {
-    plugin.active = true;
-    plugin.params = EXTEND({}, plugin.params || {});
-    plugin.name = name;
-
-    return plugin;
-}
-
-/**
- * Try to group sequential elements of plugins array.
- *
- * @param {Object} plugins input plugins
- * @return {Array} output plugins
- */
-function optimizePluginsArray(plugins) {
-
-    var prev;
-
-    return plugins.reduce(function(plugins, item) {
-        if (prev && item.type == prev[0].type) {
-            prev.push(item);
-        } else {
-            plugins.push(prev = [item]);
-        }
-        return plugins;
-    }, []);
-
-}
-
-}).call(this,"/node_modules/svgo/lib/svgo")
-},{"fs":33,"js-yaml":109,"whet.extend":156}],142:[function(require,module,exports){
-'use strict';
-
-var EOL = require('os').EOL,
-    EXTEND = require('whet.extend'),
-    textElem = require('../../plugins/_collections.js').elemsGroups.textContent.concat('title');
-
-var defaults = {
-    doctypeStart: '<!DOCTYPE',
-    doctypeEnd: '>',
-    procInstStart: '<?',
-    procInstEnd: '?>',
-    tagOpenStart: '<',
-    tagOpenEnd: '>',
-    tagCloseStart: '</',
-    tagCloseEnd: '>',
-    tagShortStart: '<',
-    tagShortEnd: '/>',
-    attrStart: '="',
-    attrEnd: '"',
-    commentStart: '<!--',
-    commentEnd: '-->',
-    cdataStart: '<![CDATA[',
-    cdataEnd: ']]>',
-    textStart: '',
-    textEnd: '',
-    indent: 4,
-    regEntities: /[&'"<>]/g,
-    regValEntities: /[&"<>]/g,
-    encodeEntity: encodeEntity,
-    pretty: false,
-    useShortTags: true
-};
-
-var entities = {
-      '&': '&amp;',
-      '\'': '&apos;',
-      '"': '&quot;',
-      '>': '&gt;',
-      '<': '&lt;',
-    };
-
-/**
- * Convert SVG-as-JS object to SVG (XML) string.
- *
- * @param {Object} data input data
- * @param {Object} config config
- *
- * @return {Object} output data
- */
-module.exports = function(data, config) {
-
-    return new JS2SVG(config).convert(data);
-
-};
-
-function JS2SVG(config) {
-
-    if (config) {
-        this.config = EXTEND(true, {}, defaults, config);
-    } else {
-        this.config = defaults;
-    }
-
-    var indent = this.config.indent;
-    if (typeof indent == 'number' && !isNaN(indent)) {
-        this.config.indent = '';
-        for (var i = indent; i-- > 0;) this.config.indent += ' ';
-    } else if (typeof indent != 'string') {
-        this.config.indent = '    ';
-    }
-
-    if (this.config.pretty) {
-        this.config.doctypeEnd += EOL;
-        this.config.procInstEnd += EOL;
-        this.config.commentEnd += EOL;
-        this.config.cdataEnd += EOL;
-        this.config.tagShortEnd += EOL;
-        this.config.tagOpenEnd += EOL;
-        this.config.tagCloseEnd += EOL;
-        this.config.textEnd += EOL;
-    }
-
-    this.indentLevel = 0;
-    this.textContext = null;
-
-}
-
-function encodeEntity(char) {
-    return entities[char];
-}
-
-/**
- * Start conversion.
- *
- * @param {Object} data input data
- *
- * @return {String}
- */
-JS2SVG.prototype.convert = function(data) {
-
-    var svg = '';
-
-    if (data.content) {
-
-        this.indentLevel++;
-
-        data.content.forEach(function(item) {
-
-            if (item.elem) {
-               svg += this.createElem(item);
-            } else if (item.text) {
-               svg += this.createText(item.text);
-            } else if (item.doctype) {
-                svg += this.createDoctype(item.doctype);
-            } else if (item.processinginstruction) {
-                svg += this.createProcInst(item.processinginstruction);
-            } else if (item.comment) {
-                svg += this.createComment(item.comment);
-            } else if (item.cdata) {
-                svg += this.createCDATA(item.cdata);
-            }
-
-        }, this);
-
-    }
-
-    this.indentLevel--;
-
-    return {
-        data: svg,
-        info: {
-            width: this.width,
-            height: this.height
-        }
-    };
-
-};
-
-/**
- * Create indent string in accordance with the current node level.
- *
- * @return {String}
- */
-JS2SVG.prototype.createIndent = function() {
-
-    var indent = '';
-
-    if (this.config.pretty && !this.textContext) {
-        for (var i = 1; i < this.indentLevel; i++) {
-            indent += this.config.indent;
-        }
-    }
-
-    return indent;
-
-};
-
-/**
- * Create doctype tag.
- *
- * @param {String} doctype doctype body string
- *
- * @return {String}
- */
-JS2SVG.prototype.createDoctype = function(doctype) {
-
-    return  this.config.doctypeStart +
-            doctype +
-            this.config.doctypeEnd;
-
-};
-
-/**
- * Create XML Processing Instruction tag.
- *
- * @param {Object} instruction instruction object
- *
- * @return {String}
- */
-JS2SVG.prototype.createProcInst = function(instruction) {
-
-    return  this.config.procInstStart +
-            instruction.name +
-            ' ' +
-            instruction.body +
-            this.config.procInstEnd;
-
-};
-
-/**
- * Create comment tag.
- *
- * @param {String} comment comment body
- *
- * @return {String}
- */
-JS2SVG.prototype.createComment = function(comment) {
-
-    return  this.config.commentStart +
-            comment +
-            this.config.commentEnd;
-
-};
-
-/**
- * Create CDATA section.
- *
- * @param {String} cdata CDATA body
- *
- * @return {String}
- */
-JS2SVG.prototype.createCDATA = function(cdata) {
-
-    return  this.createIndent() +
-            this.config.cdataStart +
-            cdata +
-            this.config.cdataEnd;
-
-};
-
-/**
- * Create element tag.
- *
- * @param {Object} data element object
- *
- * @return {String}
- */
-JS2SVG.prototype.createElem = function(data) {
-
-    // beautiful injection for obtaining SVG information :)
-    if (
-        data.isElem('svg') &&
-        data.hasAttr('width') &&
-        data.hasAttr('height')
-    ) {
-        this.width = data.attr('width').value;
-        this.height = data.attr('height').value;
-    }
-
-    // empty element and short tag
-    if (data.isEmpty()) {
-        if (this.config.useShortTags) {
-            return this.createIndent() +
-                   this.config.tagShortStart +
-                   data.elem +
-                   this.createAttrs(data) +
-                   this.config.tagShortEnd;
-        } else {
-            return this.createIndent() +
-                   this.config.tagShortStart +
-                   data.elem +
-                   this.createAttrs(data) +
-                   this.config.tagOpenEnd +
-                   this.config.tagCloseStart +
-                   data.elem +
-                   this.config.tagCloseEnd;
-        }
-    // non-empty element
-    } else {
-        var tagOpenStart = this.config.tagOpenStart,
-            tagOpenEnd = this.config.tagOpenEnd,
-            tagCloseStart = this.config.tagCloseStart,
-            tagCloseEnd = this.config.tagCloseEnd,
-            openIndent = this.createIndent(),
-            textIndent = '',
-            processedData = '',
-            dataEnd = '';
-
-        if (this.textContext) {
-            tagOpenStart = defaults.tagOpenStart;
-            tagOpenEnd = defaults.tagOpenEnd;
-            tagCloseStart = defaults.tagCloseStart;
-            tagCloseEnd = defaults.tagCloseEnd;
-            openIndent = '';
-        } else if (data.isElem(textElem)) {
-            if (this.config.pretty) {
-                textIndent += openIndent + this.config.indent;
-            }
-            this.textContext = data;
-        }
-
-        processedData += this.convert(data).data;
-
-        if (this.textContext == data) {
-            this.textContext = null;
-            if (this.config.pretty) dataEnd = EOL;
-        }
-
-        return  openIndent +
-                tagOpenStart +
-                data.elem +
-                this.createAttrs(data) +
-                tagOpenEnd +
-                textIndent +
-                processedData +
-                dataEnd +
-                this.createIndent() +
-                tagCloseStart +
-                data.elem +
-                tagCloseEnd;
-
-    }
-
-};
-
-/**
- * Create element attributes.
- *
- * @param {Object} elem attributes object
- *
- * @return {String}
- */
-JS2SVG.prototype.createAttrs = function(elem) {
-
-    var attrs = '';
-
-    elem.eachAttr(function(attr) {
-
-        if (attr.value !== undefined) {
-            attrs +=    ' ' +
-                        attr.name +
-                        this.config.attrStart +
-                        String(attr.value).replace(this.config.regValEntities, this.config.encodeEntity) +
-                        this.config.attrEnd;
-        }
-        else {
-            attrs +=    ' ' +
-                        attr.name;
-        }
-
-
-    }, this);
-
-    return attrs;
-
-};
-
-/**
- * Create text node.
- *
- * @param {String} text text
- *
- * @return {String}
- */
-JS2SVG.prototype.createText = function(text) {
-
-    return  this.createIndent() +
-            this.config.textStart +
-            text.replace(this.config.regEntities, this.config.encodeEntity) +
-            (this.textContext ? '' : this.config.textEnd);
-
-};
-
-},{"../../plugins/_collections.js":147,"os":35,"whet.extend":156}],143:[function(require,module,exports){
-'use strict';
-
-var EXTEND = require('whet.extend');
-
-var JSAPI = module.exports = function(data, parentNode) {
-    EXTEND(this, data);
-    if (parentNode) {
-        Object.defineProperty(this, 'parentNode', {
-            writable: true,
-            value: parentNode
-        });
-    }
-};
-
-/**
- * Perform a deep clone of this node.
- *
- * @return {Object} element
- */
-JSAPI.prototype.clone = function() {
-    var node = this;
-    var nodeData = {};
-
-    Object.keys(node).forEach(function(key) {
-        if (key !== 'content') {
-            nodeData[key] = node[key];
-        }
-    });
-
-    // Deep-clone node data
-    // This is still faster than using EXTEND(true…)
-    nodeData = JSON.parse(JSON.stringify(nodeData));
-
-    // parentNode gets set to a proper object by the parent clone,
-    // but it needs to be true/false now to do the right thing
-    // in the constructor.
-    var clonedNode = new JSAPI(nodeData, !!node.parentNode);
-
-    if (node.content) {
-        clonedNode.content = node.content.map(function(childNode) {
-            var clonedChild = childNode.clone();
-            clonedChild.parentNode = clonedNode;
-            return clonedChild;
-        });
-    }
-
-    return clonedNode;
-};
-
-/**
- * Determine if item is an element
- * (any, with a specific name or in a names array).
- *
- * @param {String|Array} [param] element name or names arrays
- * @return {Boolean}
- */
-JSAPI.prototype.isElem = function(param) {
-
-    if (!param) return !!this.elem;
-
-    if (Array.isArray(param)) return !!this.elem && (param.indexOf(this.elem) > -1);
-
-    return !!this.elem && this.elem === param;
-
-};
-
-/**
- * Renames an element
- *
- * @param {String} name new element name
- * @return {Object} element
- */
-JSAPI.prototype.renameElem = function(name) {
-
-    if (name && typeof name === 'string')
-        this.elem = this.local = name;
-
-    return this;
-
-};
-
-/**
- * Determine if element is empty.
- *
- * @return {Boolean}
- */
- JSAPI.prototype.isEmpty = function() {
-
-    return !this.content || !this.content.length;
-
-};
-
-/**
- * Changes content by removing elements and/or adding new elements.
- *
- * @param {Number} start Index at which to start changing the content.
- * @param {Number} n Number of elements to remove.
- * @param {Array|Object} [insertion] Elements to add to the content.
- * @return {Array} Removed elements.
- */
- JSAPI.prototype.spliceContent = function(start, n, insertion) {
-
-    if (arguments.length < 2) return [];
-
-    if (!Array.isArray(insertion))
-        insertion = Array.apply(null, arguments).slice(2);
-
-    insertion.forEach(function(inner) { inner.parentNode = this }, this);
-
-    return this.content.splice.apply(this.content, [start, n].concat(insertion));
-
-
-};
-
-/**
- * Determine if element has an attribute
- * (any, or by name or by name + value).
- *
- * @param {String} [name] attribute name
- * @param {String} [val] attribute value (will be toString()'ed)
- * @return {Boolean}
- */
- JSAPI.prototype.hasAttr = function(name, val) {
-
-    if (!this.attrs || !Object.keys(this.attrs).length) return false;
-
-    if (!arguments.length) return !!this.attrs;
-
-    if (val !== undefined) return !!this.attrs[name] && this.attrs[name].value === val.toString();
-
-    return !!this.attrs[name];
-
-};
-
-/**
- * Determine if element has an attribute by local name
- * (any, or by name or by name + value).
- *
- * @param {String} [localName] local attribute name
- * @param {Number|String|RegExp|Function} [val] attribute value (will be toString()'ed or executed, otherwise ignored)
- * @return {Boolean}
- */
- JSAPI.prototype.hasAttrLocal = function(localName, val) {
-
-    if (!this.attrs || !Object.keys(this.attrs).length) return false;
-
-    if (!arguments.length) return !!this.attrs;
-
-    var callback;
-
-    switch (val != null && val.constructor && val.constructor.name) {
-        case 'Number':   // same as String
-        case 'String':   callback = stringValueTest; break;
-        case 'RegExp':   callback = regexpValueTest; break;
-        case 'Function': callback = funcValueTest; break;
-        default:         callback = nameTest;
-    }
-    return this.someAttr(callback);
-
-    function nameTest(attr) {
-        return attr.local === localName;
-    }
-
-    function stringValueTest(attr) {
-        return attr.local === localName && val == attr.value;
-    }
-
-    function regexpValueTest(attr) {
-        return attr.local === localName && val.test(attr.value);
-    }
-
-    function funcValueTest(attr) {
-        return attr.local === localName && val(attr.value);
-    }
-
-};
-
-/**
- * Get a specific attribute from an element
- * (by name or name + value).
- *
- * @param {String} name attribute name
- * @param {String} [val] attribute value (will be toString()'ed)
- * @return {Object|Undefined}
- */
- JSAPI.prototype.attr = function(name, val) {
-
-    if (!this.hasAttr() || !arguments.length) return undefined;
-
-    if (val !== undefined) return this.hasAttr(name, val) ? this.attrs[name] : undefined;
-
-    return this.attrs[name];
-
-};
-
-/**
- * Get computed attribute value from an element
- *
- * @param {String} name attribute name
- * @return {Object|Undefined}
- */
- JSAPI.prototype.computedAttr = function(name, val) {
-    /* jshint eqnull: true */
-    if (!arguments.length) return;
-
-    for (var elem = this; elem && (!elem.hasAttr(name) || !elem.attr(name).value); elem = elem.parentNode);
-
-    if (val != null) {
-        return elem ? elem.hasAttr(name, val) : false;
-    } else if (elem && elem.hasAttr(name)) {
-        return elem.attrs[name].value;
-    }
-
-};
-
-/**
- * Remove a specific attribute.
- *
- * @param {String|Array} name attribute name
- * @param {String} [val] attribute value
- * @return {Boolean}
- */
- JSAPI.prototype.removeAttr = function(name, val, recursive) {
-
-    if (!arguments.length) return false;
-
-    if (Array.isArray(name)) name.forEach(this.removeAttr, this);
-
-    if (!this.hasAttr(name)) return false;
-
-    if (!recursive && val && this.attrs[name].value !== val) return false;
-
-    delete this.attrs[name];
-
-    if (!Object.keys(this.attrs).length) delete this.attrs;
-
-    return true;
-
-};
-
-/**
- * Add attribute.
- *
- * @param {Object} [attr={}] attribute object
- * @return {Object|Boolean} created attribute or false if no attr was passed in
- */
- JSAPI.prototype.addAttr = function(attr) {
-    attr = attr || {};
-
-    if (attr.name === undefined ||
-        attr.prefix === undefined ||
-        attr.local === undefined
-    ) return false;
-
-    this.attrs = this.attrs || {};
-    this.attrs[attr.name] = attr;
-
-    return this.attrs[attr.name];
-
-};
-
-/**
- * Iterates over all attributes.
- *
- * @param {Function} callback callback
- * @param {Object} [context] callback context
- * @return {Boolean} false if there are no any attributes
- */
- JSAPI.prototype.eachAttr = function(callback, context) {
-
-    if (!this.hasAttr()) return false;
-
-    for (var name in this.attrs) {
-        callback.call(context, this.attrs[name]);
-    }
-
-    return true;
-
-};
-
-/**
- * Tests whether some attribute passes the test.
- *
- * @param {Function} callback callback
- * @param {Object} [context] callback context
- * @return {Boolean} false if there are no any attributes
- */
- JSAPI.prototype.someAttr = function(callback, context) {
-
-    if (!this.hasAttr()) return false;
-
-    for (var name in this.attrs) {
-        if (callback.call(context, this.attrs[name])) return true;
-    }
-
-    return false;
-
-};
-
-},{"whet.extend":156}],144:[function(require,module,exports){
-'use strict';
-
-/**
- * Plugins engine.
- *
- * @module plugins
- *
- * @param {Object} data input data
- * @param {Object} plugins plugins object from config
- * @return {Object} output data
- */
-module.exports = function(data, plugins) {
-
-    plugins.forEach(function(group) {
-
-        switch(group[0].type) {
-            case 'perItem':
-                data = perItem(data, group);
-                break;
-            case 'perItemReverse':
-                data = perItem(data, group, true);
-                break;
-            case 'full':
-                data = full(data, group);
-                break;
-        }
-
-    });
-
-    return data;
-
-};
-
-/**
- * Direct or reverse per-item loop.
- *
- * @param {Object} data input data
- * @param {Array} plugins plugins list to process
- * @param {Boolean} [reverse] reverse pass?
- * @return {Object} output data
- */
-function perItem(data, plugins, reverse) {
-
-    function monkeys(items) {
-
-        items.content = items.content.filter(function(item) {
-
-            // reverse pass
-            if (reverse && item.content) {
-                monkeys(item);
-            }
-
-            // main filter
-            var filter = true;
-
-            for (var i = 0; filter && i < plugins.length; i++) {
-                var plugin = plugins[i];
-
-                if (plugin.active && plugin.fn(item, plugin.params) === false) {
-                    filter = false;
-                }
-            }
-
-            // direct pass
-            if (!reverse && item.content) {
-                monkeys(item);
-            }
-
-            return filter;
-
-        });
-
-        return items;
-
-    }
-
-    return monkeys(data);
-
-}
-
-/**
- * "Full" plugins.
- *
- * @param {Object} data input data
- * @param {Array} plugins plugins list to process
- * @return {Object} output data
- */
-function full(data, plugins) {
-
-    plugins.forEach(function(plugin) {
-        if (plugin.active) {
-            data = plugin.fn(data, plugin.params);
-        }
-    });
-
-    return data;
-
-}
-
-},{}],145:[function(require,module,exports){
-'use strict';
-
-var SAX = require('sax'),
-    JSAPI = require('./jsAPI.js'),
-    entityDeclaration = /<!ENTITY\s+(\S+)\s+(?:'([^\']+)'|"([^\"]+)")\s*>/g;
-
-var config = {
-    strict: true,
-    trim: false,
-    normalize: true,
-    lowercase: true,
-    xmlns: true,
-    position: true
-};
-
-/**
- * Convert SVG (XML) string to SVG-as-JS object.
- *
- * @param {String} data input data
- * @param {Function} callback
- */
-module.exports = function(data, callback) {
-
-    var sax = SAX.parser(config.strict, config),
-        root = new JSAPI({ elem: '#document' }),
-        current = root,
-        stack = [root],
-        textContext = null,
-        parsingError = false;
-
-    function pushToContent(content) {
-
-        content = new JSAPI(content, current);
-
-        (current.content = current.content || []).push(content);
-
-        return content;
-
-    }
-
-    sax.ondoctype = function(doctype) {
-
-        pushToContent({
-            doctype: doctype
-        });
-
-        var subsetStart = doctype.indexOf('['),
-            entityMatch;
-
-        if (subsetStart >= 0) {
-            entityDeclaration.lastIndex = subsetStart;
-
-            while ((entityMatch = entityDeclaration.exec(data)) != null) {
-                sax.ENTITIES[entityMatch[1]] = entityMatch[2] || entityMatch[3];
-            }
-        }
-    };
-
-    sax.onprocessinginstruction = function(data) {
-
-        pushToContent({
-            processinginstruction: data
-        });
-
-    };
-
-    sax.oncomment = function(comment) {
-
-        pushToContent({
-            comment: comment.trim()
-        });
-
-    };
-
-    sax.oncdata = function(cdata) {
-
-        pushToContent({
-            cdata: cdata
-        });
-
-    };
-
-    sax.onopentag = function(data) {
-
-        var elem = {
-            elem: data.name,
-            prefix: data.prefix,
-            local: data.local
-        };
-
-        if (Object.keys(data.attributes).length) {
-            elem.attrs = {};
-
-            for (var name in data.attributes) {
-                elem.attrs[name] = {
-                    name: name,
-                    value: data.attributes[name].value,
-                    prefix: data.attributes[name].prefix,
-                    local: data.attributes[name].local
-                };
-            }
-        }
-
-        elem = pushToContent(elem);
-        current = elem;
-
-        // Save info about <text> tag to prevent trimming of meaningful whitespace
-        if (data.name == 'text' && !data.prefix) {
-            textContext = current;
-        }
-
-        stack.push(elem);
-
-    };
-
-    sax.ontext = function(text) {
-
-        if (/\S/.test(text) || textContext) {
-
-            if (!textContext)
-                text = text.trim();
-
-            pushToContent({
-                text: text
-            });
-
-        }
-
-    };
-
-    sax.onclosetag = function() {
-
-        var last = stack.pop();
-
-        // Trim text inside <text> tag.
-        if (last == textContext) {
-            trim(textContext);
-            textContext = null;
-        }
-        current = stack[stack.length - 1];
-
-    };
-
-    sax.onerror = function(e) {
-
-        e.message = 'Error in parsing SVG: ' + e.message;
-        if (e.message.indexOf('Unexpected end') < 0) {
-            throw e;
-        }
-
-    };
-
-    sax.onend = function() {
-
-        if (!this.error) {
-            callback(root);
-        } else {
-            callback({ error: this.error.message });
-        }
-
-    };
-
-    try {
-        sax.write(data);
-    } catch (e) {
-        callback({ error: e.message });
-        parsingError = true;
-    }
-    if (!parsingError) sax.close();
-
-    function trim(elem) {
-        if (!elem.content) return elem;
-
-        var start = elem.content[0],
-            end = elem.content[elem.content.length - 1];
-
-        while (start && start.content && !start.text) start = start.content[0];
-        if (start && start.text) start.text = start.text.replace(/^\s+/, '');
-
-        while (end && end.content && !end.text) end = end.content[end.content.length - 1];
-        if (end && end.text) end.text = end.text.replace(/\s+$/, '');
-
-        return elem;
-
-    }
-
-};
-
-},{"./jsAPI.js":143,"sax":139}],146:[function(require,module,exports){
-(function (Buffer){
-'use strict';
-
-/**
- * Encode plain SVG data string into Data URI string.
- *
- * @param {String} str input string
- * @param {String} type Data URI type
- * @return {String} output string
- */
-exports.encodeSVGDatauri = function(str, type) {
-
-    var prefix = 'data:image/svg+xml';
-
-    // base64
-    if (!type || type === 'base64') {
-
-        prefix += ';base64,';
-
-        str = prefix + new Buffer(str).toString('base64');
-
-    // URI encoded
-    } else if (type === 'enc') {
-
-        str = prefix + ',' + encodeURIComponent(str);
-
-    // unencoded
-    } else if (type === 'unenc') {
-
-        str = prefix + ',' + str;
-
-    }
-
-    return str;
-
-};
-
-/**
- * Decode SVG Data URI string into plain SVG string.
- *
- * @param {string} str input string
- * @return {String} output string
- */
-exports.decodeSVGDatauri = function(str) {
-    var regexp = /data:image\/svg\+xml(;charset=[^;,]*)?(;base64)?,(.*)/;
-    var match = regexp.exec(str);
-
-    // plain string
-    if (!match) return str;
-
-    var data = match[3];
-
-    // base64
-    if (match[2]) {
-
-        str = new Buffer(data, 'base64').toString('utf8');
-
-    // URI encoded
-    } else if (data.charAt(0) === '%') {
-
-        str = decodeURIComponent(data);
-
-    // unencoded
-    } else if (data.charAt(0) === '<') {
-
-        str = data;
-
-    }
-
-    return str;
-};
-
-exports.intersectArrays = function(a, b) {
-    return a.filter(function(n) {
-        return b.indexOf(n) > -1;
-    });
-};
-
-exports.cleanupOutData = function(data, params) {
-
-    var str = '',
-        delimiter,
-        prev;
-
-    data.forEach(function(item, i) {
-
-        // space delimiter by default
-        delimiter = ' ';
-
-        // no extra space in front of first number
-        if (i === 0) {
-            delimiter = '';
-        }
-
-        // remove floating-point numbers leading zeros
-        // 0.5 → .5
-        // -0.5 → -.5
-        if (params.leadingZero) {
-            item = removeLeadingZero(item);
-        }
-
-        // no extra space in front of negative number or
-        // in front of a floating number if a previous number is floating too
-        if (
-            params.negativeExtraSpace &&
-            (item < 0 ||
-                (String(item).charCodeAt(0) == 46 && prev % 1 !== 0)
-            )
-        ) {
-            delimiter = '';
-        }
-
-        // save prev item value
-        prev = item;
-
-        str += delimiter + item;
-
-    });
-
-    return str;
-
-};
-
-/**
- * Remove floating-point numbers leading zero.
- *
- * @example
- * 0.5 → .5
- *
- * @example
- * -0.5 → -.5
- *
- * @param {Float} num input number
- *
- * @return {String} output number as string
- */
-var removeLeadingZero = exports.removeLeadingZero = function(num) {
-    var strNum = num.toString();
-
-    if (0 < num && num < 1 && strNum.charCodeAt(0) == 48) {
-        strNum = strNum.slice(1);
-    } else if (-1 < num && num < 0 && strNum.charCodeAt(1) == 48) {
-        strNum = strNum.charAt(0) + strNum.slice(2);
-    }
-
-    return strNum;
-
-};
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":34}],147:[function(require,module,exports){
-'use strict';
-
-// http://www.w3.org/TR/SVG/intro.html#Definitions
-exports.elemsGroups = {
-    animation: ['animate', 'animateColor', 'animateMotion', 'animateTransform', 'set'],
-    descriptive: ['desc', 'metadata', 'title'],
-    shape: ['circle', 'ellipse', 'line', 'path', 'polygon', 'polyline', 'rect'],
-    structural: ['defs', 'g', 'svg', 'symbol', 'use'],
-    paintServer: ['solidColor', 'linearGradient', 'radialGradient', 'meshGradient', 'pattern', 'hatch'],
-    nonRendering: ['linearGradient', 'radialGradient', 'pattern', 'clipPath', 'mask', 'marker', 'symbol', 'filter', 'solidColor'],
-    container: ['a', 'defs', 'g', 'marker', 'mask', 'missing-glyph', 'pattern', 'svg', 'switch', 'symbol', 'foreignObject'],
-    textContent: ['altGlyph', 'altGlyphDef', 'altGlyphItem', 'glyph', 'glyphRef', 'textPath', 'text', 'tref', 'tspan'],
-    textContentChild: ['altGlyph', 'textPath', 'tref', 'tspan'],
-    lightSource: ['feDiffuseLighting', 'feSpecularLighting', 'feDistantLight', 'fePointLight', 'feSpotLight'],
-    filterPrimitive: ['feBlend', 'feColorMatrix', 'feComponentTransfer', 'feComposite', 'feConvolveMatrix', 'feDiffuseLighting', 'feDisplacementMap', 'feFlood', 'feGaussianBlur', 'feImage', 'feMerge', 'feMorphology', 'feOffset', 'feSpecularLighting', 'feTile', 'feTurbulence']
-};
-
-exports.pathElems = ['path', 'glyph', 'missing-glyph'];
-
-// http://www.w3.org/TR/SVG/intro.html#Definitions
-exports.attrsGroups = {
-    animationAddition: ['additive', 'accumulate'],
-    animationAttributeTarget: ['attributeType', 'attributeName'],
-    animationEvent: ['onbegin', 'onend', 'onrepeat', 'onload'],
-    animationTiming: ['begin', 'dur', 'end', 'min', 'max', 'restart', 'repeatCount', 'repeatDur', 'fill'],
-    animationValue: ['calcMode', 'values', 'keyTimes', 'keySplines', 'from', 'to', 'by'],
-    conditionalProcessing: ['requiredFeatures', 'requiredExtensions', 'systemLanguage'],
-    core: ['id', 'tabindex', 'xml:base', 'xml:lang', 'xml:space'],
-    graphicalEvent: ['onfocusin', 'onfocusout', 'onactivate', 'onclick', 'onmousedown', 'onmouseup', 'onmouseover', 'onmousemove', 'onmouseout', 'onload'],
-    presentation: [
-        'alignment-baseline',
-        'baseline-shift',
-        'buffered-rendering',
-        'clip',
-        'clip-path',
-        'clip-rule',
-        'color',
-        'color-interpolation',
-        'color-interpolation-filters',
-        'color-profile',
-        'color-rendering',
-        'cursor',
-        'direction',
-        'display',
-        'dominant-baseline',
-        'enable-background',
-        'fill',
-        'fill-opacity',
-        'fill-rule',
-        'filter',
-        'flood-color',
-        'flood-opacity',
-        'font-family',
-        'font-size',
-        'font-size-adjust',
-        'font-stretch',
-        'font-style',
-        'font-variant',
-        'font-weight',
-        'glyph-orientation-horizontal',
-        'glyph-orientation-vertical',
-        'image-rendering',
-        'kerning',
-        'letter-spacing',
-        'lighting-color',
-        'marker-end',
-        'marker-mid',
-        'marker-start',
-        'mask',
-        'opacity',
-        'overflow',
-        'pointer-events',
-        'shape-rendering',
-        'solid-color',
-        'solid-opacity',
-        'stop-color',
-        'stop-opacity',
-        'stroke',
-        'stroke-dasharray',
-        'stroke-dashoffset',
-        'stroke-linecap',
-        'stroke-linejoin',
-        'stroke-miterlimit',
-        'stroke-opacity',
-        'stroke-width',
-        'paint-order',
-        'text-anchor',
-        'text-decoration',
-        'text-overflow',
-        'white-space',
-        'text-rendering',
-        'unicode-bidi',
-        'vector-effect',
-        'viewport-fill',
-        'viewport-fill-opacity',
-        'visibility',
-        'white-space',
-        'word-spacing',
-        'writing-mode'
-    ],
-    xlink: ['xlink:href', 'xlink:show', 'xlink:actuate', 'xlink:type', 'xlink:role', 'xlink:arcrole', 'xlink:title'],
-    documentEvent: ['onunload', 'onabort', 'onerror', 'onresize', 'onscroll', 'onzoom'],
-    filterPrimitive: ['x', 'y', 'width', 'height', 'result'],
-    transferFunction: ['type', 'tableValues', 'slope', 'intercept', 'amplitude', 'exponent', 'offset']
-};
-
-exports.attrsGroupsDefaults = {
-    core: {'xml:space': 'preserve'},
-    filterPrimitive: {x: '0', y: '0', width: '100%', height: '100%'},
-    presentation: {
-        clip: 'auto',
-        'clip-path': 'none',
-        'clip-rule': 'nonzero',
-        mask: 'none',
-        opacity: '1',
-        'solid-color': '#000',
-        'solid-opacity': '1',
-        'stop-color': '#000',
-        'stop-opacity': '1',
-        'fill-opacity': '1',
-        'fill-rule': 'nonzero',
-        fill: '#000',
-        stroke: 'none',
-        'stroke-width': '1',
-        'stroke-linecap': 'butt',
-        'stroke-linejoin': 'miter',
-        'stroke-miterlimit': '4',
-        'stroke-dasharray': 'none',
-        'stroke-dashoffset': '0',
-        'stroke-opacity': '1',
-        'paint-order': 'normal',
-        'vector-effect': 'none',
-        'viewport-fill': 'none',
-        'viewport-fill-opacity': '1',
-        display: 'inline',
-        visibility: 'visible',
-        'marker-start': 'none',
-        'marker-mid': 'none',
-        'marker-end': 'none',
-        'color-interpolation': 'sRGB',
-        'color-interpolation-filters': 'linearRGB',
-        'color-rendering': 'auto',
-        'shape-rendering': 'auto',
-        'text-rendering': 'auto',
-        'image-rendering': 'auto',
-        'buffered-rendering': 'auto',
-        'font-style': 'normal',
-        'font-variant': 'normal',
-        'font-weight': 'normal',
-        'font-stretch': 'normal',
-        'font-size': 'medium',
-        'font-size-adjust': 'none',
-        kerning: 'auto',
-        'letter-spacing': 'normal',
-        'word-spacing': 'normal',
-        'text-decoration': 'none',
-        'text-anchor': 'start',
-        'text-overflow': 'clip',
-        'writing-mode': 'lr-tb',
-        'glyph-orientation-vertical': 'auto',
-        'glyph-orientation-horizontal': '0deg',
-        direction: 'ltr',
-        'unicode-bidi': 'normal',
-        'dominant-baseline': 'auto',
-        'alignment-baseline': 'baseline',
-        'baseline-shift': 'baseline'
-    },
-    transferFunction: {slope: '1', intercept: '0', amplitude: '1', exponent: '1', offset: '0'}
-};
-
-// http://www.w3.org/TR/SVG/eltindex.html
-exports.elems = {
-    a: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'target'
-        ],
-        defaults: {
-            target: '_self'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    altGlyph: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'x',
-            'y',
-            'dx',
-            'dy',
-            'glyphRef',
-            'format',
-            'rotate'
-        ]
-    },
-    altGlyphDef: {
-        attrsGroups: [
-            'core'
-        ],
-        content: [
-            'glyphRef'
-        ]
-    },
-    altGlyphItem: {
-        attrsGroups: [
-            'core'
-        ],
-        content: [
-            'glyphRef',
-            'altGlyphItem'
-        ]
-    },
-    animate: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'animationAddition',
-            'animationAttributeTarget',
-            'animationEvent',
-            'animationTiming',
-            'animationValue',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'externalResourcesRequired'
-        ],
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    animateColor: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'animationEvent',
-            'xlink',
-            'animationAttributeTarget',
-            'animationTiming',
-            'animationValue',
-            'animationAddition',
-            'presentation'
-        ],
-        attrs: [
-            'externalResourcesRequired'
-        ],
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    animateMotion: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'animationEvent',
-            'xlink',
-            'animationTiming',
-            'animationValue',
-            'animationAddition'
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'path',
-            'keyPoints',
-            'rotate',
-            'origin'
-        ],
-        defaults: {
-            'rotate': '0'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'mpath'
-        ]
-    },
-    animateTransform: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'animationEvent',
-            'xlink',
-            'animationAttributeTarget',
-            'animationTiming',
-            'animationValue',
-            'animationAddition'
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'type'
-        ],
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    circle: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'cx',
-            'cy',
-            'r'
-        ],
-        defaults: {
-            cx: '0',
-            cy: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    clipPath: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'clipPathUnits'
-        ],
-        defaults: {
-            clipPathUnits: 'userSpaceOnUse'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape'
-        ],
-        content: [
-            'text',
-            'use'
-        ]
-    },
-    'color-profile': {
-        attrsGroups: [
-            'core',
-            'xlink'
-        ],
-        attrs: [
-            'local',
-            'name',
-            'rendering-intent'
-        ],
-        defaults: {
-            name: 'sRGB',
-            'rendering-intent': 'auto'
-        },
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    cursor: {
-        attrsGroups: [
-            'core',
-            'conditionalProcessing',
-            'xlink'
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'x',
-            'y'
-        ],
-        defaults: {
-            x: '0',
-            y: '0'
-        },
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    defs: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    desc: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ]
-    },
-    ellipse: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'cx',
-            'cy',
-            'rx',
-            'ry'
-        ],
-        defaults: {
-            cx: '0',
-            cy: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    feBlend: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            // TODO: in - 'If no value is provided and this is the first filter primitive,
-            // then this filter primitive will use SourceGraphic as its input'
-            'in',
-            'in2',
-            'mode'
-        ],
-        defaults: {
-            mode: 'normal'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feColorMatrix: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'type',
-            'values'
-        ],
-        defaults: {
-            type: 'matrix'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feComponentTransfer: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in'
-        ],
-        content: [
-            'feFuncA',
-            'feFuncB',
-            'feFuncG',
-            'feFuncR'
-        ]
-    },
-    feComposite: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'in2',
-            'operator',
-            'k1',
-            'k2',
-            'k3',
-            'k4'
-        ],
-        defaults: {
-            operator: 'over',
-            k1: '0',
-            k2: '0',
-            k3: '0',
-            k4: '0'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feConvolveMatrix: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'order',
-            'kernelMatrix',
-            // TODO: divisor - 'The default value is the sum of all values in kernelMatrix,
-            // with the exception that if the sum is zero, then the divisor is set to 1'
-            'divisor',
-            'bias',
-            // TODO: targetX - 'By default, the convolution matrix is centered in X over each
-            // pixel of the input image (i.e., targetX = floor ( orderX / 2 ))'
-            'targetX',
-            'targetY',
-            'edgeMode',
-            // TODO: kernelUnitLength - 'The first number is the <dx> value. The second number
-            // is the <dy> value. If the <dy> value is not specified, it defaults to the same value as <dx>'
-            'kernelUnitLength',
-            'preserveAlpha'
-        ],
-        defaults: {
-            order: '3',
-            bias: '0',
-            edgeMode: 'duplicate',
-            preserveAlpha: 'false'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feDiffuseLighting: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'surfaceScale',
-            'diffuseConstant',
-            'kernelUnitLength'
-        ],
-        defaults: {
-            surfaceScale: '1',
-            diffuseConstant: '1'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            // TODO: 'exactly one light source element, in any order'
-            'feDistantLight',
-            'fePointLight',
-            'feSpotLight'
-        ]
-    },
-    feDisplacementMap: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'in2',
-            'scale',
-            'xChannelSelector',
-            'yChannelSelector'
-        ],
-        defaults: {
-            scale: '0',
-            xChannelSelector: 'A',
-            yChannelSelector: 'A'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feDistantLight: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'azimuth',
-            'elevation'
-        ],
-        defaults: {
-            azimuth: '0',
-            elevation: '0'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feFlood: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ],
-        content: [
-            'animate',
-            'animateColor',
-            'set'
-        ]
-    },
-    feFuncA: {
-        attrsGroups: [
-            'core',
-            'transferFunction'
-        ],
-        content: [
-            'set',
-            'animate'
-        ]
-    },
-    feFuncB: {
-        attrsGroups: [
-            'core',
-            'transferFunction'
-        ],
-        content: [
-            'set',
-            'animate'
-        ]
-    },
-    feFuncG: {
-        attrsGroups: [
-            'core',
-            'transferFunction'
-        ],
-        content: [
-            'set',
-            'animate'
-        ]
-    },
-    feFuncR: {
-        attrsGroups: [
-            'core',
-            'transferFunction'
-        ],
-        content: [
-            'set',
-            'animate'
-        ]
-    },
-    feGaussianBlur: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'stdDeviation'
-        ],
-        defaults: {
-            stdDeviation: '0'
-        },
-        content: [
-            'set',
-            'animate'
-        ]
-    },
-    feImage: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'preserveAspectRatio',
-            'xlink:href'
-        ],
-        defaults: {
-            preserveAspectRatio: 'xMidYMid meet'
-        },
-        content: [
-            'animate',
-            'animateTransform',
-            'set'
-        ]
-    },
-    feMerge: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ],
-        content: [
-            'feMergeNode'
-        ]
-    },
-    feMergeNode: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'in'
-        ],
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feMorphology: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'operator',
-            'radius'
-        ],
-        defaults: {
-            operator: 'erode',
-            radius: '0'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feOffset: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'dx',
-            'dy'
-        ],
-        defaults: {
-            dx: '0',
-            dy: '0'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    fePointLight: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'x',
-            'y',
-            'z'
-        ],
-        defaults: {
-            x: '0',
-            y: '0',
-            z: '0'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feSpecularLighting: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in',
-            'surfaceScale',
-            'specularConstant',
-            'specularExponent',
-            'kernelUnitLength'
-        ],
-        defaults: {
-            surfaceScale: '1',
-            specularConstant: '1',
-            specularExponent: '1'
-        },
-        contentGroups: [
-            'descriptive',
-            // TODO: exactly one 'light source element'
-            'lightSource'
-        ]
-    },
-    feSpotLight: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'x',
-            'y',
-            'z',
-            'pointsAtX',
-            'pointsAtY',
-            'pointsAtZ',
-            'specularExponent',
-            'limitingConeAngle'
-        ],
-        defaults: {
-            x: '0',
-            y: '0',
-            z: '0',
-            pointsAtX: '0',
-            pointsAtY: '0',
-            pointsAtZ: '0',
-            specularExponent: '1'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feTile: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'in'
-        ],
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    feTurbulence: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'filterPrimitive'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'baseFrequency',
-            'numOctaves',
-            'seed',
-            'stitchTiles',
-            'type'
-        ],
-        defaults: {
-            baseFrequency: '0',
-            numOctaves: '1',
-            seed: '0',
-            stitchTiles: 'noStitch',
-            type: 'turbulence'
-        },
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    filter: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'x',
-            'y',
-            'width',
-            'height',
-            'filterRes',
-            'filterUnits',
-            'primitiveUnits',
-            'xlink:href'
-        ],
-        defaults: {
-            primitiveUnits: 'userSpaceOnUse',
-            x: '-10%',
-            y: '-10%',
-            width: '120%',
-            height: '120%'
-        },
-        contentGroups: [
-            'descriptive',
-            'filterPrimitive'
-        ],
-        content: [
-            'animate',
-            'set'
-        ]
-    },
-    font: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'horiz-origin-x',
-            'horiz-origin-y',
-            'horiz-adv-x',
-            'vert-origin-x',
-            'vert-origin-y',
-            'vert-adv-y'
-        ],
-        defaults: {
-            'horiz-origin-x': '0',
-            'horiz-origin-y': '0'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'font-face',
-            'glyph',
-            'hkern',
-            'missing-glyph',
-            'vkern'
-        ]
-    },
-    'font-face': {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'font-family',
-            'font-style',
-            'font-variant',
-            'font-weight',
-            'font-stretch',
-            'font-size',
-            'unicode-range',
-            'units-per-em',
-            'panose-1',
-            'stemv',
-            'stemh',
-            'slope',
-            'cap-height',
-            'x-height',
-            'accent-height',
-            'ascent',
-            'descent',
-            'widths',
-            'bbox',
-            'ideographic',
-            'alphabetic',
-            'mathematical',
-            'hanging',
-            'v-ideographic',
-            'v-alphabetic',
-            'v-mathematical',
-            'v-hanging',
-            'underline-position',
-            'underline-thickness',
-            'strikethrough-position',
-            'strikethrough-thickness',
-            'overline-position',
-            'overline-thickness'
-        ],
-        defaults: {
-            'font-style': 'all',
-            'font-variant': 'normal',
-            'font-weight': 'all',
-            'font-stretch': 'normal',
-            'unicode-range': 'U+0-10FFFF',
-            'units-per-em': '1000',
-            'panose-1': '0 0 0 0 0 0 0 0 0 0',
-            'slope': '0'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            // TODO: "at most one 'font-face-src' element"
-            'font-face-src'
-        ]
-    },
-    // TODO: empty content
-    'font-face-format': {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'string'
-        ]
-    },
-    'font-face-name': {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'name'
-        ]
-    },
-    'font-face-src': {
-        attrsGroups: [
-            'core'
-        ],
-        content: [
-            'font-face-name',
-            'font-face-uri'
-        ]
-    },
-    'font-face-uri': {
-        attrsGroups: [
-            'core',
-            'xlink'
-        ],
-        attrs: [
-            'xlink:href'
-        ],
-        content: [
-            'font-face-format'
-        ]
-    },
-    foreignObject: {
-        attrsGroups: [
-            'core',
-            'conditionalProcessing',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'x',
-            'y',
-            'width',
-            'height'
-        ],
-        defaults: {
-            x: 0,
-            y: 0
-        }
-    },
-    g: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    glyph: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'd',
-            'horiz-adv-x',
-            'vert-origin-x',
-            'vert-origin-y',
-            'vert-adv-y',
-            'unicode',
-            'glyph-name',
-            'orientation',
-            'arabic-form',
-            'lang'
-        ],
-        defaults: {
-            'arabic-form': 'initial'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ],
-    },
-    glyphRef: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'd',
-            'horiz-adv-x',
-            'vert-origin-x',
-            'vert-origin-y',
-            'vert-adv-y'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    hatch: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'x',
-            'y',
-            'pitch',
-            'rotate',
-            'hatchUnits',
-            'hatchContentUnits',
-            'transform'
-        ],
-        defaults: {
-            hatchUnits: 'objectBoundingBox',
-            hatchContentUnits: 'userSpaceOnUse',
-            x: '0',
-            y: '0',
-            pitch: '0',
-            rotate: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ],
-        content: [
-            'hatchPath'
-        ]
-    },
-    hatchPath: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'd',
-            'offset'
-        ],
-        defaults: {
-            offset: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    hkern: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'u1',
-            'g1',
-            'u2',
-            'g2',
-            'k'
-        ]
-    },
-    image: {
-        attrsGroups: [
-            'core',
-            'conditionalProcessing',
-            'graphicalEvent',
-            'xlink',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'preserveAspectRatio',
-            'transform',
-            'x',
-            'y',
-            'width',
-            'height',
-            'xlink:href'
-        ],
-        defaults: {
-            x: '0',
-            y: '0',
-            preserveAspectRatio: 'xMidYMid meet'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    line: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'x1',
-            'y1',
-            'x2',
-            'y2'
-        ],
-        defaults: {
-            x1: '0',
-            y1: '0',
-            x2: '0',
-            y2: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    linearGradient: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'x1',
-            'y1',
-            'x2',
-            'y2',
-            'gradientUnits',
-            'gradientTransform',
-            'spreadMethod',
-            'xlink:href'
-        ],
-        defaults: {
-            x1: '0',
-            y1: '0',
-            x2: '100%',
-            y2: '0',
-            spreadMethod: 'pad'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'animate',
-            'animateTransform',
-            'set',
-            'stop'
-        ]
-    },
-    marker: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'viewBox',
-            'preserveAspectRatio',
-            'refX',
-            'refY',
-            'markerUnits',
-            'markerWidth',
-            'markerHeight',
-            'orient'
-        ],
-        defaults: {
-            markerUnits: 'strokeWidth',
-            refX: '0',
-            refY: '0',
-            markerWidth: '3',
-            markerHeight: '3'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    mask: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'x',
-            'y',
-            'width',
-            'height',
-            'maskUnits',
-            'maskContentUnits'
-        ],
-        defaults: {
-            maskUnits: 'objectBoundingBox',
-            maskContentUnits: 'userSpaceOnUse',
-            x: '-10%',
-            y: '-10%',
-            width: '120%',
-            height: '120%'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    metadata: {
-        attrsGroups: [
-            'core'
-        ]
-    },
-    'missing-glyph': {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'd',
-            'horiz-adv-x',
-            'vert-origin-x',
-            'vert-origin-y',
-            'vert-adv-y'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    mpath: {
-        attrsGroups: [
-            'core',
-            'xlink'
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'xlink:href'
-        ],
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    path: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'd',
-            'pathLength'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    pattern: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'viewBox',
-            'preserveAspectRatio',
-            'x',
-            'y',
-            'width',
-            'height',
-            'patternUnits',
-            'patternContentUnits',
-            'patternTransform',
-            'xlink:href'
-        ],
-        defaults: {
-            patternUnits: 'objectBoundingBox',
-            patternContentUnits: 'userSpaceOnUse',
-            x: '0',
-            y: '0',
-            width: '0',
-            height: '0',
-            preserveAspectRatio: 'xMidYMid meet'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'paintServer',
-            'shape',
-            'structural'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    polygon: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'points'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    polyline: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'points'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    radialGradient: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'cx',
-            'cy',
-            'r',
-            'fx',
-            'fy',
-            'fr',
-            'gradientUnits',
-            'gradientTransform',
-            'spreadMethod',
-            'xlink:href'
-        ],
-        defaults: {
-            gradientUnits: 'objectBoundingBox',
-            cx: '50%',
-            cy: '50%',
-            r: '50%'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'animate',
-            'animateTransform',
-            'set',
-            'stop'
-        ]
-    },
-    meshGradient: {
-        attrsGroups: [
-            'core',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'x',
-            'y',
-            'gradientUnits',
-            'transform'
-        ],
-        contentGroups: [
-            'descriptive',
-            'paintServer',
-            'animation',
-        ],
-        content: [
-            'meshRow'
-        ]
-    },
-    meshRow: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ],
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'meshPatch'
-        ]
-    },
-    meshPatch: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ],
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'stop'
-        ]
-    },
-    rect: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'x',
-            'y',
-            'width',
-            'height',
-            'rx',
-            'ry'
-        ],
-        defaults: {
-            x: '0',
-            y: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    script: {
-        attrsGroups: [
-            'core',
-            'xlink'
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'type',
-            'xlink:href'
-        ]
-    },
-    set: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'animation',
-            'xlink',
-            'animationAttributeTarget',
-            'animationTiming',
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'to'
-        ],
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    solidColor: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ],
-        contentGroups: [
-            'paintServer'
-        ]
-    },
-    stop: {
-        attrsGroups: [
-            'core',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'offset',
-            'path'
-        ],
-        content: [
-            'animate',
-            'animateColor',
-            'set'
-        ]
-    },
-    style: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'type',
-            'media',
-            'title'
-        ],
-        defaults: {
-            type: 'text/css'
-        }
-    },
-    svg: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'documentEvent',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'x',
-            'y',
-            'width',
-            'height',
-            'viewBox',
-            'preserveAspectRatio',
-            'zoomAndPan',
-            'version',
-            'baseProfile',
-            'contentScriptType',
-            'contentStyleType'
-        ],
-        defaults: {
-            x: '0',
-            y: '0',
-            width: '100%',
-            height: '100%',
-            preserveAspectRatio: 'xMidYMid meet',
-            zoomAndPan: 'magnify',
-            version: '1.1',
-            baseProfile: 'none',
-            contentScriptType: 'application/ecmascript',
-            contentStyleType: 'text/css'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    switch: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform'
-        ],
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape'
-        ],
-        content: [
-            'a',
-            'foreignObject',
-            'g',
-            'image',
-            'svg',
-            'switch',
-            'text',
-            'use'
-        ]
-    },
-    symbol: {
-        attrsGroups: [
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'preserveAspectRatio',
-            'viewBox',
-            'refX',
-            'refY'
-        ],
-        defaults: {
-            refX: 0,
-            refY: 0
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'shape',
-            'structural',
-            'paintServer'
-        ],
-        content: [
-            'a',
-            'altGlyphDef',
-            'clipPath',
-            'color-profile',
-            'cursor',
-            'filter',
-            'font',
-            'font-face',
-            'foreignObject',
-            'image',
-            'marker',
-            'mask',
-            'pattern',
-            'script',
-            'style',
-            'switch',
-            'text',
-            'view'
-        ]
-    },
-    text: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'lengthAdjust',
-            'x',
-            'y',
-            'dx',
-            'dy',
-            'rotate',
-            'textLength'
-        ],
-        defaults: {
-            x: '0',
-            y: '0',
-            lengthAdjust: 'spacing'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive',
-            'textContentChild'
-        ],
-        content: [
-            'a'
-        ]
-    },
-    textPath: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'xlink:href',
-            'startOffset',
-            'method',
-            'spacing',
-            'd'
-        ],
-        defaults: {
-            startOffset: '0',
-            method: 'align',
-            spacing: 'exact'
-        },
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'a',
-            'altGlyph',
-            'animate',
-            'animateColor',
-            'set',
-            'tref',
-            'tspan'
-        ]
-    },
-    title: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'class',
-            'style'
-        ]
-    },
-    tref: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'xlink:href'
-        ],
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'animate',
-            'animateColor',
-            'set'
-        ]
-    },
-    tspan: {
-        attrsGroups: [
-            'conditionalProcessing',
-            'core',
-            'graphicalEvent',
-            'presentation'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'x',
-            'y',
-            'dx',
-            'dy',
-            'rotate',
-            'textLength',
-            'lengthAdjust'
-        ],
-        contentGroups: [
-            'descriptive'
-        ],
-        content: [
-            'a',
-            'altGlyph',
-            'animate',
-            'animateColor',
-            'set',
-            'tref',
-            'tspan'
-        ]
-    },
-    use: {
-        attrsGroups: [
-            'core',
-            'conditionalProcessing',
-            'graphicalEvent',
-            'presentation',
-            'xlink'
-        ],
-        attrs: [
-            'class',
-            'style',
-            'externalResourcesRequired',
-            'transform',
-            'x',
-            'y',
-            'width',
-            'height',
-            'xlink:href'
-        ],
-        defaults: {
-            x: '0',
-            y: '0'
-        },
-        contentGroups: [
-            'animation',
-            'descriptive'
-        ]
-    },
-    view: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'externalResourcesRequired',
-            'viewBox',
-            'preserveAspectRatio',
-            'zoomAndPan',
-            'viewTarget'
-        ],
-        contentGroups: [
-            'descriptive'
-        ]
-    },
-    vkern: {
-        attrsGroups: [
-            'core'
-        ],
-        attrs: [
-            'u1',
-            'g1',
-            'u2',
-            'g2',
-            'k'
-        ]
-    }
-};
-
-// http://wiki.inkscape.org/wiki/index.php/Inkscape-specific_XML_attributes
-exports.editorNamespaces = [
-    'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd',
-    'http://inkscape.sourceforge.net/DTD/sodipodi-0.dtd',
-    'http://www.inkscape.org/namespaces/inkscape',
-    'http://www.bohemiancoding.com/sketch/ns',
-    'http://ns.adobe.com/AdobeIllustrator/10.0/',
-    'http://ns.adobe.com/Graphs/1.0/',
-    'http://ns.adobe.com/AdobeSVGViewerExtensions/3.0/',
-    'http://ns.adobe.com/Variables/1.0/',
-    'http://ns.adobe.com/SaveForWeb/1.0/',
-    'http://ns.adobe.com/Extensibility/1.0/',
-    'http://ns.adobe.com/Flows/1.0/',
-    'http://ns.adobe.com/ImageReplacement/1.0/',
-    'http://ns.adobe.com/GenericCustomNamespace/1.0/',
-    'http://ns.adobe.com/XPath/1.0/'
-];
-
-// http://www.w3.org/TR/SVG/linking.html#processingIRI
-exports.referencesProps = [
-    'clip-path',
-    'color-profile',
-    'fill',
-    'filter',
-    'marker-start',
-    'marker-mid',
-    'marker-end',
-    'mask',
-    'stroke',
-    'style'
-];
-
-// http://www.w3.org/TR/SVG/propidx.html
-exports.inheritableAttrs = [
-    'clip-rule',
-    'color',
-    'color-interpolation',
-    'color-interpolation-filters',
-    'color-profile',
-    'color-rendering',
-    'cursor',
-    'direction',
-    'fill',
-    'fill-opacity',
-    'fill-rule',
-    'font',
-    'font-family',
-    'font-size',
-    'font-size-adjust',
-    'font-stretch',
-    'font-style',
-    'font-variant',
-    'font-weight',
-    'glyph-orientation-horizontal',
-    'glyph-orientation-vertical',
-    'image-rendering',
-    'kerning',
-    'letter-spacing',
-    'marker',
-    'marker-end',
-    'marker-mid',
-    'marker-start',
-    'pointer-events',
-    'shape-rendering',
-    'stroke',
-    'stroke-dasharray',
-    'stroke-dashoffset',
-    'stroke-linecap',
-    'stroke-linejoin',
-    'stroke-miterlimit',
-    'stroke-opacity',
-    'stroke-width',
-    'text-anchor',
-    'text-rendering',
-    'transform',
-    'visibility',
-    'white-space',
-    'word-spacing',
-    'writing-mode'
-];
-
-// http://www.w3.org/TR/SVG/single-page.html#types-ColorKeywords
-exports.colorsNames = {
-    'aliceblue': '#f0f8ff',
-    'antiquewhite': '#faebd7',
-    'aqua': '#0ff',
-    'aquamarine': '#7fffd4',
-    'azure': '#f0ffff',
-    'beige': '#f5f5dc',
-    'bisque': '#ffe4c4',
-    'black': '#000',
-    'blanchedalmond': '#ffebcd',
-    'blue': '#00f',
-    'blueviolet': '#8a2be2',
-    'brown': '#a52a2a',
-    'burlywood': '#deb887',
-    'cadetblue': '#5f9ea0',
-    'chartreuse': '#7fff00',
-    'chocolate': '#d2691e',
-    'coral': '#ff7f50',
-    'cornflowerblue': '#6495ed',
-    'cornsilk': '#fff8dc',
-    'crimson': '#dc143c',
-    'cyan': '#0ff',
-    'darkblue': '#00008b',
-    'darkcyan': '#008b8b',
-    'darkgoldenrod': '#b8860b',
-    'darkgray': '#a9a9a9',
-    'darkgreen': '#006400',
-    'darkkhaki': '#bdb76b',
-    'darkmagenta': '#8b008b',
-    'darkolivegreen': '#556b2f',
-    'darkorange': '#ff8c00',
-    'darkorchid': '#9932cc',
-    'darkred': '#8b0000',
-    'darksalmon': '#e9967a',
-    'darkseagreen': '#8fbc8f',
-    'darkslateblue': '#483d8b',
-    'darkslategray': '#2f4f4f',
-    'darkturquoise': '#00ced1',
-    'darkviolet': '#9400d3',
-    'deeppink': '#ff1493',
-    'deepskyblue': '#00bfff',
-    'dimgray': '#696969',
-    'dodgerblue': '#1e90ff',
-    'firebrick': '#b22222',
-    'floralwhite': '#fffaf0',
-    'forestgreen': '#228b22',
-    'fuchsia': '#f0f',
-    'gainsboro': '#dcdcdc',
-    'ghostwhite': '#f8f8ff',
-    'gold': '#ffd700',
-    'goldenrod': '#daa520',
-    'gray': '#808080',
-    'green': '#008000',
-    'greenyellow': '#adff2f',
-    'honeydew': '#f0fff0',
-    'hotpink': '#ff69b4',
-    'indianred': '#cd5c5c',
-    'indigo': '#4b0082',
-    'ivory': '#fffff0',
-    'khaki': '#f0e68c',
-    'lavender': '#e6e6fa',
-    'lavenderblush': '#fff0f5',
-    'lawngreen': '#7cfc00',
-    'lemonchiffon': '#fffacd',
-    'lightblue': '#add8e6',
-    'lightcoral': '#f08080',
-    'lightcyan': '#e0ffff',
-    'lightgoldenrodyellow': '#fafad2',
-    'lightgreen': '#90ee90',
-    'lightgrey': '#d3d3d3',
-    'lightpink': '#ffb6c1',
-    'lightsalmon': '#ffa07a',
-    'lightseagreen': '#20b2aa',
-    'lightskyblue': '#87cefa',
-    'lightslategray': '#789',
-    'lightsteelblue': '#b0c4de',
-    'lightyellow': '#ffffe0',
-    'lime': '#0f0',
-    'limegreen': '#32cd32',
-    'linen': '#faf0e6',
-    'magenta': '#f0f',
-    'maroon': '#800000',
-    'mediumaquamarine': '#66cdaa',
-    'mediumblue': '#0000cd',
-    'mediumorchid': '#ba55d3',
-    'mediumpurple': '#9370db',
-    'mediumseagreen': '#3cb371',
-    'mediumslateblue': '#7b68ee',
-    'mediumspringgreen': '#00fa9a',
-    'mediumturquoise': '#48d1cc',
-    'mediumvioletred': '#c71585',
-    'midnightblue': '#191970',
-    'mintcream': '#f5fffa',
-    'mistyrose': '#ffe4e1',
-    'moccasin': '#ffe4b5',
-    'navajowhite': '#ffdead',
-    'navy': '#000080',
-    'oldlace': '#fdf5e6',
-    'olive': '#808000',
-    'olivedrab': '#6b8e23',
-    'orange': '#ffa500',
-    'orangered': '#ff4500',
-    'orchid': '#da70d6',
-    'palegoldenrod': '#eee8aa',
-    'palegreen': '#98fb98',
-    'paleturquoise': '#afeeee',
-    'palevioletred': '#db7093',
-    'papayawhip': '#ffefd5',
-    'peachpuff': '#ffdab9',
-    'peru': '#cd853f',
-    'pink': '#ffc0cb',
-    'plum': '#dda0dd',
-    'powderblue': '#b0e0e6',
-    'purple': '#800080',
-    'red': '#f00',
-    'rosybrown': '#bc8f8f',
-    'royalblue': '#4169e1',
-    'saddlebrown': '#8b4513',
-    'salmon': '#fa8072',
-    'sandybrown': '#f4a460',
-    'seagreen': '#2e8b57',
-    'seashell': '#fff5ee',
-    'sienna': '#a0522d',
-    'silver': '#c0c0c0',
-    'skyblue': '#87ceeb',
-    'slateblue': '#6a5acd',
-    'slategray': '#708090',
-    'snow': '#fffafa',
-    'springgreen': '#00ff7f',
-    'steelblue': '#4682b4',
-    'tan': '#d2b48c',
-    'teal': '#008080',
-    'thistle': '#d8bfd8',
-    'tomato': '#ff6347',
-    'turquoise': '#40e0d0',
-    'violet': '#ee82ee',
-    'wheat': '#f5deb3',
-    'white': '#fff',
-    'whitesmoke': '#f5f5f5',
-    'yellow': '#ff0',
-    'yellowgreen': '#9acd32'
-};
-
-exports.colorsShortNames = {
-  '#f0ffff': 'azure',
-  '#f5f5dc': 'beige',
-  '#ffe4c4': 'bisque',
-  '#a52a2a': 'brown',
-  '#ff7f50': 'coral',
-  '#ffd700': 'gold',
-  '#808080': 'gray',
-  '#008000': 'green',
-  '#4b0082': 'indigo',
-  '#fffff0': 'ivory',
-  '#f0e68c': 'khaki',
-  '#faf0e6': 'linen',
-  '#800000': 'maroon',
-  '#000080': 'navy',
-  '#808000': 'olive',
-  '#ffa500': 'orange',
-  '#da70d6': 'orchid',
-  '#cd853f': 'peru',
-  '#ffc0cb': 'pink',
-  '#dda0dd': 'plum',
-  '#800080': 'purple',
-  '#f00': 'red',
-  '#fa8072': 'salmon',
-  '#a0522d': 'sienna',
-  '#c0c0c0': 'silver',
-  '#fffafa': 'snow',
-  '#d2b48c': 'tan',
-  '#008080': 'teal',
-  '#ff6347': 'tomato',
-  '#ee82ee': 'violet',
-  '#f5deb3': 'wheat'
-};
-
-// http://www.w3.org/TR/SVG/single-page.html#types-DataTypeColor
-exports.colorsProps = [
-    'color', 'fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color'
-];
-
-},{}],148:[function(require,module,exports){
-/* global a2c */
-'use strict';
-
-var regPathInstructions = /([MmLlHhVvCcSsQqTtAaZz])\s*/,
-    regPathData = /[-+]?(?:\d*\.\d+|\d+\.?)([eE][-+]?\d+)?/g,
-    regNumericValues = /[-+]?(\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/,
-    transform2js = require('./_transforms').transform2js,
-    transformsMultiply = require('./_transforms').transformsMultiply,
-    transformArc = require('./_transforms').transformArc,
-    collections = require('./_collections.js'),
-    referencesProps = collections.referencesProps,
-    defaultStrokeWidth = collections.attrsGroupsDefaults.presentation['stroke-width'],
-    cleanupOutData = require('../lib/svgo/tools').cleanupOutData,
-    removeLeadingZero = require('../lib/svgo/tools').removeLeadingZero,
-    prevCtrlPoint;
-
-/**
- * Convert path string to JS representation.
- *
- * @param {String} pathString input string
- * @param {Object} params plugin params
- * @return {Array} output array
- */
-exports.path2js = function(path) {
-    if (path.pathJS) return path.pathJS;
-
-    var paramsLength = { // Number of parameters of every path command
-            H: 1, V: 1, M: 2, L: 2, T: 2, Q: 4, S: 4, C: 6, A: 7,
-            h: 1, v: 1, m: 2, l: 2, t: 2, q: 4, s: 4, c: 6, a: 7
-        },
-        pathData = [],   // JS representation of the path data
-        instruction, // current instruction context
-        startMoveto = false;
-
-    // splitting path string into array like ['M', '10 50', 'L', '20 30']
-    path.attr('d').value.split(regPathInstructions).forEach(function(data) {
-        if (!data) return;
-        if (!startMoveto) {
-            if (data == 'M' || data == 'm') {
-                startMoveto = true;
-            } else return;
-        }
-
-        // instruction item
-        if (regPathInstructions.test(data)) {
-            instruction = data;
-
-            // z - instruction w/o data
-            if (instruction == 'Z' || instruction == 'z') {
-                pathData.push({
-                    instruction: 'z'
-                });
-            }
-        // data item
-        } else {
-            data = data.match(regPathData);
-            if (!data) return;
-
-            data = data.map(Number);
-
-            // Subsequent moveto pairs of coordinates are threated as implicit lineto commands
-            // http://www.w3.org/TR/SVG/paths.html#PathDataMovetoCommands
-            if (instruction == 'M' || instruction == 'm') {
-                pathData.push({
-                    instruction: pathData.length == 0 ? 'M' : instruction,
-                    data: data.splice(0, 2)
-                });
-                instruction = instruction == 'M' ? 'L' : 'l';
-            }
-
-            for (var pair = paramsLength[instruction]; data.length;) {
-                pathData.push({
-                    instruction: instruction,
-                    data: data.splice(0, pair)
-                });
-            }
-        }
-    });
-
-    // First moveto is actually absolute. Subsequent coordinates were separated above.
-    if (pathData.length && pathData[0].instruction == 'm') {
-        pathData[0].instruction = 'M';
-    }
-    path.pathJS = pathData;
-
-    return pathData;
-};
-
-/**
- * Convert relative Path data to absolute.
- *
- * @param {Array} data input data
- * @return {Array} output data
- */
-var relative2absolute = exports.relative2absolute = function(data) {
-    var currentPoint = [0, 0],
-        subpathPoint = [0, 0],
-        i;
-
-    data = data.map(function(item) {
-
-        var instruction = item.instruction,
-            itemData = item.data && item.data.slice();
-
-        if (instruction == 'M') {
-
-            set(currentPoint, itemData);
-            set(subpathPoint, itemData);
-
-        } else if ('mlcsqt'.indexOf(instruction) > -1) {
-
-            for (i = 0; i < itemData.length; i++) {
-                itemData[i] += currentPoint[i % 2];
-            }
-            set(currentPoint, itemData);
-
-            if (instruction == 'm') {
-                set(subpathPoint, itemData);
-            }
-
-        } else if (instruction == 'a') {
-
-            itemData[5] += currentPoint[0];
-            itemData[6] += currentPoint[1];
-            set(currentPoint, itemData);
-
-        } else if (instruction == 'h') {
-
-            itemData[0] += currentPoint[0];
-            currentPoint[0] = itemData[0];
-
-        } else if (instruction == 'v') {
-
-            itemData[0] += currentPoint[1];
-            currentPoint[1] = itemData[0];
-
-        } else if ('MZLCSQTA'.indexOf(instruction) > -1) {
-
-            set(currentPoint, itemData);
-
-        } else if (instruction == 'H') {
-
-            currentPoint[0] = itemData[0];
-
-        } else if (instruction == 'V') {
-
-            currentPoint[1] = itemData[0];
-
-        } else if (instruction == 'z') {
-
-            set(currentPoint, subpathPoint);
-
-        }
-
-        return instruction == 'z' ?
-            { instruction: 'z' } :
-            {
-                instruction: instruction.toUpperCase(),
-                data: itemData
-            };
-
-    });
-
-    return data;
-};
-
-/**
- * Apply transformation(s) to the Path data.
- *
- * @param {Object} elem current element
- * @param {Array} path input path data
- * @param {Object} params whether to apply transforms to stroked lines and transform precision (used for stroke width)
- * @return {Array} output path data
- */
-exports.applyTransforms = function(elem, path, params) {
-    // if there are no 'stroke' attr and references to other objects such as
-    // gradiends or clip-path which are also subjects to transform.
-    if (!elem.hasAttr('transform') || !elem.attr('transform').value ||
-        elem.someAttr(function(attr) {
-            return ~referencesProps.indexOf(attr.name) && ~attr.value.indexOf('url(');
-        }))
-        return path;
-
-    var matrix = transformsMultiply(transform2js(elem.attr('transform').value)),
-        stroke = elem.computedAttr('stroke'),
-        id = elem.computedAttr('id'),
-        transformPrecision = params.transformPrecision,
-        newPoint, scale;
-
-    if (stroke && stroke != 'none') {
-        if (!params.applyTransformsStroked ||
-            (matrix.data[0] != matrix.data[3] || matrix.data[1] != -matrix.data[2]) &&
-            (matrix.data[0] != -matrix.data[3] || matrix.data[1] != matrix.data[2]))
-            return path;
-
-        // "stroke-width" should be inside the part with ID, otherwise it can be overrided in <use>
-        if (id) {
-            var idElem = elem,
-                hasStrokeWidth = false;
-
-            do {
-                if (idElem.hasAttr('stroke-width')) hasStrokeWidth = true;
-            } while (!idElem.hasAttr('id', id) && !hasStrokeWidth && (idElem = idElem.parentNode));
-
-            if (!hasStrokeWidth) return path;
-        }
-
-        scale = +Math.sqrt(matrix.data[0] * matrix.data[0] + matrix.data[1] * matrix.data[1]).toFixed(transformPrecision);
-
-        if (scale !== 1) {
-            var strokeWidth = elem.computedAttr('stroke-width') || defaultStrokeWidth;
-
-            if (elem.hasAttr('stroke-width')) {
-                elem.attrs['stroke-width'].value = elem.attrs['stroke-width'].value.trim()
-                    .replace(regNumericValues, function(num) { return removeLeadingZero(num * scale) });
-            } else {
-                elem.addAttr({
-                    name: 'stroke-width',
-                    prefix: '',
-                    local: 'stroke-width',
-                    value: strokeWidth.replace(regNumericValues, function(num) { return removeLeadingZero(num * scale) })
-                });
-            }
-        }
-    } else if (id) { // Stroke and stroke-width can be redefined with <use>
-        return path;
-    }
-
-    path.forEach(function(pathItem) {
-
-        if (pathItem.data) {
-
-            // h -> l
-            if (pathItem.instruction === 'h') {
-
-                pathItem.instruction = 'l';
-                pathItem.data[1] = 0;
-
-            // v -> l
-            } else if (pathItem.instruction === 'v') {
-
-                pathItem.instruction = 'l';
-                pathItem.data[1] = pathItem.data[0];
-                pathItem.data[0] = 0;
-
-            }
-
-            // if there is a translate() transform
-            if (pathItem.instruction === 'M' &&
-                (matrix.data[4] !== 0 ||
-                matrix.data[5] !== 0)
-            ) {
-
-                // then apply it only to the first absoluted M
-                newPoint = transformPoint(matrix.data, pathItem.data[0], pathItem.data[1]);
-                set(pathItem.data, newPoint);
-                set(pathItem.coords, newPoint);
-
-                // clear translate() data from transform matrix
-                matrix.data[4] = 0;
-                matrix.data[5] = 0;
-
-            } else {
-
-                if (pathItem.instruction == 'a') {
-
-                    transformArc(pathItem.data, matrix.data);
-
-                    // reduce number of digits in rotation angle
-                    if (Math.abs(pathItem.data[2]) > 80) {
-                        var a = pathItem.data[0],
-                            rotation = pathItem.data[2];
-                        pathItem.data[0] = pathItem.data[1];
-                        pathItem.data[1] = a;
-                        pathItem.data[2] = rotation + (rotation > 0 ? -90 : 90);
-                    }
-
-                    newPoint = transformPoint(matrix.data, pathItem.data[5], pathItem.data[6]);
-                    pathItem.data[5] = newPoint[0];
-                    pathItem.data[6] = newPoint[1];
-
-                } else {
-
-                    for (var i = 0; i < pathItem.data.length; i += 2) {
-                        newPoint = transformPoint(matrix.data, pathItem.data[i], pathItem.data[i + 1]);
-                        pathItem.data[i] = newPoint[0];
-                        pathItem.data[i + 1] = newPoint[1];
-                    }
-                }
-
-                pathItem.coords[0] = pathItem.base[0] + pathItem.data[pathItem.data.length - 2];
-                pathItem.coords[1] = pathItem.base[1] + pathItem.data[pathItem.data.length - 1];
-
-            }
-
-        }
-
-    });
-
-    // remove transform attr
-    elem.removeAttr('transform');
-
-    return path;
-};
-
-/**
- * Apply transform 3x3 matrix to x-y point.
- *
- * @param {Array} matrix transform 3x3 matrix
- * @param {Array} point x-y point
- * @return {Array} point with new coordinates
- */
-function transformPoint(matrix, x, y) {
-
-    return [
-        matrix[0] * x + matrix[2] * y + matrix[4],
-        matrix[1] * x + matrix[3] * y + matrix[5]
-    ];
-
-}
-
-/**
- * Compute Cubic Bézie bounding box.
- *
- * @see http://processingjs.nihongoresources.com/bezierinfo/
- *
- * @param {Float} xa
- * @param {Float} ya
- * @param {Float} xb
- * @param {Float} yb
- * @param {Float} xc
- * @param {Float} yc
- * @param {Float} xd
- * @param {Float} yd
- *
- * @return {Object}
- */
-exports.computeCubicBoundingBox = function(xa, ya, xb, yb, xc, yc, xd, yd) {
-
-    var minx = Number.POSITIVE_INFINITY,
-        miny = Number.POSITIVE_INFINITY,
-        maxx = Number.NEGATIVE_INFINITY,
-        maxy = Number.NEGATIVE_INFINITY,
-        ts,
-        t,
-        x,
-        y,
-        i;
-
-    // X
-    if (xa < minx) { minx = xa; }
-    if (xa > maxx) { maxx = xa; }
-    if (xd < minx) { minx= xd; }
-    if (xd > maxx) { maxx = xd; }
-
-    ts = computeCubicFirstDerivativeRoots(xa, xb, xc, xd);
-
-    for (i = 0; i < ts.length; i++) {
-
-        t = ts[i];
-
-        if (t >= 0 && t <= 1) {
-            x = computeCubicBaseValue(t, xa, xb, xc, xd);
-            // y = computeCubicBaseValue(t, ya, yb, yc, yd);
-
-            if (x < minx) { minx = x; }
-            if (x > maxx) { maxx = x; }
-        }
-
-    }
-
-    // Y
-    if (ya < miny) { miny = ya; }
-    if (ya > maxy) { maxy = ya; }
-    if (yd < miny) { miny = yd; }
-    if (yd > maxy) { maxy = yd; }
-
-    ts = computeCubicFirstDerivativeRoots(ya, yb, yc, yd);
-
-    for (i = 0; i < ts.length; i++) {
-
-        t = ts[i];
-
-        if (t >= 0 && t <= 1) {
-            // x = computeCubicBaseValue(t, xa, xb, xc, xd);
-            y = computeCubicBaseValue(t, ya, yb, yc, yd);
-
-            if (y < miny) { miny = y; }
-            if (y > maxy) { maxy = y; }
-        }
-
-    }
-
-    return {
-        minx: minx,
-        miny: miny,
-        maxx: maxx,
-        maxy: maxy
-    };
-
-};
-
-// compute the value for the cubic bezier function at time=t
-function computeCubicBaseValue(t, a, b, c, d) {
-
-    var mt = 1 - t;
-
-    return mt * mt * mt * a + 3 * mt * mt * t * b + 3 * mt * t * t * c + t * t * t * d;
-
-}
-
-// compute the value for the first derivative of the cubic bezier function at time=t
-function computeCubicFirstDerivativeRoots(a, b, c, d) {
-
-    var result = [-1, -1],
-        tl = -a + 2 * b - c,
-        tr = -Math.sqrt(-a * (c - d) + b * b - b * (c + d) + c * c),
-        dn = -a + 3 * b - 3 * c + d;
-
-    if (dn !== 0) {
-        result[0] = (tl + tr) / dn;
-        result[1] = (tl - tr) / dn;
-    }
-
-    return result;
-
-}
-
-/**
- * Compute Quadratic Bézier bounding box.
- *
- * @see http://processingjs.nihongoresources.com/bezierinfo/
- *
- * @param {Float} xa
- * @param {Float} ya
- * @param {Float} xb
- * @param {Float} yb
- * @param {Float} xc
- * @param {Float} yc
- *
- * @return {Object}
- */
-exports.computeQuadraticBoundingBox = function(xa, ya, xb, yb, xc, yc) {
-
-    var minx = Number.POSITIVE_INFINITY,
-        miny = Number.POSITIVE_INFINITY,
-        maxx = Number.NEGATIVE_INFINITY,
-        maxy = Number.NEGATIVE_INFINITY,
-        t,
-        x,
-        y;
-
-    // X
-    if (xa < minx) { minx = xa; }
-    if (xa > maxx) { maxx = xa; }
-    if (xc < minx) { minx = xc; }
-    if (xc > maxx) { maxx = xc; }
-
-    t = computeQuadraticFirstDerivativeRoot(xa, xb, xc);
-
-    if (t >= 0 && t <= 1) {
-        x = computeQuadraticBaseValue(t, xa, xb, xc);
-        // y = computeQuadraticBaseValue(t, ya, yb, yc);
-
-        if (x < minx) { minx = x; }
-        if (x > maxx) { maxx = x; }
-    }
-
-    // Y
-    if (ya < miny) { miny = ya; }
-    if (ya > maxy) { maxy = ya; }
-    if (yc < miny) { miny = yc; }
-    if (yc > maxy) { maxy = yc; }
-
-    t = computeQuadraticFirstDerivativeRoot(ya, yb, yc);
-
-    if (t >= 0 && t <=1 ) {
-        // x = computeQuadraticBaseValue(t, xa, xb, xc);
-        y = computeQuadraticBaseValue(t, ya, yb, yc);
-
-        if (y < miny) { miny = y; }
-        if (y > maxy) { maxy = y ; }
-
-    }
-
-    return {
-        minx: minx,
-        miny: miny,
-        maxx: maxx,
-        maxy: maxy
-    };
-
-};
-
-// compute the value for the quadratic bezier function at time=t
-function computeQuadraticBaseValue(t, a, b, c) {
-
-    var mt = 1 - t;
-
-    return mt * mt * a + 2 * mt * t * b + t * t * c;
-
-}
-
-// compute the value for the first derivative of the quadratic bezier function at time=t
-function computeQuadraticFirstDerivativeRoot(a, b, c) {
-
-    var t = -1,
-        denominator = a - 2 * b + c;
-
-    if (denominator !== 0) {
-        t = (a - b) / denominator;
-    }
-
-    return t;
-
-}
-
-/**
- * Convert path array to string.
- *
- * @param {Array} path input path data
- * @param {Object} params plugin params
- * @return {String} output path string
- */
-exports.js2path = function(path, data, params) {
-
-    path.pathJS = data;
-
-    if (params.collapseRepeated) {
-        data = collapseRepeated(data);
-    }
-
-    path.attr('d').value = data.reduce(function(pathString, item) {
-        return pathString += item.instruction + (item.data ? cleanupOutData(item.data, params) : '');
-    }, '');
-
-};
-
-/**
- * Collapse repeated instructions data
- *
- * @param {Array} path input path data
- * @return {Array} output path data
- */
-function collapseRepeated(data) {
-
-    var prev,
-        prevIndex;
-
-    // copy an array and modifieds item to keep original data untouched
-    data = data.reduce(function(newPath, item) {
-        if (
-            prev && item.data &&
-            item.instruction == prev.instruction
-        ) {
-            // concat previous data with current
-            if (item.instruction != 'M') {
-                prev = newPath[prevIndex] = {
-                    instruction: prev.instruction,
-                    data: prev.data.concat(item.data),
-                    coords: item.coords,
-                    base: prev.base
-                };
-            } else {
-                prev.data = item.data;
-                prev.coords = item.coords;
-            }
-        } else {
-            newPath.push(item);
-            prev = item;
-            prevIndex = newPath.length - 1;
-        }
-
-        return newPath;
-    }, []);
-
-    return data;
-
-}
-
-function set(dest, source) {
-    dest[0] = source[source.length - 2];
-    dest[1] = source[source.length - 1];
-    return dest;
-}
-
-/**
- * Checks if two paths have an intersection by checking convex hulls
- * collision using Gilbert-Johnson-Keerthi distance algorithm
- * http://entropyinteractive.com/2011/04/gjk-algorithm/
- *
- * @param {Array} path1 JS path representation
- * @param {Array} path2 JS path representation
- * @return {Boolean}
- */
-exports.intersects = function(path1, path2) {
-    if (path1.length < 3 || path2.length < 3) return false; // nothing to fill
-
-    // Collect points of every subpath.
-    var points1 = relative2absolute(path1).reduce(gatherPoints, []),
-        points2 = relative2absolute(path2).reduce(gatherPoints, []);
-
-    // Axis-aligned bounding box check.
-    if (points1.maxX <= points2.minX || points2.maxX <= points1.minX ||
-        points1.maxY <= points2.minY || points2.maxY <= points1.minY ||
-        points1.every(function (set1) {
-            return points2.every(function (set2) {
-                return set1[set1.maxX][0] <= set2[set2.minX][0] ||
-                    set2[set2.maxX][0] <= set1[set1.minX][0] ||
-                    set1[set1.maxY][1] <= set2[set2.minY][1] ||
-                    set2[set2.maxY][1] <= set1[set1.minY][1];
-            });
-        })
-    ) return false;
-
-    // Get a convex hull from points of each subpath. Has the most complexity O(n·log n).
-    var hullNest1 = points1.map(convexHull),
-        hullNest2 = points2.map(convexHull);
-
-    // Check intersection of every subpath of the first path with every subpath of the second.
-    return hullNest1.some(function(hull1) {
-        if (hull1.length < 3) return false;
-
-        return hullNest2.some(function(hull2) {
-            if (hull2.length < 3) return false;
-
-            var simplex = [getSupport(hull1, hull2, [1, 0])], // create the initial simplex
-                direction = minus(simplex[0]); // set the direction to point towards the origin
-
-            var iterations = 1e4; // infinite loop protection, 10 000 iterations is more than enough
-            while (true) {
-                if (iterations-- == 0) {
-                    console.error('Error: infinite loop while processing mergePaths plugin.');
-                    return true; // true is the safe value that means “do nothing with paths”
-                }
-                // add a new point
-                simplex.push(getSupport(hull1, hull2, direction));
-                // see if the new point was on the correct side of the origin
-                if (dot(direction, simplex[simplex.length - 1]) <= 0) return false;
-                // process the simplex
-                if (processSimplex(simplex, direction)) return true;
-            }
-        });
-    });
-
-    function getSupport(a, b, direction) {
-        return sub(supportPoint(a, direction), supportPoint(b, minus(direction)));
-    }
-
-    // Computes farthest polygon point in particular direction.
-    // Thanks to knowledge of min/max x and y coordinates we can choose a quadrant to search in.
-    // Since we're working on convex hull, the dot product is increasing until we find the farthest point.
-    function supportPoint(polygon, direction) {
-        var index = direction[1] >= 0 ?
-                direction[0] < 0 ? polygon.maxY : polygon.maxX :
-                direction[0] < 0 ? polygon.minX : polygon.minY,
-            max = -Infinity,
-            value;
-        while ((value = dot(polygon[index], direction)) > max) {
-            max = value;
-            index = ++index % polygon.length;
-        }
-        return polygon[(index || polygon.length) - 1];
-    }
-};
-
-function processSimplex(simplex, direction) {
-    /* jshint -W004 */
-
-    // we only need to handle to 1-simplex and 2-simplex
-    if (simplex.length == 2) { // 1-simplex
-        var a = simplex[1],
-            b = simplex[0],
-            AO = minus(simplex[1]),
-            AB = sub(b, a);
-        // AO is in the same direction as AB
-        if (dot(AO, AB) > 0) {
-            // get the vector perpendicular to AB facing O
-            set(direction, orth(AB, a));
-        } else {
-            set(direction, AO);
-            // only A remains in the simplex
-            simplex.shift();
-        }
-    } else { // 2-simplex
-        var a = simplex[2], // [a, b, c] = simplex
-            b = simplex[1],
-            c = simplex[0],
-            AB = sub(b, a),
-            AC = sub(c, a),
-            AO = minus(a),
-            ACB = orth(AB, AC), // the vector perpendicular to AB facing away from C
-            ABC = orth(AC, AB); // the vector perpendicular to AC facing away from B
-
-        if (dot(ACB, AO) > 0) {
-            if (dot(AB, AO) > 0) { // region 4
-                set(direction, ACB);
-                simplex.shift(); // simplex = [b, a]
-            } else { // region 5
-                set(direction, AO);
-                simplex.splice(0, 2); // simplex = [a]
-            }
-        } else if (dot(ABC, AO) > 0) {
-            if (dot(AC, AO) > 0) { // region 6
-                set(direction, ABC);
-                simplex.splice(1, 1); // simplex = [c, a]
-            } else { // region 5 (again)
-                set(direction, AO);
-                simplex.splice(0, 2); // simplex = [a]
-            }
-        } else // region 7
-            return true;
-    }
-    return false;
-}
-
-function minus(v) {
-    return [-v[0], -v[1]];
-}
-
-function sub(v1, v2) {
-    return [v1[0] - v2[0], v1[1] - v2[1]];
-}
-
-function dot(v1, v2) {
-    return v1[0] * v2[0] + v1[1] * v2[1];
-}
-
-function orth(v, from) {
-    var o = [-v[1], v[0]];
-    return dot(o, minus(from)) < 0 ? minus(o) : o;
-}
-
-function gatherPoints(points, item, index, path) {
-
-    var subPath = points.length && points[points.length - 1],
-        prev = index && path[index - 1],
-        basePoint = subPath.length && subPath[subPath.length - 1],
-        data = item.data,
-        ctrlPoint = basePoint;
-
-    switch (item.instruction) {
-        case 'M':
-            points.push(subPath = []);
-            break;
-        case 'H':
-            addPoint(subPath, [data[0], basePoint[1]]);
-            break;
-        case 'V':
-            addPoint(subPath, [basePoint[0], data[0]]);
-            break;
-        case 'Q':
-            addPoint(subPath, data.slice(0, 2));
-            prevCtrlPoint = [data[2] - data[0], data[3] - data[1]]; // Save control point for shorthand
-            break;
-        case 'T':
-            if (prev.instruction == 'Q' && prev.instruction == 'T') {
-                ctrlPoint = [basePoint[0] + prevCtrlPoint[0], basePoint[1] + prevCtrlPoint[1]];
-                addPoint(subPath, ctrlPoint);
-                prevCtrlPoint = [data[0] - ctrlPoint[0], data[1] - ctrlPoint[1]];
-            }
-            break;
-        case 'C':
-            // Approximate quibic Bezier curve with middle points between control points
-            addPoint(subPath, [.5 * (basePoint[0] + data[0]), .5 * (basePoint[1] + data[1])]);
-            addPoint(subPath, [.5 * (data[0] + data[2]), .5 * (data[1] + data[3])]);
-            addPoint(subPath, [.5 * (data[2] + data[4]), .5 * (data[3] + data[5])]);
-            prevCtrlPoint = [data[4] - data[2], data[5] - data[3]]; // Save control point for shorthand
-            break;
-        case 'S':
-            if (prev.instruction == 'C' && prev.instruction == 'S') {
-                addPoint(subPath, [basePoint[0] + .5 * prevCtrlPoint[0], basePoint[1] + .5 * prevCtrlPoint[1]]);
-                ctrlPoint = [basePoint[0] + prevCtrlPoint[0], basePoint[1] + prevCtrlPoint[1]];
-            }
-            addPoint(subPath, [.5 * (ctrlPoint[0] + data[0]), .5 * (ctrlPoint[1]+ data[1])]);
-            addPoint(subPath, [.5 * (data[0] + data[2]), .5 * (data[1] + data[3])]);
-            prevCtrlPoint = [data[2] - data[0], data[3] - data[1]];
-            break;
-        case 'A':
-            // Convert the arc to bezier curves and use the same approximation
-            var curves = a2c.apply(0, basePoint.concat(data));
-            for (var cData; (cData = curves.splice(0,6).map(toAbsolute)).length;) {
-                addPoint(subPath, [.5 * (basePoint[0] + cData[0]), .5 * (basePoint[1] + cData[1])]);
-                addPoint(subPath, [.5 * (cData[0] + cData[2]), .5 * (cData[1] + cData[3])]);
-                addPoint(subPath, [.5 * (cData[2] + cData[4]), .5 * (cData[3] + cData[5])]);
-                if (curves.length) addPoint(subPath, basePoint = cData.slice(-2));
-            }
-            break;
-    }
-    // Save final command coordinates
-    if (data && data.length >= 2) addPoint(subPath, data.slice(-2));
-    return points;
-
-    function toAbsolute(n, i) { return n + basePoint[i % 2] }
-
-    // Writes data about the extreme points on each axle
-    function addPoint(path, point) {
-        if (!path.length || point[1] > path[path.maxY][1]) {
-            path.maxY = path.length;
-            points.maxY = points.length ? Math.max(point[1], points.maxY) : point[1];
-        }
-        if (!path.length || point[0] > path[path.maxX][0]) {
-            path.maxX = path.length;
-            points.maxX = points.length ? Math.max(point[0], points.maxX) : point[0];
-        }
-        if (!path.length || point[1] < path[path.minY][1]) {
-            path.minY = path.length;
-            points.minY = points.length ? Math.min(point[1], points.minY) : point[1];
-        }
-        if (!path.length || point[0] < path[path.minX][0]) {
-            path.minX = path.length;
-            points.minX = points.length ? Math.min(point[0], points.minX) : point[0];
-        }
-        path.push(point);
-    }
-}
-
-/**
- * Forms a convex hull from set of points of every subpath using monotone chain convex hull algorithm.
- * http://en.wikibooks.org/wiki/Algorithm_Implementation/Geometry/Convex_hull/Monotone_chain
- *
- * @param points An array of [X, Y] coordinates
- */
-function convexHull(points) {
-    /* jshint -W004 */
-
-    points.sort(function(a, b) {
-        return a[0] == b[0] ? a[1] - b[1] : a[0] - b[0];
-    });
-
-    var lower = [],
-        minY = 0,
-        bottom = 0;
-    for (var i = 0; i < points.length; i++) {
-        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], points[i]) <= 0) {
-            lower.pop();
-        }
-        if (points[i][1] < points[minY][1]) {
-            minY = i;
-            bottom = lower.length;
-        }
-        lower.push(points[i]);
-    }
-
-    var upper = [],
-        maxY = points.length - 1,
-        top = 0;
-    for (var i = points.length; i--;) {
-        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], points[i]) <= 0) {
-            upper.pop();
-        }
-        if (points[i][1] > points[maxY][1]) {
-            maxY = i;
-            top = upper.length;
-        }
-        upper.push(points[i]);
-    }
-
-    // last points are equal to starting points of the other part
-    upper.pop();
-    lower.pop();
-
-    var hull = lower.concat(upper);
-
-    hull.minX = 0; // by sorting
-    hull.maxX = lower.length;
-    hull.minY = bottom;
-    hull.maxY = (lower.length + top) % hull.length;
-
-    return hull;
-}
-
-function cross(o, a, b) {
-    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-}
-
-/* Based on code from Snap.svg (Apache 2 license). http://snapsvg.io/
- * Thanks to Dmitry Baranovskiy for his great work!
- */
-
-// jshint ignore: start
-function a2c(x1, y1, rx, ry, angle, large_arc_flag, sweep_flag, x2, y2, recursive) {
-    // for more information of where this Math came from visit:
-    // http://www.w3.org/TR/SVG11/implnote.html#ArcImplementationNotes
-    var _120 = Math.PI * 120 / 180,
-        rad = Math.PI / 180 * (+angle || 0),
-        res = [],
-        rotateX = function(x, y, rad) { return x * Math.cos(rad) - y * Math.sin(rad) },
-        rotateY = function(x, y, rad) { return x * Math.sin(rad) + y * Math.cos(rad) };
-    if (!recursive) {
-        x1 = rotateX(x1, y1, -rad);
-        y1 = rotateY(x1, y1, -rad);
-        x2 = rotateX(x2, y2, -rad);
-        y2 = rotateY(x2, y2, -rad);
-        var x = (x1 - x2) / 2,
-            y = (y1 - y2) / 2;
-        var h = (x * x) / (rx * rx) + (y * y) / (ry * ry);
-        if (h > 1) {
-            h = Math.sqrt(h);
-            rx = h * rx;
-            ry = h * ry;
-        }
-        var rx2 = rx * rx,
-            ry2 = ry * ry,
-            k = (large_arc_flag == sweep_flag ? -1 : 1) *
-                Math.sqrt(Math.abs((rx2 * ry2 - rx2 * y * y - ry2 * x * x) / (rx2 * y * y + ry2 * x * x))),
-            cx = k * rx * y / ry + (x1 + x2) / 2,
-            cy = k * -ry * x / rx + (y1 + y2) / 2,
-            f1 = Math.asin(((y1 - cy) / ry).toFixed(9)),
-            f2 = Math.asin(((y2 - cy) / ry).toFixed(9));
-
-        f1 = x1 < cx ? Math.PI - f1 : f1;
-        f2 = x2 < cx ? Math.PI - f2 : f2;
-        f1 < 0 && (f1 = Math.PI * 2 + f1);
-        f2 < 0 && (f2 = Math.PI * 2 + f2);
-        if (sweep_flag && f1 > f2) {
-            f1 = f1 - Math.PI * 2;
-        }
-        if (!sweep_flag && f2 > f1) {
-            f2 = f2 - Math.PI * 2;
-        }
-    } else {
-        f1 = recursive[0];
-        f2 = recursive[1];
-        cx = recursive[2];
-        cy = recursive[3];
-    }
-    var df = f2 - f1;
-    if (Math.abs(df) > _120) {
-        var f2old = f2,
-            x2old = x2,
-            y2old = y2;
-        f2 = f1 + _120 * (sweep_flag && f2 > f1 ? 1 : -1);
-        x2 = cx + rx * Math.cos(f2);
-        y2 = cy + ry * Math.sin(f2);
-        res = a2c(x2, y2, rx, ry, angle, 0, sweep_flag, x2old, y2old, [f2, f2old, cx, cy]);
-    }
-    df = f2 - f1;
-    var c1 = Math.cos(f1),
-        s1 = Math.sin(f1),
-        c2 = Math.cos(f2),
-        s2 = Math.sin(f2),
-        t = Math.tan(df / 4),
-        hx = 4 / 3 * rx * t,
-        hy = 4 / 3 * ry * t,
-        m = [
-            - hx * s1, hy * c1,
-            x2 + hx * s2 - x1, y2 - hy * c2 - y1,
-            x2 - x1, y2 - y1
-        ];
-    if (recursive) {
-        return m.concat(res);
-    } else {
-        res = m.concat(res);
-        var newres = [];
-        for (var i = 0, n = res.length; i < n; i++) {
-            newres[i] = i % 2 ? rotateY(res[i - 1], res[i], rad) : rotateX(res[i], res[i + 1], rad);
-        }
-        return newres;
-    }
-}
-// jshint ignore: end
-
-},{"../lib/svgo/tools":146,"./_collections.js":147,"./_transforms":149}],149:[function(require,module,exports){
-'use strict';
-
-var regTransformTypes = /matrix|translate|scale|rotate|skewX|skewY/,
-    regTransformSplit = /\s*(matrix|translate|scale|rotate|skewX|skewY)\s*\(\s*(.+?)\s*\)[\s,]*/,
-    regNumericValues = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
-
-/**
- * Convert transform string to JS representation.
- *
- * @param {String} transformString input string
- * @param {Object} params plugin params
- * @return {Array} output array
- */
-exports.transform2js = function(transformString) {
-
-        // JS representation of the transform data
-    var transforms = [],
-        // current transform context
-        current;
-
-    // split value into ['', 'translate', '10 50', '', 'scale', '2', '', 'rotate', '-45', '']
-    transformString.split(regTransformSplit).forEach(function(item) {
-        /*jshint -W084 */
-        var num;
-
-        if (item) {
-            // if item is a translate function
-            if (regTransformTypes.test(item)) {
-                // then collect it and change current context
-                transforms.push(current = { name: item });
-            // else if item is data
-            } else {
-                // then split it into [10, 50] and collect as context.data
-                while (num = regNumericValues.exec(item)) {
-                    num = Number(num);
-                    if (current.data)
-                        current.data.push(num);
-                    else
-                        current.data = [num];
-                }
-            }
-        }
-    });
-
-    return transforms;
-
-};
-
-/**
- * Multiply transforms into one.
- *
- * @param {Array} input transforms array
- * @return {Array} output matrix array
- */
-exports.transformsMultiply = function(transforms) {
-
-    // convert transforms objects to the matrices
-    transforms = transforms.map(function(transform) {
-        if (transform.name === 'matrix') {
-            return transform.data;
-        }
-        return transformToMatrix(transform);
-    });
-
-    // multiply all matrices into one
-    transforms = {
-        name: 'matrix',
-        data: transforms.reduce(function(a, b) {
-            return multiplyTransformMatrices(a, b);
-        })
-    };
-
-    return transforms;
-
-};
-
-/**
- * Do math like a schoolgirl.
- *
- * @type {Object}
- */
-var mth = exports.mth = {
-
-    rad: function(deg) {
-        return deg * Math.PI / 180;
-    },
-
-    deg: function(rad) {
-        return rad * 180 / Math.PI;
-    },
-
-    cos: function(deg) {
-        return Math.cos(this.rad(deg));
-    },
-
-    acos: function(val, floatPrecision) {
-        return +(this.deg(Math.acos(val)).toFixed(floatPrecision));
-    },
-
-    sin: function(deg) {
-        return Math.sin(this.rad(deg));
-    },
-
-    asin: function(val, floatPrecision) {
-        return +(this.deg(Math.asin(val)).toFixed(floatPrecision));
-    },
-
-    tan: function(deg) {
-        return Math.tan(this.rad(deg));
-    },
-
-    atan: function(val, floatPrecision) {
-        return +(this.deg(Math.atan(val)).toFixed(floatPrecision));
-    }
-
-};
-
-/**
- * Decompose matrix into simple transforms. See
- * http://www.maths-informatique-jeux.com/blog/frederic/?post/2013/12/01/Decomposition-of-2D-transform-matrices
- *
- * @param {Object} data matrix transform object
- * @return {Object|Array} transforms array or original transform object
- */
-exports.matrixToTransform = function(transform, params) {
-    var floatPrecision = params.floatPrecision,
-        data = transform.data,
-        transforms = [],
-        sx = +Math.sqrt(data[0] * data[0] + data[1] * data[1]).toFixed(params.transformPrecision),
-        sy = +((data[0] * data[3] - data[1] * data[2]) / sx).toFixed(params.transformPrecision),
-        colsSum = data[0] * data[2] + data[1] * data[3],
-        rowsSum = data[0] * data[1] + data[2] * data[3],
-        scaleBefore = rowsSum || +(sx == sy);
-
-    // [..., ..., ..., ..., tx, ty] → translate(tx, ty)
-    if (data[4] || data[5]) {
-        transforms.push({ name: 'translate', data: data.slice(4, data[5] ? 6 : 5) });
-    }
-
-    // [sx, 0, tan(a)·sy, sy, 0, 0] → skewX(a)·scale(sx, sy)
-    if (!data[1] && data[2]) {
-        transforms.push({ name: 'skewX', data: [mth.atan(data[2] / sy, floatPrecision)] });
-
-    // [sx, sx·tan(a), 0, sy, 0, 0] → skewY(a)·scale(sx, sy)
-    } else if (data[1] && !data[2]) {
-        transforms.push({ name: 'skewY', data: [mth.atan(data[1] / data[0], floatPrecision)] });
-        sx = data[0];
-        sy = data[3];
-
-    // [sx·cos(a), sx·sin(a), sy·-sin(a), sy·cos(a), x, y] → rotate(a[, cx, cy])·(scale or skewX) or
-    // [sx·cos(a), sy·sin(a), sx·-sin(a), sy·cos(a), x, y] → scale(sx, sy)·rotate(a[, cx, cy]) (if !scaleBefore)
-    } else if (!colsSum || (sx == 1 && sy == 1) || !scaleBefore) {
-        if (!scaleBefore) {
-            sx = (data[0] < 0 ? -1 : 1) * Math.sqrt(data[0] * data[0] + data[2] * data[2]);
-            sy = (data[3] < 0 ? -1 : 1) * Math.sqrt(data[1] * data[1] + data[3] * data[3]);
-            transforms.push({ name: 'scale', data: [sx, sy] });
-        }
-        var rotate = [mth.acos(data[0] / sx, floatPrecision) * (data[1] * sy < 0 ? -1 : 1)];
-
-        if (rotate[0]) transforms.push({ name: 'rotate', data: rotate });
-
-        if (rowsSum && colsSum) transforms.push({
-            name: 'skewX',
-            data: [mth.atan(colsSum / (sx * sx), floatPrecision)]
-        });
-
-        // rotate(a, cx, cy) can consume translate() within optional arguments cx, cy (rotation point)
-        if (rotate[0] && (data[4] || data[5])) {
-            transforms.shift();
-            var cos = data[0] / sx,
-                sin = data[1] / (scaleBefore ? sx : sy),
-                x = data[4] * (scaleBefore || sy),
-                y = data[5] * (scaleBefore || sx),
-                denom = (Math.pow(1 - cos, 2) + Math.pow(sin, 2)) * (scaleBefore || sx * sy);
-            rotate.push(((1 - cos) * x - sin * y) / denom);
-            rotate.push(((1 - cos) * y + sin * x) / denom);
-        }
-
-    // Too many transformations, return original matrix if it isn't just a scale/translate
-    } else if (data[1] || data[2]) {
-        return transform;
-    }
-
-    if (scaleBefore && (sx != 1 || sy != 1) || !transforms.length) transforms.push({
-        name: 'scale',
-        data: sx == sy ? [sx] : [sx, sy]
-    });
-
-    return transforms;
-};
-
-/**
- * Convert transform to the matrix data.
- *
- * @param {Object} transform transform object
- * @return {Array} matrix data
- */
-function transformToMatrix(transform) {
-
-    if (transform.name === 'matrix') return transform.data;
-
-    var matrix;
-
-    switch (transform.name) {
-        case 'translate':
-            // [1, 0, 0, 1, tx, ty]
-            matrix = [1, 0, 0, 1, transform.data[0], transform.data[1] || 0];
-            break;
-        case 'scale':
-            // [sx, 0, 0, sy, 0, 0]
-            matrix = [transform.data[0], 0, 0, transform.data[1] || transform.data[0], 0, 0];
-            break;
-        case 'rotate':
-            // [cos(a), sin(a), -sin(a), cos(a), x, y]
-            var cos = mth.cos(transform.data[0]),
-                sin = mth.sin(transform.data[0]),
-                cx = transform.data[1] || 0,
-                cy = transform.data[2] || 0;
-
-            matrix = [cos, sin, -sin, cos, (1 - cos) * cx + sin * cy, (1 - cos) * cy - sin * cx];
-            break;
-        case 'skewX':
-            // [1, 0, tan(a), 1, 0, 0]
-            matrix = [1, 0, mth.tan(transform.data[0]), 1, 0, 0];
-            break;
-        case 'skewY':
-            // [1, tan(a), 0, 1, 0, 0]
-            matrix = [1, mth.tan(transform.data[0]), 0, 1, 0, 0];
-            break;
-    }
-
-    return matrix;
-
-}
-
-/**
- * Applies transformation to an arc. To do so, we represent ellipse as a matrix, multiply it
- * by the transformation matrix and use a singular value decomposition to represent in a form
- * rotate(θ)·scale(a b)·rotate(φ). This gives us new ellipse params a, b and θ.
- * SVD is being done with the formulae provided by Wolffram|Alpha (svd {{m0, m2}, {m1, m3}})
- *
- * @param {Array} arc [a, b, rotation in deg]
- * @param {Array} transform transformation matrix
- * @return {Array} arc transformed input arc
- */
-exports.transformArc = function(arc, transform) {
-
-    var a = arc[0],
-        b = arc[1],
-        rot = arc[2] * Math.PI / 180,
-        cos = Math.cos(rot),
-        sin = Math.sin(rot),
-        h = Math.pow(arc[5] * cos + arc[6] * sin, 2) / (4 * a * a) +
-            Math.pow(arc[6] * cos - arc[5] * sin, 2) / (4 * b * b);
-    if (h > 1) {
-        h = Math.sqrt(h);
-        a *= h;
-        b *= h;
-    }
-    var ellipse = [a * cos, a * sin, -b * sin, b * cos, 0, 0],
-        m = multiplyTransformMatrices(transform, ellipse),
-        // Decompose the new ellipse matrix
-        lastCol = m[2] * m[2] + m[3] * m[3],
-        squareSum = m[0] * m[0] + m[1] * m[1] + lastCol,
-        root = Math.sqrt(
-            (Math.pow(m[0] - m[3], 2) + Math.pow(m[1] + m[2], 2)) *
-            (Math.pow(m[0] + m[3], 2) + Math.pow(m[1] - m[2], 2))
-        );
-
-    if (!root) { // circle
-        arc[0] = arc[1] = Math.sqrt(squareSum / 2);
-        arc[2] = 0;
-    } else {
-        var majorAxisSqr = (squareSum + root) / 2,
-            minorAxisSqr = (squareSum - root) / 2,
-            major = Math.abs(majorAxisSqr - lastCol) > 1e-6,
-            sub = (major ? majorAxisSqr : minorAxisSqr) - lastCol,
-            rowsSum = m[0] * m[2] + m[1] * m[3],
-            term1 = m[0] * sub + m[2] * rowsSum,
-            term2 = m[1] * sub + m[3] * rowsSum;
-        arc[0] = Math.sqrt(majorAxisSqr);
-        arc[1] = Math.sqrt(minorAxisSqr);
-        arc[2] = ((major ? term2 < 0 : term1 > 0) ? -1 : 1) *
-            Math.acos((major ? term1 : term2) / Math.sqrt(term1 * term1 + term2 * term2)) * 180 / Math.PI;
-    }
-    return arc;
-
-};
-
-/**
- * Multiply transformation matrices.
- *
- * @param {Array} a matrix A data
- * @param {Array} b matrix B data
- * @return {Array} result
- */
-function multiplyTransformMatrices(a, b) {
-
-    return [
-        a[0] * b[0] + a[2] * b[1],
-        a[1] * b[0] + a[3] * b[1],
-        a[0] * b[2] + a[2] * b[3],
-        a[1] * b[2] + a[3] * b[3],
-        a[0] * b[4] + a[2] * b[5] + a[4],
-        a[1] * b[4] + a[3] * b[5] + a[5]
-    ];
-
-}
-
-},{}],150:[function(require,module,exports){
-'use strict';
-
-exports.type = 'perItem';
-
-exports.active = true;
-
-exports.description = 'optimizes path data: writes in shorter form, applies transformations';
-
-exports.params = {
-    applyTransforms: true,
-    applyTransformsStroked: true,
-    makeArcs: {
-        threshold: 2.5, // coefficient of rounding error
-        tolerance: 0.5  // percentage of radius
-    },
-    straightCurves: true,
-    lineShorthands: true,
-    curveSmoothShorthands: true,
-    floatPrecision: 3,
-    transformPrecision: 5,
-    removeUseless: true,
-    collapseRepeated: true,
-    utilizeAbsolute: true,
-    leadingZero: true,
-    negativeExtraSpace: true
-};
-
-var pathElems = require('./_collections.js').pathElems,
-    path2js = require('./_path.js').path2js,
-    js2path = require('./_path.js').js2path,
-    applyTransforms = require('./_path.js').applyTransforms,
-    cleanupOutData = require('../lib/svgo/tools').cleanupOutData,
-    roundData,
-    precision,
-    error,
-    arcThreshold,
-    arcTolerance,
-    hasMarkerMid;
-
-/**
- * Convert absolute Path to relative,
- * collapse repeated instructions,
- * detect and convert Lineto shorthands,
- * remove useless instructions like "l0,0",
- * trim useless delimiters and leading zeros,
- * decrease accuracy of floating-point numbers.
- *
- * @see http://www.w3.org/TR/SVG/paths.html#PathData
- *
- * @param {Object} item current iteration item
- * @param {Object} params plugin params
- * @return {Boolean} if false, item will be filtered out
- *
- * @author Kir Belevich
- */
-exports.fn = function(item, params) {
-
-    if (item.isElem(pathElems) && item.hasAttr('d')) {
-
-        precision = params.floatPrecision;
-        error = precision !== false ? +Math.pow(.1, precision).toFixed(precision) : 1e-2;
-        roundData = precision > 0 && precision < 20 ? strongRound : round;
-        if (params.makeArcs) {
-            arcThreshold = params.makeArcs.threshold;
-            arcTolerance = params.makeArcs.tolerance;
-        }
-        hasMarkerMid = item.hasAttr('marker-mid');
-
-        var data = path2js(item);
-
-        // TODO: get rid of functions returns
-        if (data.length) {
-            convertToRelative(data);
-
-            if (params.applyTransforms) {
-                data = applyTransforms(item, data, params);
-            }
-
-            data = filters(data, params);
-
-            if (params.utilizeAbsolute) {
-                data = convertToMixed(data, params);
-            }
-
-            js2path(item, data, params);
-        }
-
-    }
-
-};
-
-/**
- * Convert absolute path data coordinates to relative.
- *
- * @param {Array} path input path data
- * @param {Object} params plugin params
- * @return {Array} output path data
- */
-function convertToRelative(path) {
-
-    var point = [0, 0],
-        subpathPoint = [0, 0],
-        baseItem;
-
-    path.forEach(function(item, index) {
-
-        var instruction = item.instruction,
-            data = item.data;
-
-        // data !== !z
-        if (data) {
-
-            // already relative
-            // recalculate current point
-            if ('mcslqta'.indexOf(instruction) > -1) {
-
-                point[0] += data[data.length - 2];
-                point[1] += data[data.length - 1];
-
-                if (instruction === 'm') {
-                    subpathPoint[0] = point[0];
-                    subpathPoint[1] = point[1];
-                    baseItem = item;
-                }
-
-            } else if (instruction === 'h') {
-
-                point[0] += data[0];
-
-            } else if (instruction === 'v') {
-
-                point[1] += data[0];
-
-            }
-
-            // convert absolute path data coordinates to relative
-            // if "M" was not transformed from "m"
-            // M → m
-            if (instruction === 'M') {
-
-                if (index > 0) instruction = 'm';
-
-                data[0] -= point[0];
-                data[1] -= point[1];
-
-                subpathPoint[0] = point[0] += data[0];
-                subpathPoint[1] = point[1] += data[1];
-
-                baseItem = item;
-
-            }
-
-            // L → l
-            // T → t
-            else if ('LT'.indexOf(instruction) > -1) {
-
-                instruction = instruction.toLowerCase();
-
-                // x y
-                // 0 1
-                data[0] -= point[0];
-                data[1] -= point[1];
-
-                point[0] += data[0];
-                point[1] += data[1];
-
-            // C → c
-            } else if (instruction === 'C') {
-
-                instruction = 'c';
-
-                // x1 y1 x2 y2 x y
-                // 0  1  2  3  4 5
-                data[0] -= point[0];
-                data[1] -= point[1];
-                data[2] -= point[0];
-                data[3] -= point[1];
-                data[4] -= point[0];
-                data[5] -= point[1];
-
-                point[0] += data[4];
-                point[1] += data[5];
-
-            // S → s
-            // Q → q
-            } else if ('SQ'.indexOf(instruction) > -1) {
-
-                instruction = instruction.toLowerCase();
-
-                // x1 y1 x y
-                // 0  1  2 3
-                data[0] -= point[0];
-                data[1] -= point[1];
-                data[2] -= point[0];
-                data[3] -= point[1];
-
-                point[0] += data[2];
-                point[1] += data[3];
-
-            // A → a
-            } else if (instruction === 'A') {
-
-                instruction = 'a';
-
-                // rx ry x-axis-rotation large-arc-flag sweep-flag x y
-                // 0  1  2               3              4          5 6
-                data[5] -= point[0];
-                data[6] -= point[1];
-
-                point[0] += data[5];
-                point[1] += data[6];
-
-            // H → h
-            } else if (instruction === 'H') {
-
-                instruction = 'h';
-
-                data[0] -= point[0];
-
-                point[0] += data[0];
-
-            // V → v
-            } else if (instruction === 'V') {
-
-                instruction = 'v';
-
-                data[0] -= point[1];
-
-                point[1] += data[0];
-
-            }
-
-            item.instruction = instruction;
-            item.data = data;
-
-            // store absolute coordinates for later use
-            item.coords = point.slice(-2);
-
-        }
-
-        // !data === z, reset current point
-        else if (instruction == 'z') {
-            if (baseItem) {
-                item.coords = baseItem.coords;
-            }
-            point[0] = subpathPoint[0];
-            point[1] = subpathPoint[1];
-        }
-
-        item.base = index > 0 ? path[index - 1].coords : [0, 0];
-
-    });
-
-    return path;
-
-}
-
-/**
- * Main filters loop.
- *
- * @param {Array} path input path data
- * @param {Object} params plugin params
- * @return {Array} output path data
- */
-function filters(path, params) {
-
-    var stringify = data2Path.bind(null, params),
-        relSubpoint = [0, 0],
-        pathBase = [0, 0],
-        prev = {};
-
-    path = path.filter(function(item, index, path) {
-
-        var instruction = item.instruction,
-            data = item.data,
-            next = path[index + 1];
-
-        if (data) {
-
-            var sdata = data,
-                circle;
-
-            if (instruction === 's') {
-                sdata = [0, 0].concat(data);
-
-                if ('cs'.indexOf(prev.instruction) > -1) {
-                    var pdata = prev.data,
-                        n = pdata.length;
-
-                    // (-x, -y) of the prev tangent point relative to the current point
-                    sdata[0] = pdata[n - 2] - pdata[n - 4];
-                    sdata[1] = pdata[n - 1] - pdata[n - 3];
-                }
-
-            }
-
-            // convert curves to arcs if possible
-            if (
-                params.makeArcs &&
-                (instruction == 'c' || instruction == 's') &&
-                isConvex(sdata) &&
-                (circle = findCircle(sdata))
-            ) {
-                var r = roundData([circle.radius])[0],
-                    angle = findArcAngle(sdata, circle),
-                    sweep = sdata[5] * sdata[0] - sdata[4] * sdata[1] > 0 ? 1 : 0,
-                    arc = {
-                        instruction: 'a',
-                        data: [r, r, 0, 0, sweep, sdata[4], sdata[5]],
-                        coords: item.coords.slice(),
-                        base: item.base
-                    },
-                    output = [arc],
-                    // relative coordinates to adjust the found circle
-                    relCenter = [circle.center[0] - sdata[4], circle.center[1] - sdata[5]],
-                    relCircle = { center: relCenter, radius: circle.radius },
-                    arcCurves = [item],
-                    hasPrev = 0,
-                    suffix = '',
-                    nextLonghand;
-
-                if (
-                    prev.instruction == 'c' && isConvex(prev.data) && isArcPrev(prev.data, circle) ||
-                    prev.instruction == 'a' && prev.sdata && isArcPrev(prev.sdata, circle)
-                ) {
-                    arcCurves.unshift(prev);
-                    arc.base = prev.base;
-                    arc.data[5] = arc.coords[0] - arc.base[0];
-                    arc.data[6] = arc.coords[1] - arc.base[1];
-                    var prevData = prev.instruction == 'a' ? prev.sdata : prev.data;
-                    angle += findArcAngle(prevData,
-                        {
-                            center: [prevData[4] + relCenter[0], prevData[5] + relCenter[1]],
-                            radius: circle.radius
-                        }
-                    );
-                    if (angle > Math.PI) arc.data[3] = 1;
-                    hasPrev = 1;
-                }
-
-                // check if next curves are fitting the arc
-                for (var j = index; (next = path[++j]) && ~'cs'.indexOf(next.instruction);) {
-                    var nextData = next.data;
-                    if (next.instruction == 's') {
-                        nextLonghand = makeLonghand({instruction: 's', data: next.data.slice() },
-                            path[j - 1].data);
-                        nextData = nextLonghand.data;
-                        nextLonghand.data = nextData.slice(0, 2);
-                        suffix = stringify([nextLonghand]);
-                    }
-                    if (isConvex(nextData) && isArc(nextData, relCircle)) {
-                        angle += findArcAngle(nextData, relCircle);
-                        if (angle - 2 * Math.PI > 1e-3) break; // more than 360°
-                        if (angle > Math.PI) arc.data[3] = 1;
-                        arcCurves.push(next);
-                        if (2 * Math.PI - angle > 1e-3) { // less than 360°
-                            arc.coords = next.coords;
-                            arc.data[5] = arc.coords[0] - arc.base[0];
-                            arc.data[6] = arc.coords[1] - arc.base[1];
-                        } else {
-                            // full circle, make a half-circle arc and add a second one
-                            arc.data[5] = 2 * (relCircle.center[0] - nextData[4]);
-                            arc.data[6] = 2 * (relCircle.center[1] - nextData[5]);
-                            arc.coords = [arc.base[0] + arc.data[5], arc.base[1] + arc.data[6]];
-                            arc = {
-                                instruction: 'a',
-                                data: [r, r, 0, 0, sweep,
-                                    next.coords[0] - arc.coords[0], next.coords[1] - arc.coords[1]],
-                                coords: next.coords,
-                                base: arc.coords
-                            };
-                            output.push(arc);
-                            j++;
-                            break;
-                        }
-                        relCenter[0] -= nextData[4];
-                        relCenter[1] -= nextData[5];
-                    } else break;
-                }
-
-                if ((stringify(output) + suffix).length < stringify(arcCurves).length) {
-                    if (path[j] && path[j].instruction == 's') {
-                        makeLonghand(path[j], path[j - 1].data);
-                    }
-                    if (hasPrev) {
-                        var prevArc = output.shift();
-                        roundData(prevArc.data);
-                        relSubpoint[0] += prevArc.data[5] - prev.data[prev.data.length - 2];
-                        relSubpoint[1] += prevArc.data[6] - prev.data[prev.data.length - 1];
-                        prev.instruction = 'a';
-                        prev.data = prevArc.data;
-                        item.base = prev.coords = prevArc.coords;
-                    }
-                    arc = output.shift();
-                    if (arcCurves.length == 1) {
-                        item.sdata = sdata.slice(); // preserve curve data for future checks
-                    } else if (arcCurves.length - 1 - hasPrev > 0) {
-                        // filter out consumed next items
-                        path.splice.apply(path, [index + 1, arcCurves.length - 1 - hasPrev].concat(output));
-                    }
-                    if (!arc) return false;
-                    instruction = 'a';
-                    data = arc.data;
-                    item.coords = arc.coords;
-                }
-            }
-
-            // Rounding relative coordinates, taking in account accummulating error
-            // to get closer to absolute coordinates. Sum of rounded value remains same:
-            // l .25 3 .25 2 .25 3 .25 2 -> l .3 3 .2 2 .3 3 .2 2
-            if (precision !== false) {
-                if ('mltqsc'.indexOf(instruction) > -1) {
-                    for (var i = data.length; i--;) {
-                        data[i] += item.base[i % 2] - relSubpoint[i % 2];
-                    }
-                } else if (instruction == 'h') {
-                    data[0] += item.base[0] - relSubpoint[0];
-                } else if (instruction == 'v') {
-                    data[0] += item.base[1] - relSubpoint[1];
-                } else if (instruction == 'a') {
-                    data[5] += item.base[0] - relSubpoint[0];
-                    data[6] += item.base[1] - relSubpoint[1];
-                }
-                roundData(data);
-
-                if      (instruction == 'h') relSubpoint[0] += data[0];
-                else if (instruction == 'v') relSubpoint[1] += data[0];
-                else {
-                    relSubpoint[0] += data[data.length - 2];
-                    relSubpoint[1] += data[data.length - 1];
-                }
-                roundData(relSubpoint);
-
-                if (instruction.toLowerCase() == 'm') {
-                    pathBase[0] = relSubpoint[0];
-                    pathBase[1] = relSubpoint[1];
-                }
-            }
-
-            // convert straight curves into lines segments
-            if (params.straightCurves) {
-
-                if (
-                    instruction === 'c' &&
-                    isCurveStraightLine(data) ||
-                    instruction === 's' &&
-                    isCurveStraightLine(sdata)
-                ) {
-                    if (next && next.instruction == 's')
-                        makeLonghand(next, data); // fix up next curve
-                    instruction = 'l';
-                    data = data.slice(-2);
-                }
-
-                else if (
-                    instruction === 'q' &&
-                    isCurveStraightLine(data)
-                ) {
-                    if (next && next.instruction == 't')
-                        makeLonghand(next, data); // fix up next curve
-                    instruction = 'l';
-                    data = data.slice(-2);
-                }
-
-                else if (
-                    instruction === 't' &&
-                    prev.instruction !== 'q' &&
-                    prev.instruction !== 't'
-                ) {
-                    instruction = 'l';
-                    data = data.slice(-2);
-                }
-
-                else if (
-                    instruction === 'a' &&
-                    (data[0] === 0 || data[1] === 0)
-                ) {
-                    instruction = 'l';
-                    data = data.slice(-2);
-                }
-            }
-
-            // horizontal and vertical line shorthands
-            // l 50 0 → h 50
-            // l 0 50 → v 50
-            if (
-                params.lineShorthands &&
-                instruction === 'l'
-            ) {
-                if (data[1] === 0) {
-                    instruction = 'h';
-                    data.pop();
-                } else if (data[0] === 0) {
-                    instruction = 'v';
-                    data.shift();
-                }
-            }
-
-            // collapse repeated commands
-            // h 20 h 30 -> h 50
-            if (
-                params.collapseRepeated &&
-                !hasMarkerMid &&
-                ('mhv'.indexOf(instruction) > -1) &&
-                prev.instruction &&
-                instruction == prev.instruction.toLowerCase() &&
-                (
-                    (instruction != 'h' && instruction != 'v') ||
-                    (prev.data[0] >= 0) == (item.data[0] >= 0)
-            )) {
-                prev.data[0] += data[0];
-                if (instruction != 'h' && instruction != 'v') {
-                    prev.data[1] += data[1];
-                }
-                prev.coords = item.coords;
-                path[index] = prev;
-                return false;
-            }
-
-            // convert curves into smooth shorthands
-            if (params.curveSmoothShorthands && prev.instruction) {
-
-                // curveto
-                if (instruction === 'c') {
-
-                    // c + c → c + s
-                    if (
-                        prev.instruction === 'c' &&
-                        data[0] === -(prev.data[2] - prev.data[4]) &&
-                        data[1] === -(prev.data[3] - prev.data[5])
-                    ) {
-                        instruction = 's';
-                        data = data.slice(2);
-                    }
-
-                    // s + c → s + s
-                    else if (
-                        prev.instruction === 's' &&
-                        data[0] === -(prev.data[0] - prev.data[2]) &&
-                        data[1] === -(prev.data[1] - prev.data[3])
-                    ) {
-                        instruction = 's';
-                        data = data.slice(2);
-                    }
-
-                    // [^cs] + c → [^cs] + s
-                    else if (
-                        'cs'.indexOf(prev.instruction) === -1 &&
-                        data[0] === 0 &&
-                        data[1] === 0
-                    ) {
-                        instruction = 's';
-                        data = data.slice(2);
-                    }
-
-                }
-
-                // quadratic Bézier curveto
-                else if (instruction === 'q') {
-
-                    // q + q → q + t
-                    if (
-                        prev.instruction === 'q' &&
-                        data[0] === (prev.data[2] - prev.data[0]) &&
-                        data[1] === (prev.data[3] - prev.data[1])
-                    ) {
-                        instruction = 't';
-                        data = data.slice(2);
-                    }
-
-                    // t + q → t + t
-                    else if (
-                        prev.instruction === 't' &&
-                        data[2] === prev.data[0] &&
-                        data[3] === prev.data[1]
-                    ) {
-                        instruction = 't';
-                        data = data.slice(2);
-                    }
-
-                }
-
-            }
-
-            // remove useless non-first path segments
-            if (params.removeUseless) {
-
-                // l 0,0 / h 0 / v 0 / q 0,0 0,0 / t 0,0 / c 0,0 0,0 0,0 / s 0,0 0,0
-                if (
-                    (
-                     'lhvqtcs'.indexOf(instruction) > -1
-                    ) &&
-                    data.every(function(i) { return i === 0; })
-                ) {
-                    path[index] = prev;
-                    return false;
-                }
-
-                // a 25,25 -30 0,1 0,0
-                if (
-                    instruction === 'a' &&
-                    data[5] === 0 &&
-                    data[6] === 0
-                ) {
-                    path[index] = prev;
-                    return false;
-                }
-
-            }
-
-            item.instruction = instruction;
-            item.data = data;
-
-            prev = item;
-
-        } else {
-
-            // z resets coordinates
-            relSubpoint[0] = pathBase[0];
-            relSubpoint[1] = pathBase[1];
-            if (prev.instruction == 'z') return false;
-            prev = item;
-
-        }
-
-        return true;
-
-    });
-
-    return path;
-
-}
-
-/**
- * Writes data in shortest form using absolute or relative coordinates.
- *
- * @param {Array} data input path data
- * @return {Boolean} output
- */
-function convertToMixed(path, params) {
-
-    var prev = path[0];
-
-    path = path.filter(function(item, index) {
-
-        if (index == 0) return true;
-        if (!item.data) {
-            prev = item;
-            return true;
-        }
-
-        var instruction = item.instruction,
-            data = item.data,
-            adata = data && data.slice(0);
-
-        if ('mltqsc'.indexOf(instruction) > -1) {
-            for (var i = adata.length; i--;) {
-                adata[i] += item.base[i % 2];
-            }
-        } else if (instruction == 'h') {
-                adata[0] += item.base[0];
-        } else if (instruction == 'v') {
-                adata[0] += item.base[1];
-        } else if (instruction == 'a') {
-                adata[5] += item.base[0];
-                adata[6] += item.base[1];
-        }
-
-        roundData(adata);
-
-        var absoluteDataStr = cleanupOutData(adata, params),
-            relativeDataStr = cleanupOutData(data, params);
-
-        // Convert to absolute coordinates if it's shorter.
-        // v-20 -> V0
-        // Don't convert if it fits following previous instruction.
-        // l20 30-10-50 instead of l20 30L20 30
-        if (
-            absoluteDataStr.length < relativeDataStr.length &&
-            !(
-                params.negativeExtraSpace &&
-                instruction == prev.instruction &&
-                prev.instruction.charCodeAt(0) > 96 &&
-                absoluteDataStr.length == relativeDataStr.length - 1 &&
-                (data[0] < 0 || /^0\./.test(data[0]) && prev.data[prev.data.length - 1] % 1)
-            )
-        ) {
-            item.instruction = instruction.toUpperCase();
-            item.data = adata;
-        }
-
-        prev = item;
-
-        return true;
-
-    });
-
-    return path;
-
-}
-
-/**
- * Checks if curve is convex. Control points of such a curve must form
- * a convex quadrilateral with diagonals crosspoint inside of it.
- *
- * @param {Array} data input path data
- * @return {Boolean} output
- */
-function isConvex(data) {
-
-    var center = getIntersection([0, 0, data[2], data[3], data[0], data[1], data[4], data[5]]);
-
-    return center &&
-        (data[2] < center[0] == center[0] < 0) &&
-        (data[3] < center[1] == center[1] < 0) &&
-        (data[4] < center[0] == center[0] < data[0]) &&
-        (data[5] < center[1] == center[1] < data[1]);
-
-}
-
-/**
- * Computes lines equations by two points and returns their intersection point.
- *
- * @param {Array} coords 8 numbers for 4 pairs of coordinates (x,y)
- * @return {Array|undefined} output coordinate of lines' crosspoint
- */
-function getIntersection(coords) {
-
-        // Prev line equation parameters.
-    var a1 = coords[1] - coords[3], // y1 - y2
-        b1 = coords[2] - coords[0], // x2 - x1
-        c1 = coords[0] * coords[3] - coords[2] * coords[1], // x1 * y2 - x2 * y1
-
-        // Next line equation parameters
-        a2 = coords[5] - coords[7], // y1 - y2
-        b2 = coords[6] - coords[4], // x2 - x1
-        c2 = coords[4] * coords[7] - coords[5] * coords[6], // x1 * y2 - x2 * y1
-        denom = (a1 * b2 - a2 * b1);
-
-    if (!denom) return; // parallel lines havn't an intersection
-
-    var cross = [
-            (b1 * c2 - b2 * c1) / denom,
-            (a1 * c2 - a2 * c1) / -denom
-        ];
-    if (
-        !isNaN(cross[0]) && !isNaN(cross[1]) &&
-        isFinite(cross[0]) && isFinite(cross[1])
-    ) {
-        return cross;
-    }
-
-}
-
-/**
- * Decrease accuracy of floating-point numbers
- * in path data keeping a specified number of decimals.
- * Smart rounds values like 2.3491 to 2.35 instead of 2.349.
- * Doesn't apply "smartness" if the number precision fits already.
- *
- * @param {Array} data input data array
- * @return {Array} output data array
- */
-function strongRound(data) {
-    for (var i = data.length; i-- > 0;) {
-        if (data[i].toFixed(precision) != data[i]) {
-            var rounded = +data[i].toFixed(precision - 1);
-            data[i] = +Math.abs(rounded - data[i]).toFixed(precision + 1) >= error ?
-                +data[i].toFixed(precision) :
-                rounded;
-        }
-    }
-    return data;
-}
-
-/**
- * Simple rounding function if precision is 0.
- *
- * @param {Array} data input data array
- * @return {Array} output data array
- */
-function round(data) {
-    for (var i = data.length; i-- > 0;) {
-        data[i] = Math.round(data[i]);
-    }
-    return data;
-}
-
-/**
- * Checks if a curve is a straight line by measuring distance
- * from middle points to the line formed by end points.
- *
- * @param {Array} xs array of curve points x-coordinates
- * @param {Array} ys array of curve points y-coordinates
- * @return {Boolean}
- */
-
-function isCurveStraightLine(data) {
-
-    // Get line equation a·x + b·y + c = 0 coefficients a, b (c = 0) by start and end points.
-    var i = data.length - 2,
-        a = -data[i + 1], // y1 − y2 (y1 = 0)
-        b = data[i],      // x2 − x1 (x1 = 0)
-        d = 1 / (a * a + b * b); // same part for all points
-
-    if (i <= 1 || !isFinite(d)) return false; // curve that ends at start point isn't the case
-
-    // Distance from point (x0, y0) to the line is sqrt((c − a·x0 − b·y0)² / (a² + b²))
-    while ((i -= 2) >= 0) {
-        if (Math.sqrt(Math.pow(a * data[i] + b * data[i + 1], 2) * d) > error)
-            return false;
-    }
-
-    return true;
-
-}
-
-/**
- * Converts next curve from shorthand to full form using the current curve data.
- *
- * @param {Object} item curve to convert
- * @param {Array} data current curve data
- */
-
-function makeLonghand(item, data) {
-    switch (item.instruction) {
-        case 's': item.instruction = 'c'; break;
-        case 't': item.instruction = 'q'; break;
-    }
-    item.data.unshift(data[data.length - 2] - data[data.length - 4], data[data.length - 1] - data[data.length - 3]);
-    return item;
-}
-
-/**
- * Returns distance between two points
- *
- * @param {Array} point1 first point coordinates
- * @param {Array} point2 second point coordinates
- * @return {Number} distance
- */
-
-function getDistance(point1, point2) {
-    return Math.sqrt(Math.pow(point1[0] - point2[0], 2) + Math.pow(point1[1] - point2[1], 2));
-}
-
-/**
- * Returns coordinates of the curve point corresponding to the certain t
- * a·(1 - t)³·p1 + b·(1 - t)²·t·p2 + c·(1 - t)·t²·p3 + d·t³·p4,
- * where pN are control points and p1 is zero due to relative coordinates.
- *
- * @param {Array} curve array of curve points coordinates
- * @param {Number} t parametric position from 0 to 1
- * @return {Array} Point coordinates
- */
-
-function getCubicBezierPoint(curve, t) {
-    var sqrT = t * t,
-        cubT = sqrT * t,
-        mt = 1 - t,
-        sqrMt = mt * mt;
-
-    return [
-        3 * sqrMt * t * curve[0] + 3 * mt * sqrT * curve[2] + cubT * curve[4],
-        3 * sqrMt * t * curve[1] + 3 * mt * sqrT * curve[3] + cubT * curve[5]
-    ];
-}
-
-/**
- * Finds circle by 3 points of the curve and checks if the curve fits the found circle.
- *
- * @param {Array} curve
- * @return {Object|undefined} circle
- */
-
-function findCircle(curve) {
-    var midPoint = getCubicBezierPoint(curve, 1/2),
-        m1 = [midPoint[0] / 2, midPoint[1] / 2],
-        m2 = [(midPoint[0] + curve[4]) / 2, (midPoint[1] + curve[5]) / 2],
-        center = getIntersection([
-            m1[0], m1[1],
-            m1[0] + m1[1], m1[1] - m1[0],
-            m2[0], m2[1],
-            m2[0] + (m2[1] - midPoint[1]), m2[1] - (m2[0] - midPoint[0])
-        ]),
-        radius = center && getDistance([0, 0], center),
-        tolerance = Math.min(arcThreshold * error, arcTolerance * radius / 100);
-
-    if (center && [1/4, 3/4].every(function(point) {
-        return Math.abs(getDistance(getCubicBezierPoint(curve, point), center) - radius) <= tolerance;
-    }))
-        return { center: center, radius: radius};
-}
-
-/**
- * Checks if a curve fits the given circe.
- *
- * @param {Object} circle
- * @param {Array} curve
- * @return {Boolean}
- */
-
-function isArc(curve,  circle) {
-    var tolerance = Math.min(arcThreshold * error, arcTolerance * circle.radius / 100);
-
-    return [0, 1/4, 1/2, 3/4, 1].every(function(point) {
-        return Math.abs(getDistance(getCubicBezierPoint(curve, point), circle.center) - circle.radius) <= tolerance;
-    });
-}
-
-/**
- * Checks if a previos curve fits the given circe.
- *
- * @param {Object} circle
- * @param {Array} curve
- * @return {Boolean}
- */
-
-function isArcPrev(curve,  circle) {
-    return isArc(curve, {
-        center: [circle.center[0] + curve[4], circle.center[1] + curve[5]],
-        radius: circle.radius
-    });
-}
-
-/**
- * Finds angle of a curve fitting the given arc.
-
- * @param {Array} curve
- * @param {Object} relCircle
- * @return {Number} angle
- */
-
-function findArcAngle(curve, relCircle) {
-    var x1 = -relCircle.center[0],
-        y1 = -relCircle.center[1],
-        x2 = curve[4] - relCircle.center[0],
-        y2 = curve[5] - relCircle.center[1];
-
-    return Math.acos(
-            (x1 * x2 + y1 * y2) /
-            Math.sqrt((x1 * x1 + y1 * y1) * (x2 * x2 + y2 * y2))
-        );
-}
-
-/**
- * Converts given path data to string.
- *
- * @param {Object} params
- * @param {Array} pathData
- * @return {String}
- */
-
-function data2Path(params, pathData) {
-    return pathData.reduce(function(pathString, item) {
-        return pathString += item.instruction + (item.data ? cleanupOutData(roundData(item.data.slice()), params) : '');
-    }, '');
-}
-
-},{"../lib/svgo/tools":146,"./_collections.js":147,"./_path.js":148}],151:[function(require,module,exports){
-/* jshint quotmark: false */
-'use strict';
-
-exports.type = 'perItem';
-
-exports.active = true;
-
-exports.description = 'converts style to attributes';
-
-var EXTEND = require('whet.extend'),
-    stylingProps = require('./_collections').attrsGroups.presentation,
-    rEscape = '\\\\(?:[0-9a-f]{1,6}\\s?|\\r\\n|.)',                 // Like \" or \2051. Code points consume one space.
-    rAttr = '\\s*(' + g('[^:;\\\\]', rEscape) + '*?)\\s*',          // attribute name like ‘fill’
-    rSingleQuotes = "'(?:[^'\\n\\r\\\\]|" + rEscape + ")*?(?:'|$)", // string in single quotes: 'smth'
-    rQuotes = '"(?:[^"\\n\\r\\\\]|' + rEscape + ')*?(?:"|$)',       // string in double quotes: "smth"
-    rQuotedString = new RegExp('^' + g(rSingleQuotes, rQuotes) + '$'),
-
-    // Parentheses, E.g.: url(data:image/png;base64,iVBO...).
-    // ':' and ';' inside of it should be threated as is. (Just like in strings.)
-    rParenthesis = '\\(' + g('[^\'"()\\\\]+', rEscape, rSingleQuotes, rQuotes) + '*?' + '\\)',
-
-    // The value. It can have strings and parentheses (see above). Fallbacks to anything in case of unexpected input.
-    rValue = '\\s*(' + g('[^\'"();\\\\]+?', rEscape, rSingleQuotes, rQuotes, rParenthesis, '[^;]*?') + '*?' + ')',
-
-    // End of declaration. Spaces outside of capturing groups help to do natural trimming.
-    rDeclEnd = '\\s*(?:;\\s*|$)',
-
-    // Final RegExp to parse CSS declarations.
-    regDeclarationBlock = new RegExp(rAttr + ':' + rValue + rDeclEnd, 'ig'),
-
-    // Comments expression. Honors escape sequences and strings.
-    regStripComments = new RegExp(g(rEscape, rSingleQuotes, rQuotes, '/\\*[^]*?\\*/'), 'ig');
-
-/**
- * Convert style in attributes. Cleanups comments and illegal declarations (without colon) as a side effect.
- *
- * @example
- * <g style="fill:#000; color: #fff;">
- *             ⬇
- * <g fill="#000" color="#fff">
- *
- * @example
- * <g style="fill:#000; color: #fff; -webkit-blah: blah">
- *             ⬇
- * <g fill="#000" color="#fff" style="-webkit-blah: blah">
- *
- * @param {Object} item current iteration item
- * @return {Boolean} if false, item will be filtered out
- *
- * @author Kir Belevich
- */
-exports.fn = function(item) {
-    /* jshint boss: true */
-
-    if (item.elem && item.hasAttr('style')) {
-            // ['opacity: 1', 'color: #000']
-        var styleValue = item.attr('style').value,
-            styles = [],
-            attrs = {};
-
-        // Strip CSS comments preserving escape sequences and strings.
-        styleValue = styleValue.replace(regStripComments, function(match) {
-            return match[0] == '/' ? '' :
-                match[0] == '\\' && /[-g-z]/i.test(match[1]) ? match[1] : match;
-        });
-
-        regDeclarationBlock.lastIndex = 0;
-        for (var rule; rule = regDeclarationBlock.exec(styleValue);) {
-            styles.push([rule[1], rule[2]]);
-        }
-
-        if (styles.length) {
-
-            styles = styles.filter(function(style) {
-                if (style[0]) {
-                    var prop = style[0].toLowerCase(),
-                        val = style[1];
-
-                    if (rQuotedString.test(val)) {
-                        val = val.slice(1, -1);
-                    }
-
-                    if (stylingProps.indexOf(prop) > -1) {
-
-                        attrs[prop] = {
-                            name: prop,
-                            value: val,
-                            local: prop,
-                            prefix: ''
-                        };
-
-                        return false;
-                    }
-                }
-
-                return true;
-            });
-
-            EXTEND(item.attrs, attrs);
-
-            if (styles.length) {
-                item.attr('style').value = styles
-                    .map(function(declaration) { return declaration.join(':') })
-                    .join(';');
-            } else {
-                item.removeAttr('style');
-            }
-
-        }
-
-    }
-
-};
-
-function g() {
-    return '(?:' + Array.prototype.join.call(arguments, '|') + ')';
-}
-
-},{"./_collections":147,"whet.extend":156}],152:[function(require,module,exports){
-'use strict';
-
-exports.type = 'perItem';
-
-exports.active = true;
-
-exports.description = 'collapses multiple transformations and optimizes it';
-
-exports.params = {
-    convertToShorts: true,
-    // degPrecision: 3, // transformPrecision (or matrix precision) - 2 by default
-    floatPrecision: 3,
-    transformPrecision: 5,
-    matrixToTransform: true,
-    shortTranslate: true,
-    shortScale: true,
-    shortRotate: true,
-    removeUseless: true,
-    collapseIntoOne: true,
-    leadingZero: true,
-    negativeExtraSpace: false
-};
-
-var cleanupOutData = require('../lib/svgo/tools').cleanupOutData,
-    EXTEND = require('whet.extend'),
-    transform2js = require('./_transforms.js').transform2js,
-    transformsMultiply = require('./_transforms.js').transformsMultiply,
-    matrixToTransform = require('./_transforms.js').matrixToTransform,
-    degRound,
-    floatRound,
-    transformRound;
-
-/**
- * Convert matrices to the short aliases,
- * convert long translate, scale or rotate transform notations to the shorts ones,
- * convert transforms to the matrices and multiply them all into one,
- * remove useless transforms.
- *
- * @see http://www.w3.org/TR/SVG/coords.html#TransformMatrixDefined
- *
- * @param {Object} item current iteration item
- * @param {Object} params plugin params
- * @return {Boolean} if false, item will be filtered out
- *
- * @author Kir Belevich
- */
-exports.fn = function(item, params) {
-
-    if (item.elem) {
-
-        // transform
-        if (item.hasAttr('transform')) {
-            convertTransform(item, 'transform', params);
-        }
-
-        // gradientTransform
-        if (item.hasAttr('gradientTransform')) {
-            convertTransform(item, 'gradientTransform', params);
-        }
-
-        // patternTransform
-        if (item.hasAttr('patternTransform')) {
-            convertTransform(item, 'patternTransform', params);
-        }
-
-    }
-
-};
-
-/**
- * Main function.
- *
- * @param {Object} item input item
- * @param {String} attrName attribute name
- * @param {Object} params plugin params
- */
-function convertTransform(item, attrName, params) {
-    var data = transform2js(item.attr(attrName).value);
-    params = definePrecision(data, params);
-
-    if (params.collapseIntoOne && data.length > 1) {
-        data = [transformsMultiply(data)];
-    }
-
-    if (params.convertToShorts) {
-        data = convertToShorts(data, params);
-    } else {
-        data.forEach(roundTransform);
-    }
-
-    if (params.removeUseless) {
-        data = removeUseless(data);
-    }
-
-    if (data.length) {
-        item.attr(attrName).value = js2transform(data, params);
-    } else {
-        item.removeAttr(attrName);
-    }
-}
-
-/**
- * Defines precision to work with certain parts.
- * transformPrecision - for scale and four first matrix parameters (needs a better precision due to multiplying),
- * floatPrecision - for translate including two last matrix and rotate parameters,
- * degPrecision - for rotate and skew. By default it's equal to (rougly)
- * transformPrecision - 2 or floatPrecision whichever is lower. Can be set in params.
- *
- * @param {Array} transforms input array
- * @param {Object} params plugin params
- * @return {Array} output array
- */
-function definePrecision(data, params) {
-    /* jshint validthis: true */
-    var matrixData = data.reduce(getMatrixData, []),
-        significantDigits = params.transformPrecision;
-
-    // Clone params so it don't affect other elements transformations.
-    params = EXTEND({}, params);
-
-    // Limit transform precision with matrix one. Calculating with larger precision doesn't add any value.
-    if (matrixData.length) {
-        params.transformPrecision = Math.min(params.transformPrecision,
-            Math.max.apply(Math, matrixData.map(floatDigits)) || params.transformPrecision);
-
-        significantDigits = Math.max.apply(Math, matrixData.map(function(n) {
-            return String(n).replace(/\D+/g, '').length; // Number of digits in a number. 123.45 → 5
-        }));
-    }
-    // No sense in angle precision more then number of significant digits in matrix.
-    if (!('degPrecision' in params)) {
-        params.degPrecision = Math.max(0, Math.min(params.floatPrecision, significantDigits - 2));
-    }
-
-    floatRound = params.floatPrecision >= 1 && params.floatPrecision < 20 ?
-        smartRound.bind(this, params.floatPrecision) :
-        round;
-    degRound = params.degPrecision >= 1 && params.floatPrecision < 20 ?
-        smartRound.bind(this, params.degPrecision) :
-        round;
-    transformRound = params.transformPrecision >= 1 && params.floatPrecision < 20 ?
-        smartRound.bind(this, params.transformPrecision) :
-        round;
-
-    return params;
-}
-
-/**
- * Gathers four first matrix parameters.
- *
- * @param {Array} a array of data
- * @param {Object} transform
- * @return {Array} output array
- */
-function getMatrixData(a, b) {
-    return b.name == 'matrix' ? a.concat(b.data.slice(0, 4)) : a;
-}
-
-/**
- * Returns number of digits after the point. 0.125 → 3
- */
-function floatDigits(n) {
-    return (n = String(n)).slice(n.indexOf('.')).length - 1;
-}
-
-/**
- * Convert transforms to the shorthand alternatives.
- *
- * @param {Array} transforms input array
- * @param {Object} params plugin params
- * @return {Array} output array
- */
-function convertToShorts(transforms, params) {
-
-    for(var i = 0; i < transforms.length; i++) {
-
-        var transform = transforms[i];
-
-        // convert matrix to the short aliases
-        if (
-            params.matrixToTransform &&
-            transform.name === 'matrix'
-        ) {
-            var decomposed = matrixToTransform(transform, params);
-            if (decomposed != transform &&
-                js2transform(decomposed, params).length <= js2transform([transform], params).length) {
-
-                transforms.splice.apply(transforms, [i, 1].concat(decomposed));
-            }
-            transform = transforms[i];
-        }
-
-        // fixed-point numbers
-        // 12.754997 → 12.755
-        roundTransform(transform);
-
-        // convert long translate transform notation to the shorts one
-        // translate(10 0) → translate(10)
-        if (
-            params.shortTranslate &&
-            transform.name === 'translate' &&
-            transform.data.length === 2 &&
-            !transform.data[1]
-        ) {
-            transform.data.pop();
-        }
-
-        // convert long scale transform notation to the shorts one
-        // scale(2 2) → scale(2)
-        if (
-            params.shortScale &&
-            transform.name === 'scale' &&
-            transform.data.length === 2 &&
-            transform.data[0] === transform.data[1]
-        ) {
-            transform.data.pop();
-        }
-
-        // convert long rotate transform notation to the short one
-        // translate(cx cy) rotate(a) translate(-cx -cy) → rotate(a cx cy)
-        if (
-            params.shortRotate &&
-            transforms[i - 2] &&
-            transforms[i - 2].name === 'translate' &&
-            transforms[i - 1].name === 'rotate' &&
-            transforms[i].name === 'translate' &&
-            transforms[i - 2].data[0] === -transforms[i].data[0] &&
-            transforms[i - 2].data[1] === -transforms[i].data[1]
-        ) {
-            transforms.splice(i - 2, 3, {
-                name: 'rotate',
-                data: [
-                    transforms[i - 1].data[0],
-                    transforms[i - 2].data[0],
-                    transforms[i - 2].data[1]
-                ]
-            });
-
-            // splice compensation
-            i -= 2;
-
-            transform = transforms[i];
-        }
-
-    }
-
-    return transforms;
-
-}
-
-/**
- * Remove useless transforms.
- *
- * @param {Array} transforms input array
- * @return {Array} output array
- */
-function removeUseless(transforms) {
-
-    return transforms.filter(function(transform) {
-
-        // translate(0), rotate(0[, cx, cy]), skewX(0), skewY(0)
-        if (
-            ['translate', 'rotate', 'skewX', 'skewY'].indexOf(transform.name) > -1 &&
-            (transform.data.length == 1 || transform.name == 'rotate') &&
-            !transform.data[0] ||
-
-            // translate(0, 0)
-            transform.name == 'translate' &&
-            !transform.data[0] &&
-            !transform.data[1] ||
-
-            // scale(1)
-            transform.name == 'scale' &&
-            transform.data[0] == 1 &&
-            (transform.data.length < 2 || transform.data[1] == 1) ||
-
-            // matrix(1 0 0 1 0 0)
-            transform.name == 'matrix' &&
-            transform.data[0] == 1 &&
-            transform.data[3] == 1 &&
-            !(transform.data[1] || transform.data[2] || transform.data[4] || transform.data[5])
-        ) {
-            return false;
-        }
-
-        return true;
-
-    });
-
-}
-
-/**
- * Convert transforms JS representation to string.
- *
- * @param {Array} transformJS JS representation array
- * @param {Object} params plugin params
- * @return {String} output string
- */
-function js2transform(transformJS, params) {
-
-    var transformString = '';
-
-    // collect output value string
-    transformJS.forEach(function(transform) {
-        roundTransform(transform);
-        transformString += (transformString && ' ') + transform.name + '(' + cleanupOutData(transform.data, params) + ')';
-    });
-
-    return transformString;
-
-}
-
-function roundTransform(transform) {
-    switch (transform.name) {
-        case 'translate':
-            transform.data = floatRound(transform.data);
-            break;
-        case 'rotate':
-            transform.data = degRound(transform.data.slice(0, 1)).concat(floatRound(transform.data.slice(1)));
-            break;
-        case 'skewX':
-        case 'skewY':
-            transform.data = degRound(transform.data);
-            break;
-        case 'scale':
-            transform.data = transformRound(transform.data);
-            break;
-        case 'matrix':
-            transform.data = transformRound(transform.data.slice(0, 4)).concat(floatRound(transform.data.slice(4)));
-            break;
-    }
-    return transform;
-}
-
-/**
- * Rounds numbers in array.
- *
- * @param {Array} data input data array
- * @return {Array} output data array
- */
-function round(data) {
-    return data.map(Math.round);
-}
-
-/**
- * Decrease accuracy of floating-point numbers
- * in transforms keeping a specified number of decimals.
- * Smart rounds values like 2.349 to 2.35.
- *
- * @param {Number} fixed number of decimals
- * @param {Array} data input data array
- * @return {Array} output data array
- */
-function smartRound(precision, data) {
-    for (var i = data.length, tolerance = +Math.pow(.1, precision).toFixed(precision); i--;) {
-        if (data[i].toFixed(precision) != data[i]) {
-            var rounded = +data[i].toFixed(precision - 1);
-            data[i] = +Math.abs(rounded - data[i]).toFixed(precision + 1) >= tolerance ?
-                +data[i].toFixed(precision) :
-                rounded;
-        }
-    }
-    return data;
-}
-
-},{"../lib/svgo/tools":146,"./_transforms.js":149,"whet.extend":156}],153:[function(require,module,exports){
-'use strict';
-
-exports.type = 'perItem';
-
-exports.active = true;
-
-exports.description = 'removes comments';
-
-/**
- * Remove comments.
- *
- * @example
- * <!-- Generator: Adobe Illustrator 15.0.0, SVG Export
- * Plug-In . SVG Version: 6.00 Build 0)  -->
- *
- * @param {Object} item current iteration item
- * @return {Boolean} if false, item will be filtered out
- *
- * @author Kir Belevich
- */
-exports.fn = function(item) {
-
-    if (item.comment && item.comment.charAt(0) !== '!') {
-        return false;
-    }
-
-};
-
-},{}],154:[function(require,module,exports){
-var inherits = require('inherits')
-
-module.exports = function(THREE) {
-
-    function Complex(mesh) {
-        if (!(this instanceof Complex))
-            return new Complex(mesh)
-        THREE.Geometry.call(this)
-        this.dynamic = true
-
-        if (mesh)
-            this.update(mesh)
-    }
-
-    inherits(Complex, THREE.Geometry)
-
-    //may expose these in next version
-    Complex.prototype._updatePositions = function(positions) {
-        for (var i=0; i<positions.length; i++) {
-            var pos = positions[i]
-            if (i > this.vertices.length-1)
-                this.vertices.push(new THREE.Vector3().fromArray(pos))
-            else 
-                this.vertices[i].fromArray(pos)
-        }
-        this.vertices.length = positions.length
-        this.verticesNeedUpdate = true
-    }
-
-    Complex.prototype._updateCells = function(cells) {
-        for (var i=0; i<cells.length; i++) {
-            var face = cells[i]
-            if (i > this.faces.length-1)
-                this.faces.push(new THREE.Face3(face[0], face[1], face[2]))
-            else {
-                var tf = this.faces[i]
-                tf.a = face[0]
-                tf.b = face[1]
-                tf.c = face[2]
-            }
-        }
-
-        this.faces.length = cells.length
-        this.elementsNeedUpdate = true
-    }
-
-    Complex.prototype.update = function(mesh) {
-        this._updatePositions(mesh.positions)
-        this._updateCells(mesh.cells)
-    }
-
-    return Complex
-}
-},{"inherits":108}],155:[function(require,module,exports){
-;(function() {
-
-"use strict";
-
-var root = this
-
-var has_require = typeof require !== 'undefined'
-
-var THREE = root.THREE || has_require && require('three')
-if( !THREE )
-	throw new Error( 'EquirectangularToCubemap requires three.js' )
-
-function MeshLine() {
-
-	this.positions = [];
-
-	this.previous = [];
-	this.next = [];
-	this.side = [];
-	this.width = [];
-	this.indices_array = [];
-	this.uvs = [];
-	this.counters = [];
-	this.geometry = new THREE.BufferGeometry();
-
-	this.widthCallback = null;
-
-}
-
-MeshLine.prototype.setGeometry = function( g, c ) {
-
-	this.widthCallback = c;
-
-	this.positions = [];
-	this.counters = [];
-
-	if( g instanceof THREE.Geometry ) {
-		for( var j = 0; j < g.vertices.length; j++ ) {
-			var v = g.vertices[ j ];
-			var c = j/g.vertices.length;
-			this.positions.push( v.x, v.y, v.z );
-			this.positions.push( v.x, v.y, v.z );
-			this.counters.push(c);
-			this.counters.push(c);
-		}
-	}
-
-	if( g instanceof THREE.BufferGeometry ) {
-		// read attribute positions ?
-	}
-
-	if( g instanceof Float32Array || g instanceof Array ) {
-		for( var j = 0; j < g.length; j += 3 ) {
-			var c = j/g.length;
-			this.positions.push( g[ j ], g[ j + 1 ], g[ j + 2 ] );
-			this.positions.push( g[ j ], g[ j + 1 ], g[ j + 2 ] );
-			this.counters.push(c);
-			this.counters.push(c);
-		}
-	}
-
-	this.process();
-
-}
-
-MeshLine.prototype.compareV3 = function( a, b ) {
-
-	var aa = a * 6;
-	var ab = b * 6;
-	return ( this.positions[ aa ] === this.positions[ ab ] ) && ( this.positions[ aa + 1 ] === this.positions[ ab + 1 ] ) && ( this.positions[ aa + 2 ] === this.positions[ ab + 2 ] );
-
-}
-
-MeshLine.prototype.copyV3 = function( a ) {
-
-	var aa = a * 6;
-	return [ this.positions[ aa ], this.positions[ aa + 1 ], this.positions[ aa + 2 ] ];
-
-}
-
-MeshLine.prototype.process = function() {
-
-	var l = this.positions.length / 6;
-
-	this.previous = [];
-	this.next = [];
-	this.side = [];
-	this.width = [];
-	this.indices_array = [];
-	this.uvs = [];
-
-	for( var j = 0; j < l; j++ ) {
-		this.side.push( 1 );
-		this.side.push( -1 );
-	}
-
-	var w;
-	for( var j = 0; j < l; j++ ) {
-		if( this.widthCallback ) w = this.widthCallback( j / ( l -1 ) );
-		else w = 1;
-		this.width.push( w );
-		this.width.push( w );
-	}
-
-	for( var j = 0; j < l; j++ ) {
-		this.uvs.push( j / ( l - 1 ), 0 );
-		this.uvs.push( j / ( l - 1 ), 1 );
-	}
-
-	var v;
-
-	if( this.compareV3( 0, l - 1 ) ){
-		v = this.copyV3( l - 2 );
-	} else {
-		v = this.copyV3( 0 );
-	}
-	this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-	this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-	for( var j = 0; j < l - 1; j++ ) {
-		v = this.copyV3( j );
-		this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-		this.previous.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-	}
-
-	for( var j = 1; j < l; j++ ) {
-		v = this.copyV3( j );
-		this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-		this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-	}
-
-	if( this.compareV3( l - 1, 0 ) ){
-		v = this.copyV3( 1 );
-	} else {
-		v = this.copyV3( l - 1 );
-	}
-	this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-	this.next.push( v[ 0 ], v[ 1 ], v[ 2 ] );
-
-	for( var j = 0; j < l - 1; j++ ) {
-		var n = j * 2;
-		this.indices_array.push( n, n + 1, n + 2 );
-		this.indices_array.push( n + 2, n + 1, n + 3 );
-	}
-
-	if (!this.attributes) {
-		this.attributes = {
-			position: new THREE.BufferAttribute( new Float32Array( this.positions ), 3 ),
-			previous: new THREE.BufferAttribute( new Float32Array( this.previous ), 3 ),
-			next: new THREE.BufferAttribute( new Float32Array( this.next ), 3 ),
-			side: new THREE.BufferAttribute( new Float32Array( this.side ), 1 ),
-			width: new THREE.BufferAttribute( new Float32Array( this.width ), 1 ),
-			uv: new THREE.BufferAttribute( new Float32Array( this.uvs ), 2 ),
-			index: new THREE.BufferAttribute( new Uint16Array( this.indices_array ), 1 ),
-			counters: new THREE.BufferAttribute( new Float32Array( this.counters ), 1 )
-		}
-	} else {
-		this.attributes.position.copyArray(new Float32Array(this.positions));
-		this.attributes.position.needsUpdate = true;
-		this.attributes.previous.copyArray(new Float32Array(this.previous));
-		this.attributes.previous.needsUpdate = true;
-		this.attributes.next.copyArray(new Float32Array(this.next));
-		this.attributes.next.needsUpdate = true;
-		this.attributes.side.copyArray(new Float32Array(this.side));
-		this.attributes.side.needsUpdate = true;
-		this.attributes.width.copyArray(new Float32Array(this.width));
-		this.attributes.width.needsUpdate = true;
-		this.attributes.uv.copyArray(new Float32Array(this.uvs));
-		this.attributes.uv.needsUpdate = true;
-		this.attributes.index.copyArray(new Uint16Array(this.indices_array));
-		this.attributes.index.needsUpdate = true;
-    }
-
-	this.geometry.addAttribute( 'position', this.attributes.position );
-	this.geometry.addAttribute( 'previous', this.attributes.previous );
-	this.geometry.addAttribute( 'next', this.attributes.next );
-	this.geometry.addAttribute( 'side', this.attributes.side );
-	this.geometry.addAttribute( 'width', this.attributes.width );
-	this.geometry.addAttribute( 'uv', this.attributes.uv );
-	this.geometry.addAttribute( 'counters', this.attributes.counters );
-
-	this.geometry.setIndex( this.attributes.index );
-
-}
-
-function memcpy (src, srcOffset, dst, dstOffset, length) {
-	var i
-
-	src = src.subarray || src.slice ? src : src.buffer
-	dst = dst.subarray || dst.slice ? dst : dst.buffer
-
-	src = srcOffset ? src.subarray ?
-	src.subarray(srcOffset, length && srcOffset + length) :
-	src.slice(srcOffset, length && srcOffset + length) : src
-
-	if (dst.set) {
-		dst.set(src, dstOffset)
-	} else {
-		for (i=0; i<src.length; i++) {
-			dst[i + dstOffset] = src[i]
-		}
-	}
-
-	return dst
-}
-
-/**
- * Fast method to advance the line by one position.  The oldest position is removed.
- * @param position
- */
-MeshLine.prototype.advance = function(position) {
-
-	var positions = this.attributes.position.array;
-	var previous = this.attributes.previous.array;
-	var next = this.attributes.next.array;
-	var l = positions.length;
-
-	// PREVIOUS
-	memcpy( positions, 0, previous, 0, l );
-
-	// POSITIONS
-	memcpy( positions, 6, positions, 0, l - 6 );
-
-	positions[l - 6] = position.x;
-	positions[l - 5] = position.y;
-	positions[l - 4] = position.z;
-	positions[l - 3] = position.x;
-	positions[l - 2] = position.y;
-	positions[l - 1] = position.z;
-
-    // NEXT
-	memcpy( positions, 6, next, 0, l - 6 );
-
-	next[l - 6]  = position.x;
-	next[l - 5]  = position.y;
-	next[l - 4]  = position.z;
-	next[l - 3]  = position.x;
-	next[l - 2]  = position.y;
-	next[l - 1]  = position.z;
-
-	this.attributes.position.needsUpdate = true;
-	this.attributes.previous.needsUpdate = true;
-	this.attributes.next.needsUpdate = true;
-
-};
-
-function MeshLineMaterial( parameters ) {
-
-	var vertexShaderSource = [
-'precision highp float;',
-'',
-'attribute vec3 position;',
-'attribute vec3 previous;',
-'attribute vec3 next;',
-'attribute float side;',
-'attribute float width;',
-'attribute vec2 uv;',
-'attribute float counters;',
-'',
-'uniform mat4 projectionMatrix;',
-'uniform mat4 modelViewMatrix;',
-'uniform vec2 resolution;',
-'uniform float lineWidth;',
-'uniform vec3 color;',
-'uniform float opacity;',
-'uniform float near;',
-'uniform float far;',
-'uniform float sizeAttenuation;',
-'',
-'varying vec2 vUV;',
-'varying vec4 vColor;',
-'varying float vCounters;',
-'',
-'vec2 fix( vec4 i, float aspect ) {',
-'',
-'    vec2 res = i.xy / i.w;',
-'    res.x *= aspect;',
-'	 vCounters = counters;',
-'    return res;',
-'',
-'}',
-'',
-'void main() {',
-'',
-'    float aspect = resolution.x / resolution.y;',
-'	 float pixelWidthRatio = 1. / (resolution.x * projectionMatrix[0][0]);',
-'',
-'    vColor = vec4( color, opacity );',
-'    vUV = uv;',
-'',
-'    mat4 m = projectionMatrix * modelViewMatrix;',
-'    vec4 finalPosition = m * vec4( position, 1.0 );',
-'    vec4 prevPos = m * vec4( previous, 1.0 );',
-'    vec4 nextPos = m * vec4( next, 1.0 );',
-'',
-'    vec2 currentP = fix( finalPosition, aspect );',
-'    vec2 prevP = fix( prevPos, aspect );',
-'    vec2 nextP = fix( nextPos, aspect );',
-'',
-'	 float pixelWidth = finalPosition.w * pixelWidthRatio;',
-'    float w = 1.8 * pixelWidth * lineWidth * width;',
-'',
-'    if( sizeAttenuation == 1. ) {',
-'        w = 1.8 * lineWidth * width;',
-'    }',
-'',
-'    vec2 dir;',
-'    if( nextP == currentP ) dir = normalize( currentP - prevP );',
-'    else if( prevP == currentP ) dir = normalize( nextP - currentP );',
-'    else {',
-'        vec2 dir1 = normalize( currentP - prevP );',
-'        vec2 dir2 = normalize( nextP - currentP );',
-'        dir = normalize( dir1 + dir2 );',
-'',
-'        vec2 perp = vec2( -dir1.y, dir1.x );',
-'        vec2 miter = vec2( -dir.y, dir.x );',
-'        //w = clamp( w / dot( miter, perp ), 0., 4. * lineWidth * width );',
-'',
-'    }',
-'',
-'    //vec2 normal = ( cross( vec3( dir, 0. ), vec3( 0., 0., 1. ) ) ).xy;',
-'    vec2 normal = vec2( -dir.y, dir.x );',
-'    normal.x /= aspect;',
-'    normal *= .5 * w;',
-'',
-'    vec4 offset = vec4( normal * side, 0.0, 1.0 );',
-'    finalPosition.xy += offset.xy;',
-'',
-'    gl_Position = finalPosition;',
-'',
-'}' ];
-
-	var fragmentShaderSource = [
-		'#extension GL_OES_standard_derivatives : enable',
-'precision mediump float;',
-'',
-'uniform sampler2D map;',
-'uniform sampler2D alphaMap;',
-'uniform float useMap;',
-'uniform float useAlphaMap;',
-'uniform float useDash;',
-'uniform vec2 dashArray;',
-'uniform float visibility;',
-'uniform float alphaTest;',
-'uniform vec2 repeat;',
-'',
-'varying vec2 vUV;',
-'varying vec4 vColor;',
-'varying float vCounters;',
-'',
-'void main() {',
-'',
-'    vec4 c = vColor;',
-'    if( useMap == 1. ) c *= texture2D( map, vUV * repeat );',
-'    if( useAlphaMap == 1. ) c.a *= texture2D( alphaMap, vUV * repeat ).a;',
-'	 if( c.a < alphaTest ) discard;',
-'	 if( useDash == 1. ){',
-'	 	 ',
-'	 }',
-'    gl_FragColor = c;',
-'	 gl_FragColor.a *= step(vCounters,visibility);',
-'}' ];
-
-	function check( v, d ) {
-		if( v === undefined ) return d;
-		return v;
-	}
-
-	THREE.Material.call( this );
-
-	parameters = parameters || {};
-
-	this.lineWidth = check( parameters.lineWidth, 1 );
-	this.map = check( parameters.map, null );
-	this.useMap = check( parameters.useMap, 0 );
-	this.alphaMap = check( parameters.alphaMap, null );
-	this.useAlphaMap = check( parameters.useAlphaMap, 0 );
-	this.color = check( parameters.color, new THREE.Color( 0xffffff ) );
-	this.opacity = check( parameters.opacity, 1 );
-	this.resolution = check( parameters.resolution, new THREE.Vector2( 1, 1 ) );
-	this.sizeAttenuation = check( parameters.sizeAttenuation, 1 );
-	this.near = check( parameters.near, 1 );
-	this.far = check( parameters.far, 1 );
-	this.dashArray = check( parameters.dashArray, [] );
-	this.useDash = ( this.dashArray !== [] ) ? 1 : 0;
-	this.visibility = check( parameters.visibility, 1 );
-	this.alphaTest = check( parameters.alphaTest, 0 );
-	this.repeat = check( parameters.repeat, new THREE.Vector2( 1, 1 ) );
-
-	var material = new THREE.RawShaderMaterial( {
-		uniforms:{
-			lineWidth: { type: 'f', value: this.lineWidth },
-			map: { type: 't', value: this.map },
-			useMap: { type: 'f', value: this.useMap },
-			alphaMap: { type: 't', value: this.alphaMap },
-			useAlphaMap: { type: 'f', value: this.useAlphaMap },
-			color: { type: 'c', value: this.color },
-			opacity: { type: 'f', value: this.opacity },
-			resolution: { type: 'v2', value: this.resolution },
-			sizeAttenuation: { type: 'f', value: this.sizeAttenuation },
-			near: { type: 'f', value: this.near },
-			far: { type: 'f', value: this.far },
-			dashArray: { type: 'v2', value: new THREE.Vector2( this.dashArray[ 0 ], this.dashArray[ 1 ] ) },
-			useDash: { type: 'f', value: this.useDash },
-			visibility: {type: 'f', value: this.visibility},
-			alphaTest: {type: 'f', value: this.alphaTest},
-			repeat: { type: 'v2', value: this.repeat }
-		},
-		vertexShader: vertexShaderSource.join( '\r\n' ),
-		fragmentShader: fragmentShaderSource.join( '\r\n' )
-	});
-
-	delete parameters.lineWidth;
-	delete parameters.map;
-	delete parameters.useMap;
-	delete parameters.alphaMap;
-	delete parameters.useAlphaMap;
-	delete parameters.color;
-	delete parameters.opacity;
-	delete parameters.resolution;
-	delete parameters.sizeAttenuation;
-	delete parameters.near;
-	delete parameters.far;
-	delete parameters.dashArray;
-	delete parameters.visibility;
-	delete parameters.alphaTest;
-	delete parameters.repeat;
-
-	material.type = 'MeshLineMaterial';
-
-	material.setValues( parameters );
-
-	return material;
-
-};
-
-MeshLineMaterial.prototype = Object.create( THREE.Material.prototype );
-MeshLineMaterial.prototype.constructor = MeshLineMaterial;
-
-MeshLineMaterial.prototype.copy = function ( source ) {
-
-	THREE.Material.prototype.copy.call( this, source );
-
-	this.lineWidth = source.lineWidth;
-	this.map = source.map;
-	this.useMap = source.useMap;
-	this.alphaMap = source.alphaMap;
-	this.useAlphaMap = source.useAlphaMap;
-	this.color.copy( source.color );
-	this.opacity = source.opacity;
-	this.resolution.copy( source.resolution );
-	this.sizeAttenuation = source.sizeAttenuation;
-	this.near = source.near;
-	this.far = source.far;
-	this.dashArray.copy( source.dashArray );
-	this.useDash = source.useDash;
-	this.visibility = source.visibility;
-	this.alphaTest = source.alphaTest;
-	this.repeat.copy( source.repeat );
-
-	return this;
-
-};
-
-if( typeof exports !== 'undefined' ) {
-	if( typeof module !== 'undefined' && module.exports ) {
-		exports = module.exports = { MeshLine: MeshLine, MeshLineMaterial: MeshLineMaterial };
-	}
-	exports.MeshLine = MeshLine;
-	exports.MeshLineMaterial = MeshLineMaterial;
-}
-else {
-	root.MeshLine = MeshLine;
-	root.MeshLineMaterial = MeshLineMaterial;
-}
-
-}).call(this);
-
-
-},{"three":98}],156:[function(require,module,exports){
+},{}],155:[function(require,module,exports){
 module.exports = require( './lib/whet.extend' );
-},{"./lib/whet.extend":157}],157:[function(require,module,exports){
+},{"./lib/whet.extend":156}],156:[function(require,module,exports){
 // Generated by CoffeeScript 1.3.3
 
 /*
@@ -71477,7 +71386,7 @@ module.exports = require( './lib/whet.extend' );
 
 }).call(this);
 
-},{}],158:[function(require,module,exports){
+},{}],157:[function(require,module,exports){
 
 // @info
 //   Polyfill for SVG getPathData() and setPathData() methods. Based on:
@@ -72606,7 +72515,7 @@ if (!SVGPathElement.prototype.getPathData || !SVGPathElement.prototype.setPathDa
   })();
 }
 
-},{}],159:[function(require,module,exports){
+},{}],158:[function(require,module,exports){
 'use strict';
 
 exports.type = 'perItem';
@@ -72713,4 +72622,4 @@ exports.fn = function(item) {
 
 };
 
-},{}]},{},[107]);
+},{}]},{},[1]);

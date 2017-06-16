@@ -2,7 +2,6 @@
 /*jshint esversion: 6 */
 
 var load = require('load-svg');
-
 var svgMesh3d = require('svg-mesh-3d');
 var MeshLine = require('three.meshline');
 var SVGO = require('svgo');
@@ -101,7 +100,8 @@ AFRAME.registerComponent('svgfile', {
     if (this.svgDOMcleaned === undefined) {
       svgo.optimize(svgfileComponent.svgDOM.outerHTML, function(result) {
         var parser = new DOMParser();
-        console.log(result.data);
+         // TODO: turn off debug result.data
+        // console.log(result.data);
         svgfileComponent.svgDOMcleaned = parser.parseFromString(result.data, "image/svg+xml");
         svgfileComponent.update({ready: true});
       });
