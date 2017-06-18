@@ -286,22 +286,6 @@ AFRAME.registerComponent('svgfile', {
   play: function () { },
 
 
-  calcBoundingBox: function(meshData){
-    var ret = {
-      x: {min:Infinity, max: -Infinity},
-      y: {min:Infinity, max: -Infinity},
-      z: {min:Infinity, max: -Infinity}};
-    for (var p in meshData.positions) {
-      ret.x.min = Math.min(ret.x.min, meshData.positions[p][0]);
-      ret.x.max = Math.max(ret.x.max, meshData.positions[p][0]);
-      ret.y.min = Math.min(ret.y.min, meshData.positions[p][1]);
-      ret.y.max = Math.max(ret.y.max, meshData.positions[p][1]);
-      ret.z.min = Math.min(ret.z.min, meshData.positions[p][2]);
-      ret.z.max = Math.max(ret.z.max, meshData.positions[p][2]);
-    }
-    return ret;
-  },
-
 
 
 
