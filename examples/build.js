@@ -58171,6 +58171,7 @@ AFRAME.registerComponent('svgfile', {
     height: { type: 'number', default: NaN},
     opacity: {type: 'number', default: NaN},
     curveQuality: {type: 'number', default:20},
+    strokeWidthToAFrameUnits: { type:'number', default: 0.01},
     debug: {type: 'boolean', default: false} // Set to True to see wireframe
   },
 
@@ -58212,6 +58213,10 @@ AFRAME.registerComponent('svgfile', {
     var sceneEl = this.el.sceneEl;
     sceneEl.addEventListener( 'render-target-loaded', this.do_update.bind(this) );
     sceneEl.addEventListener( 'render-target-loaded', this.addlisteners.bind(this) );
+
+
+    // Load SVGO. We use it to clean up and simplify (e.g convert <rec> to <path>) the SVG file.
+    // Note: I considered including convertPathData.js but it generates nearly unparsably compact number array strings like "-1.4.3"
     var convertTransform = require('svgo/plugins/convertTransform.js');
     var convertStyleToAttrs = require('svgo/plugins/convertStyleToAttrs.js');
     var convertShapeToPath = require('./plugins/convertShapeToPath.js'); 
@@ -58232,7 +58237,7 @@ AFRAME.registerComponent('svgfile', {
 
 
 
-    // Run init() as a callback after we load the SVG content from the file URL
+    // Ensure the SVG is loaded. Establish a callback to update() if not.
     if (this.svgDOM === undefined) {
       load(data.svgFile, function (err, svgDOM) {
         svgfileComponent.svgDOM = svgDOM;
@@ -58241,7 +58246,7 @@ AFRAME.registerComponent('svgfile', {
       return;
     }
 
-    // Run init() again as a callback after we run the SVG through SVGO (to convert polygons to path, clean up)
+    // Run SVGO to generate a cleaned SVG DOM tree, then call update() again
     if (this.svgDOMcleaned === undefined) {
       svgo.optimize(svgfileComponent.svgDOM.outerHTML, function(result) {
         var parser = new DOMParser();
@@ -58252,95 +58257,15 @@ AFRAME.registerComponent('svgfile', {
       return;
     }
 
+
     /// We should have a {ready:true} object at this point if we should continue further
     if (Object.keys(oldData).length === 0 && oldData.constructor === Object) return;
 
 
-    function hasNoFill(el){
-      var fill = el.getAttribute("fill") || "yes";
-      fill=fill.toLowerCase();
-      return (fill == "transparent" || fill=="none");
-    }
 
-    function calcColor(el){
-      // Should look up CSS Class too...
-      var f= el.getAttribute("fill") || data.color;
-      if (f=="transparent" || f=="none") f = null;
-      return f;
-    }
-    function calcSColor(el){
-      return el.getAttribute("stroke") || data.color;
-    }
-
-    function pathDataToString(dat){
-      return dat.reduce(function (acc, val){
-        return acc + ' ' + val.type + ' ' + val.values.join(' ');
-      },'');
-    }
-
-    function extractSVGPaths(svgDoc) {
-
-        var ret = [];
-        // rect, polygon should've been converted to <path> by SVGO at this point
-        if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
-        if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
-        if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
-
-        // These elements are not supported:
-        if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
-        if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
-
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).map(function (path) {
-          var d = pathDataToString(path.getPathData());
-          var n = {strokeWidth: 1, closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path};
-          n.closed =  d.search(/Z/i)>0;
-          if (hasNoFill(path)) n.closed=false;
-          n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
-          ret.push(n);
-        });
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('circle')).map(function (path) {
-          //https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path
-          //var cx=path.cx.baseVal.value; var cy=path.cy.baseVal.value; var r=path.r.baseVal.value; var nr=-r; var dr=r*2; var ndr=-dr;
-          //var d = `M ${cx}, ${cy}    m ${nr}, 0     a ${r},${r} 0 1,0 ${dr},0    a ${r},${r} 0 1,0 ${ndr},0`;
-          var cirlceAttrsToPath = function(r,cx,cy) { return `M ${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;};
-          var d = cirlceAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value); 
-          var n = {strokeWidth: 1, closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path};
-          n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('ellipse')).map(function (path) {
-          // https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path/10477334#10477334
-          function ellipseAttrsToPath (rx,cx,ry,cy) {
-            return `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
-          }
-          var d = ellipseAttrsToPath( path.rx.baseVal.value, path.cx.baseVal.value, path.ry.baseVal.value, path.cy.baseVal.value);
-          var n = {strokeWidth: 1, closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path};
-          n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-        /*
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('polygon')).map(function (path) {
-          console.error('These should have been converted to path by svgo at this point')
-          var n = {strokeWidth: 1, closed: false, d:myself.SVGPointListToPathstring(path.points), strokeColor: calcSColor(path), fillColor: calcColor(path), path:path};
-          n.strokeWidth = path.getAttribute("stroke-width")*1 || 1;
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-        */
-
-        return ret;
-    } // function extractSVGPaths()
-
-
-
-
-
-
-    var allPaths = extractSVGPaths(svgfileComponent.svgDOMcleaned);
-
-    // Get the SVG image size, in SVG coordinates
+    /*
+     * Establish scaling between SVG image size and AFrame coordinates
+     */
     var viewBox = AFRAME.utils.coordinates.parse(svgfileComponent.svgDOMcleaned.documentElement.getAttribute('viewBox'));
     if (!viewBox){
       console.error('No viewBox attribute found in SVG file. This is required. Note that this property is case sensitive.');
@@ -58351,17 +58276,35 @@ AFRAME.registerComponent('svgfile', {
     var aspectRatio = width/height;
     if (isNaN(data.width) && isNaN(data.height)) { // Neither is specified; use SVG native size
       data.width=width; data.height = height;
-    } else if (!isNaN(data.width) ) { // Width is specified, force height to match according to aspectRatio
+    } else if (!isNaN(data.width) && isNaN(data.height) ) { // Width is specified, infer height 
       data.height = data.width/aspectRatio;
-    } else if (!isNaN(data.height)) { // Height is specified, force width to match according to aspectRatio
+    } else if (!isNaN(data.height) && isNaN(data.width)) { // Height is specified, infer width 
       data.width = data.height*aspectRatio;
+    } else {
+      // Nothing, since data.height and data.width are both specified      
     }
 
 
+
+
+
+
+
+
+
+    /* 
+     * Convert SVGPath objects into our custom handy Path objects
+     */
+    var allPaths = extractSVGPaths(svgfileComponent.svgDOMcleaned);
+
+
+
+    /*
+     * Main loop where we convert our private Path objects into mesh geometry and add them 
+     * to this entity's Object3D group
+     */
     for (var ii=0; ii<allPaths.length; ii++){
         var n = allPaths[ii];
-        var __private_material;
-        var __private_geometry;
         var mesh;
 
         n.fillColor = n.fillColor || data.color;
@@ -58382,7 +58325,7 @@ AFRAME.registerComponent('svgfile', {
                 scale: data.curveQuality*10 //a positive number, the scale at which to approximate the curves from the SVG paths
               });
 
-              __private_material = new THREE.MeshStandardMaterial({
+              var __private_material = new THREE.MeshStandardMaterial({
                 wireframe: data.debug,
                 color: n.fillColor,
                 side: THREE.DoubleSide,
@@ -58391,55 +58334,71 @@ AFRAME.registerComponent('svgfile', {
               });
 
             var createGeometry = require('three-simplicial-complex')(THREE);
-              __private_geometry = createGeometry(__private_meshData);
-              __private_geometry.scale(data.width/width, data.height/height, 1);
+            var __private_geometry = createGeometry(__private_meshData);
+              __private_geometry.scale(data.width/width, data.height/height, 1); // Convert from SVG to AFrame units
+              __private_geometry.scale(n.scale.x, n.scale.y, 1); // Apply the transforms while the geometry is still in SVG units
+              __private_geometry.translate(data.width/width * n.translate.x, - data.height/height * n.translate.y, 0);
+              __private_geometry.translate( -data.width/2, data.height/2, 0); // Center at 0,0
 
-              mesh = new THREE.Mesh(__private_geometry, __private_material.clone());// Create mesh.
-              el.setObject3D('mesh'+ii, mesh);// Set mesh on entity.
+              this.el.object3D.add(new THREE.Mesh(__private_geometry, __private_material.clone()));// Set mesh on entity.
 
-        } else { // !n.closed -- draw as MeshLine
+        } // was n.closed?
 
+        // Draw lines & polygon outlines
+        if (n.strokeWidth>0) {
 
               if (data.debug){
                 console.log('MeshLine for ');
                 console.log(n);
               }
 
-              __private_material = new MeshLine.MeshLineMaterial({
+              var __private_material = new MeshLine.MeshLineMaterial({
                 color: new THREE.Color(n.strokeColor),
                 resolution: this.resolution,
-                sizeAttenuation: false,
-                lineWidth: n.strokeWidth,
+                sizeAttenuation: 1,
+                wireframe:false,
+                lineWidth: n.strokeWidth * data.strokeWidthToAFrameUnits,
                 side: THREE.DoubleSide,
                 opacity: isNaN(data.opacity) ? 1 : data.opacity,
                 transparent:  isNaN(data.opacity) ? false : true, // Default opaccity=null so this will be false
                 depthTest: isNaN(data.opacity) ? true : false 
-
-                //near: 0.1,
-                //far: 1000
               });
-              var debug_material = new THREE.MeshBasicMaterial({ wireframe:true, color:'#ff0000'});
+              var debug_material = new THREE.MeshStandardMaterial({ wireframe:true, color:0x00ff00});
 
-              //var tok = tokenizeSVGPathString(n.d);
-              //geometry = svgPathToGeometry(tok, {curveQuality: data.curveQuality});
-              var svgPathData = n.path.getPathData(); // Uses the SVG2 polyfill. Gives us an array of PathSeg objects; must easier to parse 
-              if (n.path) 1;
-              __private_geometry = svgPathDataToGeometry(svgPathData, {curveQuality: data.curveQuality});
-              __private_geometry.scale(data.width/width, data.height/height, 1);
+
+              // Create set of vertices from the path data
+              var __private_geometry = svgPathDataToGeometry(
+                      n.path.getPathData(), // Uses the SVG2 polyfill. Gives us an array of PathSeg objects; must easier to parse 
+                      {curveQuality: data.curveQuality, height: height}
+                    );
+
+              // Apply scale and translate transforms
+              __private_geometry.scale(data.width/width, data.height/height, 1); // Convert from SVG to AFrame units
+              __private_geometry.scale(n.scale.x, n.scale.y, 1); // Apply the transforms while the geometry is still in SVG units
+              __private_geometry.translate(data.width/width * n.translate.x, (- data.height/height * n.translate.y) - (data.height/height * height), 0);
+              __private_geometry.translate( -data.width/2, data.height/2, 0); // Center at 0,0
+
               var geometryAsArray = [];  // For some inexplicable reason, my THREE.Geometry here is *not* an instanceof THREE.Geometry inside MeshLine. Whatevs.
               for (var v=0; v<__private_geometry.vertices.length; v++) {
                 geometryAsArray.push(__private_geometry.vertices[v].x);
                 geometryAsArray.push(__private_geometry.vertices[v].y);
                 geometryAsArray.push(__private_geometry.vertices[v].z);
               }
+
+              // Build a MeshLine
               var line = new MeshLine.MeshLine();
               line.setGeometry( geometryAsArray);
-              mesh = new THREE.Mesh(line.geometry, __private_material);
-              //console.log(n.d)
-              //console.log(mesh.geometry.attributes.position.array);
-              this.el.setObject3D("mesh"+ii, mesh);
 
-        } // Draw as polygon or as line?
+              // Special case to fix a bug
+              // I have NO FREAKING CLUE why the 9th item does not render?! It appears as a cube. Either a fault in THREE or, perhaps in the MeshLineMaterial shaders
+              if (this.el.object3D.children.length==9) {
+                line.geometry = line.geometry.clone(); // Cloning the 9th item makes it work like a charm. Of course.
+              }  
+
+
+              this.el.object3D.add(new THREE.Mesh(line.geometry,  __private_material));
+
+        } // Draw a MeshLine for this <path>?
 
     } // foreach path
 
@@ -58472,30 +58431,6 @@ AFRAME.registerComponent('svgfile', {
   play: function () { },
 
 
-  calcBoundingBox: function(meshData){
-    var ret = {
-      x: {min:Infinity, max: -Infinity},
-      y: {min:Infinity, max: -Infinity},
-      z: {min:Infinity, max: -Infinity}};
-    for (var p in meshData.positions) {
-      ret.x.min = Math.min(ret.x.min, meshData.positions[p][0]);
-      ret.x.max = Math.max(ret.x.max, meshData.positions[p][0]);
-      ret.y.min = Math.min(ret.y.min, meshData.positions[p][1]);
-      ret.y.max = Math.max(ret.y.max, meshData.positions[p][1]);
-      ret.z.min = Math.min(ret.z.min, meshData.positions[p][2]);
-      ret.z.max = Math.max(ret.z.max, meshData.positions[p][2]);
-    }
-    return ret;
-  },
-
-  SVGPointListToPathstring: function(pl){
-    var ret = '';
-    ret = ret + ' M' + pl[0].x +',' + pl[0].y + ' ';
-    for (var i=1; i<pl.length;i++) {
-      ret = ret+ ' L' + pl[i].x +',' + pl[i].y + ' ';
-    }
-    return ret+"Z";
-  }
 
 
 
@@ -58526,7 +58461,7 @@ function svgPathDataToGeometry(svgPathData, opts){
           tmp = xyListToVertices(values);
           v = tmp.endpoint;
           lastPenDown = v.clone();
-          geometry.vertices = geometry.vertices.concat(tmp.vertices.slice());
+          geometry.vertices = geometry.vertices.concat(tmp.vertices.map(function(v){return v.clone();}));
           //if (i>0) console.warn('SVG path contains M commands after the first command. This is not yet supported and these M commands will be drawn as lines.');
           break;
         case "H":
@@ -58542,15 +58477,15 @@ function svgPathDataToGeometry(svgPathData, opts){
         case "L":
           tmp = xyListToVertices(values);
           v = tmp.endpoint;
-          geometry.vertices = geometry.vertices.concat(tmp.vertices.slice());
+          geometry.vertices = geometry.vertices.concat(tmp.vertices.map(function(v){return v.clone();}));
           break;
         case "l":
           tmp = xyListToVertices(values);
-          tmp.vertices.map(function(t){
-            v = new THREE.Vector3(t.x + v.x, t.y+v.y, 0);
-            geometry.vertices.push(v.clone());
+          tmp.vertices.forEach(function(t){
+            geometry.vertices.push(new THREE.Vector3(t.x + v.x, t.y+v.y, 0));
           });
           break;
+        case "z":
         case "Z":
           geometry.vertices.push(lastPenDown.clone());
           break;
@@ -58558,9 +58493,8 @@ function svgPathDataToGeometry(svgPathData, opts){
         case "C":
             if (svgCommand.type=="C") basisVector = new THREE.Vector3(0,0,0);
             if (svgCommand.type=="c") basisVector = v;
-            // The "c" command can take multiple curves in sequences, hence the while loop
+            // The "c" command can take multiple curves in sequences, so one "C" command can create several curves
             howManyCurves = values.length/6;
-            console.assert(howManyCurves==Math.floor(howManyCurves));
             for (var h=0, z=0; h<howManyCurves; h++) {
               p1 = v.clone(); // Relative coordinate
               c1 = new THREE.Vector3(values[z++], values[z++], 0).add(basisVector);
@@ -58574,7 +58508,10 @@ function svgPathDataToGeometry(svgPathData, opts){
             }
             break;
         case "A":
-            geometry.vertices.pop(); // Remove the M command
+            // Sorry, a bit clumsy handling of Arcs (circles or portions thereof). We use
+            // arcToSVG to convert them to Curves, then treat them like "C"s
+            // There's probably a cleaner way to getSpacedPoints for an Arc command
+            geometry.vertices.pop(); // Remove the preceding M command
             var howManyArcs = values.length/ 7;
             for (var arcNumber=0, z=0; arcNumber<howManyArcs; arcNumber++){
               var tmp = arcToSVG(v.x, v.y, values[z++], values[z++], values[z++], values[z++],        values[z++],   values[z++], values[z++]);
@@ -58597,9 +58534,22 @@ function svgPathDataToGeometry(svgPathData, opts){
       } // swtich statement
 
     } // foreach SVG command in the path
+
+    // Shift all points along the Y axis so we can center the image
+    geometry.vertices.forEach(function(v){ v.y = opts.height-v.y; });
+
     return geometry;
 } // end svgPathDataToGeometry ()
 
+
+
+
+/*
+ * In: Array of X,Y coordinates
+ *   example: [1 2 8 9]
+ * Out: Object with 'vertices' array of THREE.Vector3()s for those X,Y points (Z always=0), and an "endpoint" property
+ *   containing a Vector3 of the last point in the list.
+ */
 function xyListToVertices(values){
   var ret = {endpoint: null, vertices: [] };
   for (var i=0; i<values.length;) {
@@ -58614,14 +58564,165 @@ function xyListToVertices(values){
 
 
 
+
+/*
+ * In: SVG DOM object
+ * Out: 
+ * Return an array of custom path objects. Each path object has the properties:
+ *  - strokeWidth (float)
+ *  - closed. Boolean, true if this is a filled polygon, false if this is a line.
+ *  - fillColor (color)
+ *  - strokeColor (color)
+ *  - path (SVGPath object)
+ * 
+ * <rect>, <line>, and <polygon>'s should have been converted to <path>'s already at this point by SVGO
+ * <image> and <text> objects are ignored (warnings in console)
+ */
+function extractSVGPaths(svgDoc) {
+
+    var ret = [];
+    // rect, polygon should've been converted to <path> by SVGO at this point
+    if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
+    if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
+    if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
+
+    // These elements are not supported:
+    if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
+    if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
+
+
+    /*
+     * A few helper functions to get information about the path (color, stroke weight)
+     */
+    function getFillColor(el){
+      // Should look up CSS Class too...
+      var f= el.getAttribute("fill") || data.color;
+      if (f=="transparent" || f=="none") f = null;
+      return f;
+    }
+    function getStrokeColor(el){
+      return el.getAttribute("stroke") || data.color;
+    }
+    function getStrokeWidth(p){
+      return  (p.getAttribute("stroke-width")*1) || (el.getAttribute("stroke")?1:0);
+    }
+    function getScaleTransform(path){
+      // Reference: https://developer.mozilla.org/en/docs/Web/API/SVGTransform
+      var ret = {x:1, y:1};
+      for (var i=0; i<path.transform.baseVal.length; i++) {
+        if (path.transform.baseVal[i].type==3) {ret.x += path.transform.baseVal[i].matrix.a; ret.y += path.transform.baseVal[i].matrix.d;}
+      }
+      return ret;
+    }
+    function getTranslateTransform(path){
+      var ret = {x:0, y:0};
+      for (var i=0; i<path.transform.baseVal.length; i++) {
+        if (path.transform.baseVal[i].type==2) {ret.x += path.transform.baseVal[i].matrix.e; ret.y += path.transform.baseVal[i].matrix.f;}
+      }
+      return ret;
+    }
+
+
+    /*
+     * Helper funcs to create pretty SVG Path strings 
+     */
+    function pathobject2str(dat){
+      return dat.reduce(function (acc, val){
+        return acc + ' ' + val.type + ' ' + val.values.join(' ');
+      },'');
+    }
+    function circleAttrsToPath(r,cx,cy) {
+      return `M ${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;
+    };
+    function ellipseAttrsToPath (rx,cx,ry,cy) {
+      return `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
+    }
+
+
+    // Process each <path> element
+    Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).map(function (path) {
+
+      //var d = pathobject2str(path.getPathData());
+      var tmp = {
+          strokeWidth:  getStrokeWidth(path),
+          closed:       path.d.search(/Z/i)>0,
+          d:            path.d, // was "pathobject2str(path.getPathData());" but I think this is not necessary...
+          fillColor:    getFillColor(path),
+          strokeColor:  getStrokeColor(path),
+          scale:        getScaleTransform(path),
+          translate:    getTranslateTransform(path),
+          path:         path};
+
+      if (n.fillColor==null) tmp.closed=false;
+
+      ret.push(tmp);
+
+    });
+
+
+
+    // Process each <circle> element
+    //https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path
+    Array.prototype.slice.call(svgDoc.getElementsByTagName('circle')).map(function (path) {
+
+      var tmp = {
+          strokeWidth:  getStrokeWidth(path),
+          closed:       true,
+          d:            circleAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value),
+          fillColor:    getFillColor(path),
+          strokeColor:  getStrokeColor(path),
+          scale:        getScaleTransform(path),
+          translate:    getTranslateTransform(path),
+          path:         path};
+
+      if (tmp.fillColor==null) tmp.closed=false;
+
+      ret.push(tmp);
+
+    });
+
+
+    // Process each <ellipse> element
+    // https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path/10477334#10477334
+    Array.prototype.slice.call(svgDoc.getElementsByTagName('ellipse')).map(function (path) {
+
+      var tmp = {
+          strokeWidth:  getStrokeWidth(path),
+          closed:       true,
+          d:            ellipseAttrsToPath( path.rx.baseVal.value, path.cx.baseVal.value, path.ry.baseVal.value, path.cy.baseVal.value),
+          fillColor:    getFillColor(path),
+          strokeColor:  getStrokeColor(path),
+          scale:        getScaleTransform(path),
+          translate:    getTranslateTransform(path),
+          path:         path};
+
+      if (tmp.fillColor==null) tmp.closed=false;
+
+      ret.push(tmp);
+
+    });
+
+
+    return ret;
+
+} // function extractSVGPaths()
+
+
+
+
+
+
+
+
+
 // This function is ripped from
 // github.com/DmitryBaranovskiy/raphael/blob/4d97d4/raphael.js#L2216-L2304
 // which references w3.org/TR/SVG11/implnote.html#ArcImplementationNotes
 // TODO: make it human readable
 
-var π = Math.PI;
+var PI = Math.PI;
 function __PRIVATE_radians(degress){
-  return degress * (π / 180);
+  return degress * (PI / 180);
 }
 var _120 = __PRIVATE_radians(120);
 
@@ -58656,12 +58757,12 @@ function arcToSVG(x1, y1, rx, ry, angle, large_arc_flag, sweep_flag, x2, y2, rec
     f1 = Math.asin(((y1 - cy) / ry).toFixed(9));
     f2 = Math.asin(((y2 - cy) / ry).toFixed(9));
 
-    f1 = x1 < cx ? π - f1 : f1;
-    f2 = x2 < cx ? π - f2 : f2;
-    if (f1 < 0) f1 = π * 2 + f1;
-    if (f2 < 0) f2 = π * 2 + f2;
-    if (sweep_flag && f1 > f2) f1 = f1 - π * 2;
-    if (!sweep_flag && f2 > f1) f2 = f2 - π * 2;
+    f1 = x1 < cx ? PI - f1 : f1;
+    f2 = x2 < cx ? PI - f2 : f2;
+    if (f1 < 0) f1 = PI * 2 + f1;
+    if (f2 < 0) f2 = PI * 2 + f2;
+    if (sweep_flag && f1 > f2) f1 = f1 - PI * 2;
+    if (!sweep_flag && f2 > f1) f2 = f2 - PI * 2;
   } else {
     f1 = recursive[0];
     f2 = recursive[1];
