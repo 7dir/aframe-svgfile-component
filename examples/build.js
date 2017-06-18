@@ -58315,7 +58315,7 @@ AFRAME.registerComponent('svgfile', {
                 console.log('MeshPolygon for ');
                 console.log(n);
               }
-              var __private_meshData = svgMesh3d(n.d, { // TODO: change from n.d to using n.path.getPathData() SVG2 interface
+              var __private_meshData = svgMesh3d(n.path.getAttribute('d'), { 
                 delaunay: true,
                 clean: true,
                 exterior: false,
@@ -58645,8 +58645,8 @@ function extractSVGPaths(svgDoc) {
       //var d = pathobject2str(path.getPathData());
       var tmp = {
           strokeWidth:  getStrokeWidth(path),
-          closed:       path.d.search(/Z/i)>0,
-          d:            path.d, // was "pathobject2str(path.getPathData());" but I think this is not necessary...
+          closed:       path.getAttribute('d').search(/Z/i)>0,
+          d:            path.getAttribute('d'), // was "pathobject2str(path.getPathData());" but I think this is not necessary...
           fillColor:    getFillColor(path),
           strokeColor:  getStrokeColor(path),
           scale:        getScaleTransform(path),
