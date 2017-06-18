@@ -131,102 +131,16 @@ AFRAME.registerComponent('svgfile', {
     var aspectRatio = width/height;
     if (isNaN(data.width) && isNaN(data.height)) { // Neither is specified; use SVG native size
       data.width=width; data.height = height;
-    } else if (!isNaN(data.width) ) { // Width is specified, force height to match according to aspectRatio
+    } else if (!isNaN(data.width) && isNaN(data.height) ) { // Width is specified, infer height 
       data.height = data.width/aspectRatio;
-    } else if (!isNaN(data.height)) { // Height is specified, force width to match according to aspectRatio
+    } else if (!isNaN(data.height) && isNaN(data.width)) { // Height is specified, infer width 
       data.width = data.height*aspectRatio;
+    } else {
+      // Nothing, since data.height and data.width are both specified      
     }
 
 
 
-
-    function hasNoFill(el){
-      var fill = el.getAttribute("fill") || "yes";
-      fill=fill.toLowerCase();
-      return (fill == "transparent" || fill=="none");
-    }
-
-    function calcColor(el){
-      // Should look up CSS Class too...
-      var f= el.getAttribute("fill") || data.color;
-      if (f=="transparent" || f=="none") f = null;
-      return f;
-    }
-    function calcSColor(el){
-      return el.getAttribute("stroke") || data.color;
-    }
-
-    function pathDataToString(dat){
-      return dat.reduce(function (acc, val){
-        return acc + ' ' + val.type + ' ' + val.values.join(' ');
-      },'');
-    }
-    function getStrokeWidth(path){
-      if (!path) return 1; 
-      var z = path.getAttribute("stroke-width");
-      if (z==null || z===undefined ) return 1;
-      if (typeof z == "string") z=z.replace("px","")*1;
-      return z;
-    }
-    // Reference: https://developer.mozilla.org/en/docs/Web/API/SVGTransform
-    function getScaleTransform(path){
-      var ret = {x:1, y:1};
-      for (var i=0; i<path.transform.baseVal.length; i++) {
-        if (path.transform.baseVal[i].type==3) {ret.x += path.transform.baseVal[i].matrix.a; ret.y += path.transform.baseVal[i].matrix.d;}
-      }
-      return ret;
-    }
-    function getTranslateTransform(path){
-      var ret = {x:0, y:0};
-      for (var i=0; i<path.transform.baseVal.length; i++) {
-        if (path.transform.baseVal[i].type==2) {ret.x += path.transform.baseVal[i].matrix.e; ret.y += path.transform.baseVal[i].matrix.f;}
-      }
-      return ret;
-    }
-
-    function extractSVGPaths(svgDoc) {
-
-        var ret = [];
-        // rect, polygon should've been converted to <path> by SVGO at this point
-        if (svgDoc.getElementsByTagName('rect').length>0) console.warn("Only SVG <path>'s are supported; ignoring <rect> items");
-        if (svgDoc.getElementsByTagName('polygon').length>0) console.warn("Only SVG <path>'s are supported; ignoring <polygon> items");
-        if (svgDoc.getElementsByTagName('line').length>0) console.warn("Only SVG <path>'s are supported; ignoring <line> items");
-
-        // These elements are not supported:
-        if (svgDoc.getElementsByTagName('image').length>0) console.warn("Only SVG <path>'s are supported; ignoring <image> items");
-        if (svgDoc.getElementsByTagName('text').length>0) console.warn("Only SVG <path>'s are supported; ignoring <text> items");
-
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('path')).forEach(function (path) {
-          var d = pathDataToString(path.getPathData());
-          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
-          n.closed =  d.search(/Z/i)>0;
-          if (hasNoFill(path)) n.closed=false;
-          ret.push(n);
-        });
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('circle')).forEach(function (path) {
-          //https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path
-          //var cx=path.cx.baseVal.value; var cy=path.cy.baseVal.value; var r=path.r.baseVal.value; var nr=-r; var dr=r*2; var ndr=-dr;
-          //var d = `M ${cx}, ${cy}    m ${nr}, 0     a ${r},${r} 0 1,0 ${dr},0    a ${r},${r} 0 1,0 ${ndr},0`;
-          var cirlceAttrsToPath = function(r,cx,cy) { return `M ${cx-r},${cy}    a ${r},${r} 0 1,0 ${r*2},0   a ${r},${r} 0 1,0 -${r*2},0`;};
-          var d = cirlceAttrsToPath( path.r.baseVal.value, path.cx.baseVal.value, path.cy.baseVal.value); 
-          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-        Array.prototype.slice.call(svgDoc.getElementsByTagName('ellipse')).forEach(function (path) {
-          // https://stackoverflow.com/questions/5737975/circle-drawing-with-svgs-arc-path/10477334#10477334
-          function ellipseAttrsToPath (rx,cx,ry,cy) {
-            return `M${cx-rx},${cy}    a ${rx},${ry} 0 1,0 ${rx*2},0   a ${rx},${ry} 0 1,0 -${rx*2},0`;
-          }
-          var d = ellipseAttrsToPath( path.rx.baseVal.value, path.cx.baseVal.value, path.ry.baseVal.value, path.cy.baseVal.value);
-          var n = {strokeWidth: getStrokeWidth(path), closed: false, d:d, fillColor: calcColor(path), strokeColor: calcSColor(path), path:path, scale: getScaleTransform(path), translate:getTranslateTransform(path)};
-          if (hasNoFill(path)) n.closed =false;
-          ret.push(n);
-        });
-
-
-        return ret;
-    } // function extractSVGPaths()
 
 
 
@@ -286,7 +200,7 @@ AFRAME.registerComponent('svgfile', {
         } // was n.closed?
 
         // Draw lines & polygon outlines
-        if (n.strokeWidth>0)
+        if (n.strokeWidth>0) {
 
               if (data.debug){
                 console.log('MeshLine for ');
