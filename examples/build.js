@@ -58596,15 +58596,15 @@ function extractSVGPaths(svgDoc) {
      */
     function getFillColor(el){
       // Should look up CSS Class too...
-      var f= el.getAttribute("fill") || data.color;
+      var f= el.getAttribute("fill") || null;
       if (f=="transparent" || f=="none") f = null;
       return f;
     }
     function getStrokeColor(el){
       return el.getAttribute("stroke") || data.color;
     }
-    function getStrokeWidth(p){
-      return  (p.getAttribute("stroke-width")*1) || (el.getAttribute("stroke")?1:0);
+    function getStrokeWidth(el){
+      return  (el.getAttribute("stroke-width")*1) || (el.getAttribute("stroke")?1:0);
     }
     function getScaleTransform(path){
       // Reference: https://developer.mozilla.org/en/docs/Web/API/SVGTransform
