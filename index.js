@@ -508,7 +508,7 @@ function extractSVGPaths(svgDoc) {
           translate:    getTranslateTransform(path),
           path:         path};
 
-      if (n.fillColor==null) tmp.closed=false;
+      if (tmp.fillColor==null) tmp.closed=false;
 
       ret.push(tmp);
 
