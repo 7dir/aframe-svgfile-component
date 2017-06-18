@@ -338,7 +338,7 @@ function svgPathDataToGeometry(svgPathData, opts){
           tmp = xyListToVertices(values);
           tmp.vertices.forEach(function(t){
             geometry.vertices.push(new THREE.Vector3(t.x + v.x, t.y+v.y, 0));
-          }
+          });
           break;
         case "z":
         case "Z":
