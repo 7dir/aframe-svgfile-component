@@ -58353,7 +58353,7 @@ AFRAME.registerComponent('svgfile', {
               }
 
               var __private_material = new MeshLine.MeshLineMaterial({
-                color: new THREE.Color(n.strokeColor),
+                color: new THREE.Color(n.strokeColor || data.color),
                 resolution: this.resolution,
                 sizeAttenuation: 1,
                 wireframe:false,
@@ -58601,7 +58601,7 @@ function extractSVGPaths(svgDoc) {
       return f;
     }
     function getStrokeColor(el){
-      return el.getAttribute("stroke") || data.color;
+      return el.getAttribute("stroke") || null;
     }
     function getStrokeWidth(el){
       return  (el.getAttribute("stroke-width")*1) || (el.getAttribute("stroke")?1:0);
